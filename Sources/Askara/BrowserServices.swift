@@ -30,11 +30,31 @@ final class BrowserServices {
     private let historyFile = JSONFile<HistoryStore>.inAppSupport("history.json")
     private let bookmarksFile = JSONFile<BookmarkStore>.inAppSupport("bookmarks.json")
     private let sessionFile = JSONFile<SessionState>.inAppSupport("session.json")
+    private let siteSettingsFile = JSONFile<SiteSettings>.inAppSupport("site-settings.json")
     private var saveTasks: [String: Task<Void, Never>] = [:]
+    /// Per-site JavaScript blocking and custom CSS/JavaScript. Kept when browsing data is cleared, like Chrome.
+    private(set) var siteSettings: SiteSettings
 
     private init() {
         history = historyFile.load() ?? HistoryStore()
         bookmarks = bookmarksFile.load() ?? BookmarkStore()
+        siteSettings = siteSettingsFile.load() ?? SiteSettings()
+    }
+
+    // MARK: - Site settings
+
+    func setJavaScriptBlocked(_ blocked: Bool, host: String) {
+        siteSettings.setJavaScriptBlocked(blocked, host: host)
+        saveSiteSettings()
+    }
+
+    func setCustomization(_ customization: SiteCustomization, host: String) {
+        siteSettings.setCustomization(customization, host: host)
+        saveSiteSettings()
+    }
+
+    private func saveSiteSettings() {
+        do { try siteSettingsFile.save(siteSettings) } catch { Log.error("Askara: failed to save site settings: \(error)") }
     }
 
     // MARK: - Windows

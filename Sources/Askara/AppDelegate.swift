@@ -228,13 +228,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         popupHint.isHidden = loaded.isEmpty
         popupHint.indentationLevel = 1
         menu.addItem(popupHint)
-
-        // The JavaScript item title follows the active tab's state.
-        if let js = menu.items.first(where: { $0.action == #selector(BrowserWindowController.toggleJavaScriptAction(_:)) }) {
-            let enabled = services.keyBrowserWindow?.currentTab?.webView?
-                .configuration.defaultWebpagePreferences.allowsContentJavaScript ?? true
-            js.title = enabled ? String(localized: "Disable JavaScript") : String(localized: "Enable JavaScript")
-        }
     }
 
     // MARK: - Dynamic menus (History & Bookmarks)
@@ -471,7 +464,35 @@ enum MainMenu {
             .separator(),
             item(String(localized: "Reload Page From Origin"), #selector(B.reloadIgnoringCacheAction(_:)), "r", [.command, .option]),
             item(String(localized: "Empty Caches"), #selector(A.emptyCachesAction(_:)), "e", [.command, .option]),
-            item(String(localized: "Disable JavaScript"), #selector(B.toggleJavaScriptAction(_:))),
+            .separator(),
+            // Title is set per site in validateMenuItem.
+            item(String(localized: "Block JavaScript on This Site"), #selector(B.toggleSiteJavaScriptAction(_:))),
+            item(String(localized: "Custom CSS & JavaScript…"), #selector(B.editSiteCodeAction(_:)), "j", [.command, .option, .shift]),
+            {
+                // Like Chrome's device toolbar (⇧⌘M).
+                let holder = NSMenuItem(title: String(localized: "Device Mode"), action: nil, keyEquivalent: "")
+                let menu = NSMenu(title: String(localized: "Device Mode"))
+                menu.addItem(item(String(localized: "Off"), #selector(B.deviceModeAction(_:)), "m", [.command, .shift], tag: 0))
+                menu.addItem(.separator())
+                for (index, preset) in DevicePreset.all.enumerated() {
+                    menu.addItem(item("\(preset.name) (\(preset.width)×\(preset.height))",
+                                      #selector(B.deviceModeAction(_:)), tag: index + 1))
+                }
+                menu.addItem(.separator())
+                menu.addItem(item(String(localized: "Landscape"), #selector(B.rotateDeviceAction(_:))))
+                holder.submenu = menu
+                return holder
+            }(),
+            {
+                // Emulates prefers-color-scheme, like Chrome's Rendering panel.
+                let holder = NSMenuItem(title: String(localized: "Page Appearance"), action: nil, keyEquivalent: "")
+                let menu = NSMenu(title: String(localized: "Page Appearance"))
+                menu.addItem(item(String(localized: "Follow System"), #selector(B.colorSchemeAction(_:)), tag: 0))
+                menu.addItem(item(String(localized: "Light"), #selector(B.colorSchemeAction(_:)), tag: 1))
+                menu.addItem(item(String(localized: "Dark"), #selector(B.colorSchemeAction(_:)), tag: 2))
+                holder.submenu = menu
+                return holder
+            }(),
             .separator(),
             {
                 let header = NSMenuItem(title: String(localized: "Inspect Extensions"), action: nil, keyEquivalent: "")

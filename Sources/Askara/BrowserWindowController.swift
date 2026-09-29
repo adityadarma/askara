@@ -17,6 +17,11 @@ final class Tab: NSObject {
     var zoom: Double = 1
     var lastActive = Date()
     var interactionState: Any?
+    /// Device Mode (Develop menu): emulated screen size and user agent. nil = off.
+    var device: DevicePreset?
+    var deviceLandscape = false
+    /// Forced `prefers-color-scheme` (Develop > Appearance). nil = follow the system.
+    var colorScheme: NSAppearance.Name?
     /// Frames on this page with unsubmitted form input (reported by FormGuard).
     var dirtyFrames: Set<String> = []
     var hasUnsavedInput: Bool { !dirtyFrames.isEmpty }
@@ -164,6 +169,10 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
                            name: .askaraDownloadEvent, object: nil)
         center.addObserver(self, selector: #selector(refreshExtensionButtons),
                            name: .askaraExtensionsChanged, object: nil)
+        // Device Mode keeps the emulated screen centered and fitted when the window resizes.
+        contentView.postsFrameChangedNotifications = true
+        center.addObserver(self, selector: #selector(contentViewResized(_:)),
+                           name: NSView.frameDidChangeNotification, object: contentView)
         refreshExtensionButtons()
         extensionController?.didOpenWindow(self)
     }
@@ -470,9 +479,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         if previous !== tab { extensionController?.didActivateTab(tab, previousActiveTab: previous) }
         refreshExtensionButtons()
 
-        webView.frame = contentView.bounds
-        webView.autoresizingMask = [.width, .height]
         contentView.addSubview(webView)
+        layoutWebView(of: tab)
         // Fill the address bar before focusing: while editing, updateToolbar won't overwrite it,
         // so the previous tab's URL could linger.
         addressField.abortEditing()
@@ -519,6 +527,9 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         webView.isInspectable = true
         (webView as? AskaraWebView)?.browser = self
         tab.webView = webView
+        // A tab woken from sleep keeps its Device Mode and Appearance settings.
+        webView.customUserAgent = tab.device?.userAgent
+        webView.appearance = tab.colorScheme.flatMap(NSAppearance.init(named:))
 
         tab.observations = [
             webView.observe(\.title) { [weak self, weak tab] web, _ in
@@ -831,13 +842,139 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
 
     @objc func reloadIgnoringCacheAction(_ sender: Any?) { activeTab?.webView?.reloadFromOrigin() }
 
-    @objc func toggleJavaScriptAction(_ sender: Any?) {
-        guard let web = activeTab?.webView else { return }
-        let prefs = web.configuration.defaultWebpagePreferences!
-        prefs.allowsContentJavaScript.toggle()
-        showToast(prefs.allowsContentJavaScript ? String(localized: "JavaScript enabled for this tab") : String(localized: "JavaScript disabled for this tab (reload)"),
+    /// Host of the active page, for per-site settings. nil on non-web pages.
+    var activeSiteHost: String? {
+        guard let url = activeTab?.webView?.url ?? activeTab?.url, ["http", "https"].contains(url.scheme ?? ""),
+              let host = url.host, !host.isEmpty else { return nil }
+        return host
+    }
+
+    /// Blocks or allows JavaScript on the current site (and its subdomains). Saved, like Chrome's site settings.
+    @objc func toggleSiteJavaScriptAction(_ sender: Any?) {
+        guard let host = activeSiteHost else { return }
+        let block = !services.siteSettings.isJavaScriptBlocked(host: host)
+        services.setJavaScriptBlocked(block, host: host)
+        let site = SiteSettings.key(for: host)
+        showToast(block ? String(localized: "JavaScript blocked on \(site)") : String(localized: "JavaScript allowed on \(site)"),
                   duration: 3)
-        web.reload()
+        // The setting applies on the next navigation: reload every open tab of this site.
+        services.windows.forEach { $0.reloadTabs(relatedTo: host) }
+    }
+
+    func reloadTabs(relatedTo host: String) {
+        for tab in tabs {
+            guard let web = tab.webView, let tabHost = web.url?.host, SiteSettings.isRelated(tabHost, host) else { continue }
+            web.reload()
+        }
+    }
+
+    // MARK: - Actions: custom site code
+
+    @objc func editSiteCodeAction(_ sender: Any?) {
+        guard let host = activeSiteHost else { return }
+        SiteCodeWindowController.show(host: host, relativeTo: window) { host, code, reload in
+            let services = BrowserServices.shared
+            services.setCustomization(code, host: host)
+            services.windows.forEach { $0.siteCodeChanged(host: host, reload: reload) }
+            services.keyBrowserWindow?.showToast(code.isEmpty ? String(localized: "Custom code removed for \(host)")
+                                                              : String(localized: "Custom code saved for \(host)"),
+                                                 duration: 2)
+        }
+    }
+
+    /// CSS updates live; JavaScript only runs again on reload (re-running it could double its effects).
+    func siteCodeChanged(host: String, reload: Bool) {
+        for tab in tabs {
+            guard let web = tab.webView, let tabHost = web.url?.host, SiteSettings.isRelated(tabHost, host) else { continue }
+            if reload { web.reload() } else { applySiteCSS(to: web) }
+        }
+    }
+
+    private func siteCustomizations(for web: WKWebView) -> [SiteCustomization]? {
+        guard let url = web.url, ["http", "https"].contains(url.scheme ?? ""), let host = url.host else { return nil }
+        return services.siteSettings.customizations(matching: host)
+    }
+
+    private func applySiteCSS(to web: WKWebView) {
+        guard let list = siteCustomizations(for: web) else { return }
+        let css = list.map(\.css).joined(separator: "\n")
+        // Removing also covers CSS deleted in the editor while the page is open.
+        web.evaluateJavaScript(SiteCodeScript.css(css) ?? SiteCodeScript.removeCSS)
+    }
+
+    private func applySiteJavaScript(to web: WKWebView) {
+        guard let list = siteCustomizations(for: web) else { return }
+        for code in list.map(\.javaScript) where !code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            web.evaluateJavaScript(SiteCodeScript.javaScript(code)) { [weak self, weak web] _, error in
+                // Syntax errors land here; runtime errors are logged to the page console.
+                guard let self, let error, let web, web === self.activeTab?.webView else { return }
+                let message = (error as NSError).userInfo["WKJavaScriptExceptionMessage"] as? String
+                    ?? error.localizedDescription
+                self.showToast(String(localized: "Custom JavaScript error: \(message)"), duration: 5)
+            }
+        }
+    }
+
+    // MARK: - Actions: device mode & appearance
+
+    /// Menu item tag: 0 = off, n = DevicePreset.all[n - 1].
+    @objc func deviceModeAction(_ sender: NSMenuItem) {
+        guard let tab = activeTab else { return }
+        let presets = DevicePreset.all
+        let device = presets.indices.contains(sender.tag - 1) ? presets[sender.tag - 1] : nil
+        guard device != tab.device else { return }
+        let userAgentChanged = device?.userAgent != tab.device?.userAgent
+        tab.device = device
+        tab.webView?.customUserAgent = device?.userAgent
+        layoutWebView(of: tab)
+        // Servers pick mobile/desktop pages from the user agent, so the page must be fetched again.
+        if userAgentChanged { tab.webView?.reload() }
+        showToast(device.map { String(localized: "Device Mode: \($0.name)") } ?? String(localized: "Device Mode off"),
+                  duration: 2)
+    }
+
+    @objc func rotateDeviceAction(_ sender: Any?) {
+        guard let tab = activeTab, tab.device != nil else { return }
+        tab.deviceLandscape.toggle()
+        layoutWebView(of: tab)
+    }
+
+    /// Menu item tag: 0 = system, 1 = light, 2 = dark. Changes `prefers-color-scheme` live, no reload needed.
+    @objc func colorSchemeAction(_ sender: NSMenuItem) {
+        guard let tab = activeTab else { return }
+        let schemes: [NSAppearance.Name?] = [nil, .aqua, .darkAqua]
+        tab.colorScheme = schemes.indices.contains(sender.tag) ? schemes[sender.tag] : nil
+        tab.webView?.appearance = tab.colorScheme.flatMap(NSAppearance.init(named:))
+    }
+
+    /// Full size normally. In Device Mode: the device's size, centered, scaled down to fit the window.
+    /// `pageZoom` is scaled by the same factor, so the page still lays out at the device's CSS width.
+    private func layoutWebView(of tab: Tab) {
+        guard let web = tab.webView, web.superview === contentView else { return }
+        guard let device = tab.device else {
+            web.autoresizingMask = [.width, .height]
+            web.frame = contentView.bounds
+            web.pageZoom = tab.zoom
+            contentView.layer?.backgroundColor = nil
+            return
+        }
+        let size = device.size(landscape: tab.deviceLandscape)
+        let width = CGFloat(size.width), height = CGFloat(size.height)
+        let available = contentView.bounds.insetBy(dx: 16, dy: 16)
+        let scale = max(0.25, min(1, available.width / width, available.height / height))
+        let frameSize = NSSize(width: (width * scale).rounded(), height: (height * scale).rounded())
+        web.autoresizingMask = []
+        web.frame = NSRect(x: ((contentView.bounds.width - frameSize.width) / 2).rounded(),
+                           y: ((contentView.bounds.height - frameSize.height) / 2).rounded(),
+                           width: frameSize.width, height: frameSize.height)
+        web.pageZoom = scale * tab.zoom
+        contentView.wantsLayer = true
+        contentView.layer?.backgroundColor = NSColor.underPageBackgroundColor.cgColor
+    }
+
+    @objc private func contentViewResized(_ note: Notification) {
+        guard let tab = activeTab, tab.device != nil else { return }
+        layoutWebView(of: tab)
     }
 
     // MARK: - Actions: zoom & print
@@ -849,7 +986,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     private func setZoom(_ zoom: Double) {
         guard let tab = activeTab else { return }
         tab.zoom = zoom
-        tab.webView?.pageZoom = zoom
+        // Device Mode combines zoom with its fit-to-window scale.
+        if tab.device != nil { layoutWebView(of: tab) } else { tab.webView?.pageZoom = zoom }
         showToast(String(localized: "Zoom \(ZoomLevels.label(zoom))"), duration: 1.5)
     }
 
@@ -980,7 +1118,30 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         case #selector(printPageAction(_:)), #selector(showFindBar(_:)), #selector(reloadAction(_:)),
              #selector(showWebInspectorAction(_:)), #selector(showConsoleAction(_:)),
              #selector(showResourcesAction(_:)), #selector(selectElementAction(_:)),
-             #selector(reloadIgnoringCacheAction(_:)), #selector(toggleJavaScriptAction(_:)):
+             #selector(reloadIgnoringCacheAction(_:)):
+            return web != nil
+        case #selector(toggleSiteJavaScriptAction(_:)):
+            guard let host = activeSiteHost else {
+                item.title = String(localized: "Block JavaScript on This Site")
+                return false
+            }
+            let site = SiteSettings.key(for: host)
+            item.title = services.siteSettings.isJavaScriptBlocked(host: host)
+                ? String(localized: "Allow JavaScript on \(site)") : String(localized: "Block JavaScript on \(site)")
+            return true
+        case #selector(editSiteCodeAction(_:)):
+            return activeSiteHost != nil
+        case #selector(deviceModeAction(_:)):
+            let presets = DevicePreset.all
+            let current = activeTab?.device.flatMap { d in presets.firstIndex(of: d).map { $0 + 1 } } ?? 0
+            item.state = item.tag == current ? .on : .off
+            return web != nil
+        case #selector(rotateDeviceAction(_:)):
+            item.state = activeTab?.deviceLandscape == true ? .on : .off
+            return activeTab?.device != nil
+        case #selector(colorSchemeAction(_:)):
+            let schemes: [NSAppearance.Name?] = [nil, .aqua, .darkAqua]
+            item.state = schemes.indices.contains(item.tag) && schemes[item.tag] == activeTab?.colorScheme ? .on : .off
             return web != nil
         case #selector(viewSourceAction(_:)):
             return ["http", "https"].contains(web?.url?.scheme ?? "")
@@ -1000,18 +1161,29 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
 
     // MARK: - WKNavigationDelegate
 
-    func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
-                 decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
-        if action.shouldPerformDownload { return decisionHandler(.download) }
+    /// The `preferences` variant lets JavaScript be switched per navigation, for per-site blocking.
+    func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction, preferences: WKWebpagePreferences,
+                 decisionHandler: @escaping @MainActor (WKNavigationActionPolicy, WKWebpagePreferences) -> Void) {
+        let policy = navigationPolicy(for: action)
+        // Preferences only take effect for main-frame navigations; iframes follow their page.
+        if policy == .allow, action.targetFrame?.isMainFrame ?? true,
+           let host = action.request.url?.host, !host.isEmpty {
+            preferences.allowsContentJavaScript = !services.siteSettings.isJavaScriptBlocked(host: host)
+        }
+        decisionHandler(policy, preferences)
+    }
 
-        guard let url = action.request.url else { return decisionHandler(.allow) }
+    private func navigationPolicy(for action: WKNavigationAction) -> WKNavigationActionPolicy {
+        if action.shouldPerformDownload { return .download }
+
+        guard let url = action.request.url else { return .allow }
         let scheme = url.scheme?.lowercased() ?? ""
         let isUserClick = action.navigationType == .linkActivated
 
         // ⌘+click: open in a background tab (asleep until opened).
         if isUserClick, action.modifierFlags.contains(.command), ["http", "https"].contains(scheme) {
             newTab(url: url, activate: false)
-            return decisionHandler(.cancel)
+            return .cancel
         }
 
         // mailto:, tel:, zoommtg:, etc. go to the matching app, only when clicked by the user.
@@ -1019,9 +1191,9 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         // Internal extension pages (settings, popups opened in a tab) still load in Askara.
         if !webSchemes.contains(scheme), !services.extensions.isExtensionURL(url) {
             if isUserClick { NSWorkspace.shared.open(url) }
-            return decisionHandler(.cancel)
+            return .cancel
         }
-        decisionHandler(.allow)
+        return .allow
     }
 
     func webView(_ webView: WKWebView, decidePolicyFor response: WKNavigationResponse,
@@ -1051,9 +1223,14 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         // New page: the old page's form input is gone.
         tab.dirtyFrames.removeAll()
         if tab === activeTab { updateToolbar() }
+        // As early as possible so the page doesn't flash without the custom CSS.
+        applySiteCSS(to: webView)
+        applySiteJavaScript(to: webView)
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        // Again once loaded: at commit time the document can still be too empty to take the CSS.
+        applySiteCSS(to: webView)
         if !isPrivate, let url = webView.url { services.recordVisit(url: url, title: webView.title) }
         sessionChanged()
         loadFavicon(for: webView)
