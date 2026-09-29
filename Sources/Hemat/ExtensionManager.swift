@@ -52,7 +52,7 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             self.installed = await Task.detached(priority: .utility) { Self.discover() }.value
             for item in self.installed where self.enabledIDs.contains(item.bundleID) {
                 do { try await self.load(item) } catch {
-                    NSLog("Hemat: failed to load extension \(item.name): \(error)")
+                    Log.error("Hemat: failed to load extension \(item.name): \(error)")
                 }
             }
             self.changed()
@@ -146,13 +146,13 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
                                                object: context, queue: .main) { note in
             MainActor.assumeIsolated {
                 guard let context = note.object as? WKWebExtensionContext else { return }
-                for error in context.errors { NSLog("Hemat extension \(item.name): \(error.localizedDescription)") }
+                for error in context.errors { Log.error("Hemat extension \(item.name): \(error.localizedDescription)") }
             }
         }
-        context.errors.forEach { NSLog("Hemat extension \(item.name): \($0.localizedDescription)") }
+        context.errors.forEach { Log.error("Hemat extension \(item.name): \($0.localizedDescription)") }
         // Load the background page now so the popup doesn't lag on the first click.
         context.loadBackgroundContent { error in
-            if let error { NSLog("Hemat extension \(item.name): background failed: \(error)") }
+            if let error { Log.error("Hemat extension \(item.name): background failed: \(error)") }
         }
         loaded.sort { a, b in
             (installed.firstIndex(of: a.item) ?? 0) < (installed.firstIndex(of: b.item) ?? 0)

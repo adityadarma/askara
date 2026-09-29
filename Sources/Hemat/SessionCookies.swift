@@ -68,7 +68,7 @@ enum SessionCookies {
             try data.write(to: fileURL, options: .atomic)
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
         } catch {
-            NSLog("Hemat: failed to save session cookies: \(error)")
+            Log.error("Hemat: failed to save session cookies: \(error)")
         }
     }
 }

@@ -98,11 +98,11 @@ final class BlockListUpdater {
         guard let domains, domains.count >= Self.minimumDomains else {
             // Don't mark as checked, so it retries next hour.
             let reason = error ?? (status.map { "HTTP \($0)" } ?? String(localized: "no response"))
-            NSLog("Hemat: failed to update blocklist: \(reason)")
+            Log.error("Hemat: failed to update blocklist: \(reason)")
             return String(localized: "Couldn’t update blocklist: \(reason). The previous list is still in use.")
         }
 
-        do { try domainsFile.save(domains) } catch { NSLog("Hemat: failed to save blocklist: \(error)") }
+        do { try domainsFile.save(domains) } catch { Log.error("Hemat: failed to save blocklist: \(error)") }
         metadata = BlockListMetadata(lastChecked: now, lastUpdated: now, etag: etag,
                                      lastModified: lastModified, domainCount: domains.count)
         saveMetadata()
@@ -111,7 +111,7 @@ final class BlockListUpdater {
     }
 
     private func saveMetadata() {
-        do { try metadataFile.save(metadata) } catch { NSLog("Hemat: failed to save blocklist metadata: \(error)") }
+        do { try metadataFile.save(metadata) } catch { Log.error("Hemat: failed to save blocklist metadata: \(error)") }
     }
 
     private func compile(downloaded: [String]) {
@@ -122,7 +122,7 @@ final class BlockListUpdater {
             forIdentifier: Self.ruleListID, encodedContentRuleList: json
         ) { list, error in
             MainActor.assumeIsolated {
-                if let error { NSLog("Hemat: failed to compile blocklist: \(error)") }
+                if let error { Log.error("Hemat: failed to compile blocklist: \(error)") }
                 if let list { self.onCompiled?(list) }
             }
         }

@@ -1209,7 +1209,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         for (index, entry) in services.extensions.loaded.enumerated() {
             let action = entry.context.action(for: activeTab)
             let label = action?.label.isEmpty == false ? action!.label : (entry.context.webExtension.displayName ?? entry.item.name)
-            let button = NSButton()
+            let button = FirstClickButton()
             button.isBordered = false
             button.imagePosition = .imageOnly
             button.imageScaling = .scaleProportionallyDown
@@ -1252,7 +1252,23 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         let loaded = services.extensions.loaded
         guard loaded.indices.contains(sender.tag) else { return }
         // WebKit handles the click: opens the popup (via the presentActionPopup delegate) or sends the onClicked event.
+        // Don't touch action.popupWebView before this: WebKit only presents a popup whose page finishes
+        // loading after performAction, so an early (preloaded) page never gets shown.
         loaded[sender.tag].context.performAction(for: activeTab)
+    }
+
+    private var popoverAppearanceObservation: NSKeyValueObservation?
+
+    /// WebKit forces the popover to light (Aqua) when the popup page declares no `color-scheme`,
+    /// which Bitwarden doesn't, even though its own CSS is dark. That leaves a white arrow under
+    /// the toolbar button. Keep the popover on the window's appearance instead (nil = inherit).
+    private func followWindowAppearance(_ popover: NSPopover) {
+        popover.appearance = nil
+        popoverAppearanceObservation = popover.observe(\.appearance, options: [.new]) { popover, _ in
+            MainActor.assumeIsolated {
+                if popover.appearance != nil { popover.appearance = nil }
+            }
+        }
     }
 
     /// Shows the extension popup below its button. WebKit has already prepared the NSPopover.
@@ -1264,6 +1280,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         showWindow(nil)
         extensionPopover?.close()
         popover.behavior = .transient
+        followWindowAppearance(popover)
         popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .maxY)
         extensionPopover = popover
         return true

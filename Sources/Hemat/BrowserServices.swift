@@ -176,7 +176,7 @@ final class BrowserServices {
     }
 
     private func saveHistory() {
-        do { try historyFile.save(history) } catch { NSLog("Hemat: failed to save history: \(error)") }
+        do { try historyFile.save(history) } catch { Log.error("Hemat: failed to save history: \(error)") }
     }
 
     // MARK: - Bookmarks
@@ -201,7 +201,7 @@ final class BrowserServices {
     private func bookmarksChanged() {
         NotificationCenter.default.post(name: .hematBookmarksChanged, object: nil)
         // Bookmarks change rarely and matter: save immediately.
-        do { try bookmarksFile.save(bookmarks) } catch { NSLog("Hemat: failed to save bookmarks: \(error)") }
+        do { try bookmarksFile.save(bookmarks) } catch { Log.error("Hemat: failed to save bookmarks: \(error)") }
     }
 
     // MARK: - Session
@@ -218,7 +218,7 @@ final class BrowserServices {
 
     private func saveSession(_ state: SessionState) {
         saveTasks["session"]?.cancel()
-        do { try sessionFile.save(state) } catch { NSLog("Hemat: failed to save session: \(error)") }
+        do { try sessionFile.save(state) } catch { Log.error("Hemat: failed to save session: \(error)") }
     }
 
     /// Restores windows from the last session. Tabs are restored asleep.
