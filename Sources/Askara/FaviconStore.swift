@@ -27,7 +27,7 @@ final class FaviconStore {
     /// Hosts whose icon was refreshed since the app launched (once per session is enough).
     private var refreshed: Set<String> = []
     private let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        .appendingPathComponent("Hemat/Favicons", isDirectory: true)
+        .appendingPathComponent("Askara/Favicons", isDirectory: true)
 
     /// No cookies: icon requests carry no login data.
     private nonisolated static let session: URLSession = {

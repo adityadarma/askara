@@ -6,10 +6,10 @@ public struct JSONFile<Value: Codable> {
 
     public init(url: URL) { self.url = url }
 
-    /// App data folder: ~/Library/Application Support/Hemat
+    /// App data folder: ~/Library/Application Support/Askara
     public static func inAppSupport(_ name: String) -> JSONFile {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Hemat", isDirectory: true)
+            .appendingPathComponent("Askara", isDirectory: true)
         return JSONFile(url: base.appendingPathComponent(name))
     }
 

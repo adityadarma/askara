@@ -1,13 +1,13 @@
 import AppKit
 import WebKit
-import HematCore
+import AskaraCore
 
 extension Notification.Name {
-    static let hematHistoryChanged = Notification.Name("HematHistoryChanged")
-    static let hematBookmarksChanged = Notification.Name("HematBookmarksChanged")
-    static let hematDownloadsChanged = Notification.Name("HematDownloadsChanged")
-    static let hematBlockListReady = Notification.Name("HematBlockListReady")
-    static let hematDownloadEvent = Notification.Name("HematDownloadEvent")
+    static let askaraHistoryChanged = Notification.Name("AskaraHistoryChanged")
+    static let askaraBookmarksChanged = Notification.Name("AskaraBookmarksChanged")
+    static let askaraDownloadsChanged = Notification.Name("AskaraDownloadsChanged")
+    static let askaraBlockListReady = Notification.Name("AskaraBlockListReady")
+    static let askaraDownloadEvent = Notification.Name("AskaraDownloadEvent")
 }
 
 struct ClosedTab {
@@ -53,7 +53,7 @@ final class BrowserServices {
             let topLeft = NSPoint(x: last.frame.minX, y: last.frame.maxY)
             window.setFrameTopLeftPoint(window.cascadeTopLeft(from: topLeft))
         } else {
-            controller.window?.setFrameAutosaveName("HematMainWindow")
+            controller.window?.setFrameAutosaveName("AskaraMainWindow")
         }
         windows.append(controller)
         controller.showWindow(nil)
@@ -132,11 +132,9 @@ final class BrowserServices {
             self.ruleList = list
             // Replace the old list in all loaded tabs; new tabs use the new one directly.
             self.windows.forEach { $0.applyRuleList(list) }
-            NotificationCenter.default.post(name: .hematBlockListReady, object: nil)
+            NotificationCenter.default.post(name: .askaraBlockListReady, object: nil)
         }
         blockListUpdater.start()
-        // Old versions used a different identifier; remove it so it doesn't waste disk.
-        WKContentRuleListStore.default().removeContentRuleList(forIdentifier: "hemat-blocklist-v1") { _ in }
     }
 
     // MARK: - History
@@ -171,12 +169,12 @@ final class BrowserServices {
     }
 
     private func historyChanged() {
-        NotificationCenter.default.post(name: .hematHistoryChanged, object: nil)
+        NotificationCenter.default.post(name: .askaraHistoryChanged, object: nil)
         scheduleSave("history") { $0.saveHistory() }
     }
 
     private func saveHistory() {
-        do { try historyFile.save(history) } catch { Log.error("Hemat: failed to save history: \(error)") }
+        do { try historyFile.save(history) } catch { Log.error("Askara: failed to save history: \(error)") }
     }
 
     // MARK: - Bookmarks
@@ -199,9 +197,9 @@ final class BrowserServices {
     }
 
     private func bookmarksChanged() {
-        NotificationCenter.default.post(name: .hematBookmarksChanged, object: nil)
+        NotificationCenter.default.post(name: .askaraBookmarksChanged, object: nil)
         // Bookmarks change rarely and matter: save immediately.
-        do { try bookmarksFile.save(bookmarks) } catch { Log.error("Hemat: failed to save bookmarks: \(error)") }
+        do { try bookmarksFile.save(bookmarks) } catch { Log.error("Askara: failed to save bookmarks: \(error)") }
     }
 
     // MARK: - Session
@@ -218,7 +216,7 @@ final class BrowserServices {
 
     private func saveSession(_ state: SessionState) {
         saveTasks["session"]?.cancel()
-        do { try sessionFile.save(state) } catch { Log.error("Hemat: failed to save session: \(error)") }
+        do { try sessionFile.save(state) } catch { Log.error("Askara: failed to save session: \(error)") }
     }
 
     /// Restores windows from the last session. Tabs are restored asleep.

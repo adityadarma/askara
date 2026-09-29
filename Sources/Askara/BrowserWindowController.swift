@@ -1,6 +1,6 @@
 import AppKit
 import WebKit
-import HematCore
+import AskaraCore
 
 /// A single tab. `webView` is nil while the tab sleeps: only the URL, title, zoom, and
 /// `interactionState` (back/forward history + scroll position) are kept.
@@ -39,7 +39,7 @@ final class Tab: NSObject {
 
     var isPlayingAudio: Bool {
         guard let webView else { return false }
-        return webView.hematIsPlayingAudio || webView.hematIsCapturingMedia
+        return webView.askaraIsPlayingAudio || webView.askaraIsCapturingMedia
     }
 }
 
@@ -83,7 +83,7 @@ private final class WeakScriptHandler: NSObject, WKScriptMessageHandler {
                 guard let body = message.body as? [String: Any], let frame = body["frame"] as? String else { return }
                 target?.formStateChanged(in: message.webView, frame: frame, dirty: (body["dirty"] as? Bool) ?? false)
             case ContextMenuProbe.handlerName:
-                guard let web = message.webView as? HematWebView, let body = message.body as? [String: Any] else { return }
+                guard let web = message.webView as? AskaraWebView, let body = message.body as? [String: Any] else { return }
                 func url(_ key: String) -> URL? {
                     guard let text = body[key] as? String, !text.isEmpty else { return nil }
                     return URL(string: text)
@@ -149,7 +149,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         // the tab strip so the red/yellow/green buttons line up with the tabs.
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
-        window.toolbar = NSToolbar(identifier: "HematTitlebar")
+        window.toolbar = NSToolbar(identifier: "AskaraTitlebar")
         window.toolbarStyle = .unifiedCompact
         window.center()
         if isPrivate { window.appearance = NSAppearance(named: .darkAqua) }
@@ -159,11 +159,11 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
 
         let center = NotificationCenter.default
         center.addObserver(self, selector: #selector(bookmarksChanged),
-                           name: .hematBookmarksChanged, object: nil)
+                           name: .askaraBookmarksChanged, object: nil)
         center.addObserver(self, selector: #selector(downloadEvent(_:)),
-                           name: .hematDownloadEvent, object: nil)
+                           name: .askaraDownloadEvent, object: nil)
         center.addObserver(self, selector: #selector(refreshExtensionButtons),
-                           name: .hematExtensionsChanged, object: nil)
+                           name: .askaraExtensionsChanged, object: nil)
         refreshExtensionButtons()
         extensionController?.didOpenWindow(self)
     }
@@ -237,7 +237,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         findBar.isHidden = true
 
         // Toolbar + find bar in one block, colored the same as the active tab.
-        toolbar.color = isPrivate ? HematColors.privateToolbar : HematColors.toolbar
+        toolbar.color = isPrivate ? AskaraColors.privateToolbar : AskaraColors.toolbar
         let toolbarContent = NSStackView(views: [toolbarStack, findBar])
         toolbarContent.orientation = .vertical
         toolbarContent.spacing = 0
@@ -299,7 +299,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
             addressField.stringValue = tab?.displayURL?.absoluteString ?? ""
         }
         // Title is still set for the Window menu, Mission Control, and VoiceOver, even though hidden.
-        let title = tab?.title ?? "Hemat"
+        let title = tab?.title ?? "Askara"
         window?.title = isPrivate ? String(localized: "\(title) (Private)") : title
         let loading = web?.isLoading == true
         reloadButton.image = NSImage(systemSymbolName: loading ? "xmark" : "arrow.clockwise",
@@ -339,7 +339,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         guard tabs.indices.contains(index) else { return "" }
         // Only this tab's RAM usage.
         guard let web = tabs[index].webView else { return String(localized: "RAM: 0 MB (sleeping)") }
-        guard let pid = web.hematProcessID, let bytes = ProcessMemory.footprint(pid: pid) else {
+        guard let pid = web.askaraProcessID, let bytes = ProcessMemory.footprint(pid: pid) else {
             return String(localized: "RAM: unknown")
         }
         return String(localized: "RAM: \(ProcessMemory.format(bytes))")
@@ -497,7 +497,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     private func wake(_ tab: Tab, loadURL: Bool = true) -> WKWebView {
         let configuration = (isPrivate ? nil : services.extensions.webViewConfiguration(for: tab.url))
             ?? makeConfiguration()
-        let webView = HematWebView(frame: contentView.bounds, configuration: configuration)
+        let webView = AskaraWebView(frame: contentView.bounds, configuration: configuration)
         attach(webView, to: tab)
         guard loadURL else { return webView }
         if let state = tab.interactionState {
@@ -517,7 +517,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         webView.pageZoom = tab.zoom
         // Inspectable from Web Inspector (Develop menu) and from Safari > Develop.
         webView.isInspectable = true
-        (webView as? HematWebView)?.browser = self
+        (webView as? AskaraWebView)?.browser = self
         tab.webView = webView
 
         tab.observations = [
@@ -604,7 +604,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         DevTools.enable(on: config)
         if !Passkey.isAvailable {
             // Without the entitlement, WebKit always rejects passkeys. Detect it so we can explain.
-            config.userContentController.add(WeakScriptHandler(self), name: "hematPasskey")
+            config.userContentController.add(WeakScriptHandler(self), name: "askaraPasskey")
             config.userContentController.addUserScript(WKUserScript(
                 source: Passkey.detectionScript, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         }
@@ -625,7 +625,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     func hibernationSnapshots(seenProcesses: inout Set<pid_t>) -> [TabSnapshot] {
         tabs.enumerated().map { index, tab in
             var bytes: UInt64 = 0
-            if let pid = tab.webView?.hematProcessID, seenProcesses.insert(pid).inserted {
+            if let pid = tab.webView?.askaraProcessID, seenProcesses.insert(pid).inserted {
                 bytes = ProcessMemory.footprint(pid: pid) ?? 0
             }
             return TabSnapshot(id: tab.id, lastActive: tab.lastActive, isLoaded: tab.webView != nil,
@@ -817,7 +817,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     private func openDevTools(_ panel: DevTools.Panel) {
         guard let web = activeTab?.webView else { return }
         if !DevTools.open(panel, for: web) {
-            showToast(String(localized: "Web Inspector isn't available on this macOS version. Use Safari > Develop > Hemat."), duration: 5)
+            showToast(String(localized: "Web Inspector isn't available on this macOS version. Use Safari > Develop > Askara."), duration: 5)
         }
     }
 
@@ -955,8 +955,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         guard passkeyWarnedHosts.insert(host).inserted else { return }
 
         let alert = NSAlert()
-        alert.messageText = String(localized: "Passkeys can't be used in Hemat yet")
-        alert.informativeText = String(localized: "macOS only lets third-party browsers use passkeys and security keys if the app is signed with a special entitlement from Apple (requires an Apple Developer account). This Hemat build doesn't have that entitlement yet, so passkey requests are always rejected by the system.\n\nFor now, sign in to \(host.isEmpty ? String(localized: "this site") : host) through Safari, or use a password.")
+        alert.messageText = String(localized: "Passkeys can't be used in Askara yet")
+        alert.informativeText = String(localized: "macOS only lets third-party browsers use passkeys and security keys if the app is signed with a special entitlement from Apple (requires an Apple Developer account). This Askara build doesn't have that entitlement yet, so passkey requests are always rejected by the system.\n\nFor now, sign in to \(host.isEmpty ? String(localized: "this site") : host) through Safari, or use a password.")
         alert.addButton(withTitle: String(localized: "Open in Safari"))
         alert.addButton(withTitle: String(localized: "Close"))
         alert.beginSheetModal(for: window) { [weak self] response in
@@ -1016,7 +1016,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
 
         // mailto:, tel:, zoommtg:, etc. go to the matching app, only when clicked by the user.
         let webSchemes: Set<String> = ["http", "https", "about", "file", "blob", "data", "javascript"]
-        // Internal extension pages (settings, popups opened in a tab) still load in Hemat.
+        // Internal extension pages (settings, popups opened in a tab) still load in Askara.
         if !webSchemes.contains(scheme), !services.extensions.isExtensionURL(url) {
             if isUserClick { NSWorkspace.shared.open(url) }
             return decisionHandler(.cancel)
@@ -1106,7 +1106,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     /// WebKit's `configuration` keeps `window.opener`, so OAuth/payment logins still work.
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
                  for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-        let popup = HematWebView(frame: contentView.bounds, configuration: configuration)
+        let popup = AskaraWebView(frame: contentView.bounds, configuration: configuration)
         insertTab(url: navigationAction.request.url, at: activeIndex + 1, activate: true, webView: popup)
         return popup
     }

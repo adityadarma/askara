@@ -3,14 +3,14 @@ import WebKit
 
 /// WebKit discards session cookies (cookies without an expiry date) every time the app quits.
 /// Many sites keep logins in this kind of cookie (e.g. corporate SSO), so logins are lost after
-/// the browser is reopened. Like Chrome with "continue where you left off", Hemat saves them on quit
+/// the browser is reopened. Like Chrome with "continue where you left off", Askara saves them on quit
 /// and restores them before tabs are restored.
 ///
 /// The file is readable only by this user account (0600 permissions), like WebKit's own cookie file.
 @MainActor
 enum SessionCookies {
     private static let fileURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        .appendingPathComponent("Hemat/session-cookies.plist")
+        .appendingPathComponent("Askara/session-cookies.plist")
 
     private static var store: WKHTTPCookieStore { WKWebsiteDataStore.default().httpCookieStore }
 
@@ -68,7 +68,7 @@ enum SessionCookies {
             try data.write(to: fileURL, options: .atomic)
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
         } catch {
-            Log.error("Hemat: failed to save session cookies: \(error)")
+            Log.error("Askara: failed to save session cookies: \(error)")
         }
     }
 }

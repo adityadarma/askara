@@ -1,5 +1,5 @@
 import AppKit
-import HematCore
+import AskaraCore
 
 /// Table that forwards Delete/Backspace to the `delete(_:)` action, and Enter to open.
 final class DeletableTableView: NSTableView {
@@ -55,13 +55,13 @@ final class LibraryWindowController: NSWindowController, NSTableViewDataSource, 
                               styleMask: [.titled, .closable, .miniaturizable, .resizable],
                               backing: .buffered, defer: true)
         window.isReleasedWhenClosed = false
-        window.setFrameAutosaveName("HematLibrary")
+        window.setFrameAutosaveName("AskaraLibrary")
         window.minSize = NSSize(width: 480, height: 300)
         super.init(window: window)
         buildUI()
 
         let center = NotificationCenter.default
-        for name in [Notification.Name.hematHistoryChanged, .hematBookmarksChanged, .hematDownloadsChanged] {
+        for name in [Notification.Name.askaraHistoryChanged, .askaraBookmarksChanged, .askaraDownloadsChanged] {
             center.addObserver(self, selector: #selector(dataChanged(_:)), name: name, object: nil)
         }
     }
@@ -158,7 +158,7 @@ final class LibraryWindowController: NSWindowController, NSTableViewDataSource, 
     // MARK: - Data
 
     @objc private func dataChanged(_ note: Notification) {
-        let relevant: Notification.Name = [.hematHistoryChanged, .hematBookmarksChanged, .hematDownloadsChanged][mode.rawValue]
+        let relevant: Notification.Name = [.askaraHistoryChanged, .askaraBookmarksChanged, .askaraDownloadsChanged][mode.rawValue]
         // No need to refresh a table that isn't visible.
         guard note.name == relevant, window?.isVisible == true else { return }
         reload()

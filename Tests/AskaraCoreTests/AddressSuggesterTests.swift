@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import HematCore
+@testable import AskaraCore
 
 @Suite struct AddressSuggesterTests {
     let now = Date(timeIntervalSince1970: 1_000_000)

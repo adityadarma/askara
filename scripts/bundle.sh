@@ -1,15 +1,15 @@
 #!/bin/zsh
-# Builds Hemat.app (release) in the build/ folder.
+# Builds Askara.app (release) in the build/ folder.
 set -euo pipefail
 cd "${0:A:h}/.."
 
 swift build -c release
-BIN="$(swift build -c release --show-bin-path)/Hemat"
-APP="build/Hemat.app"
+BIN="$(swift build -c release --show-bin-path)/Askara"
+APP="build/Askara.app"
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "$BIN" "$APP/Contents/MacOS/Hemat"
+cp "$BIN" "$APP/Contents/MacOS/Askara"
 # UI translations. English is the source language; macOS picks the lproj matching the user's language.
 cp -R Localization/*.lproj "$APP/Contents/Resources/"
 
@@ -18,10 +18,10 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleName</key><string>Hemat</string>
-    <key>CFBundleDisplayName</key><string>Hemat</string>
-    <key>CFBundleIdentifier</key><string>local.hemat.browser</string>
-    <key>CFBundleExecutable</key><string>Hemat</string>
+    <key>CFBundleName</key><string>Askara</string>
+    <key>CFBundleDisplayName</key><string>Askara</string>
+    <key>CFBundleIdentifier</key><string>local.askara.browser</string>
+    <key>CFBundleExecutable</key><string>Askara</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>0.1.0</string>
     <key>CFBundleVersion</key><string>1</string>
@@ -46,12 +46,12 @@ PLIST
 # Passkeys need the com.apple.developer.web-browser.public-key-credential entitlement.
 # Apple must approve it, and it is only valid with a Developer ID/Apple Development certificate
 # plus a provisioning profile that includes it. Set these two variables to enable it:
-#   HEMAT_SIGN_IDENTITY="Developer ID Application: Name (TEAMID)"
-#   HEMAT_PROFILE=/path/to/Hemat.provisionprofile
+#   ASKARA_SIGN_IDENTITY="Developer ID Application: Name (TEAMID)"
+#   ASKARA_PROFILE=/path/to/Askara.provisionprofile
 # Without both, ad-hoc signing is used (passkeys unavailable).
-if [[ -n "${HEMAT_SIGN_IDENTITY:-}" && -n "${HEMAT_PROFILE:-}" ]]; then
-    cp "$HEMAT_PROFILE" "$APP/Contents/embedded.provisionprofile"
-    ENT="$(mktemp -t hemat-entitlements).plist"
+if [[ -n "${ASKARA_SIGN_IDENTITY:-}" && -n "${ASKARA_PROFILE:-}" ]]; then
+    cp "$ASKARA_PROFILE" "$APP/Contents/embedded.provisionprofile"
+    ENT="$(mktemp -t askara-entitlements).plist"
     cat > "$ENT" <<'ENTPLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -61,7 +61,7 @@ if [[ -n "${HEMAT_SIGN_IDENTITY:-}" && -n "${HEMAT_PROFILE:-}" ]]; then
 </dict>
 </plist>
 ENTPLIST
-    codesign --force --options runtime --entitlements "$ENT" --sign "$HEMAT_SIGN_IDENTITY" "$APP"
+    codesign --force --options runtime --entitlements "$ENT" --sign "$ASKARA_SIGN_IDENTITY" "$APP"
     rm -f "$ENT"
     echo "Signed with passkey entitlement."
 else

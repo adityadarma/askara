@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import HematCore
+@testable import AskaraCore
 
 @Suite struct HistoryStoreTests {
     let a = URL(string: "https://a.com/")!

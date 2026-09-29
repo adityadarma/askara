@@ -23,7 +23,7 @@ enum ProcessMemory {
 
 extension WKWebView {
     /// PID of this tab's WebContent process. Uses a private WebKit property, checked for availability first.
-    var hematProcessID: pid_t? {
+    var askaraProcessID: pid_t? {
         guard responds(to: Selector(("_webProcessIdentifier"))),
               let pid = (value(forKey: "_webProcessIdentifier") as? NSNumber)?.int32Value, pid > 0
         else { return nil }
@@ -31,13 +31,13 @@ extension WKWebView {
     }
 
     /// Whether the page is playing sound (private WebKit property, checked first).
-    var hematIsPlayingAudio: Bool {
+    var askaraIsPlayingAudio: Bool {
         guard responds(to: Selector(("_isPlayingAudio"))) else { return false }
         return (value(forKey: "_isPlayingAudio") as? Bool) ?? false
     }
 
     /// Camera/microphone active (e.g. Google Meet): don't put to sleep.
-    var hematIsCapturingMedia: Bool {
+    var askaraIsCapturingMedia: Bool {
         cameraCaptureState != .none || microphoneCaptureState != .none
     }
 }
@@ -56,13 +56,13 @@ enum UserAgent {
 }
 
 /// Detects unsubmitted form input, so that tab isn't put to sleep and the input isn't lost.
-/// The script only reports true/false; Hemat never reads form contents.
+/// The script only reports true/false; Askara never reads form contents.
 enum FormGuard {
-    static let handlerName = "hematForm"
+    static let handlerName = "askaraForm"
 
     static let script = """
     (() => {
-      const handler = window.webkit && window.webkit.messageHandlers.hematForm;
+      const handler = window.webkit && window.webkit.messageHandlers.askaraForm;
       if (!handler) return;
       // Random ID per frame, so a clean iframe doesn't clear the state of another iframe with input.
       const frame = Math.random().toString(36).slice(2);
@@ -123,7 +123,7 @@ enum Passkey {
     static let detectionScript = """
     (() => {
       const c = navigator.credentials;
-      if (!c || !window.webkit || !window.webkit.messageHandlers.hematPasskey) return;
+      if (!c || !window.webkit || !window.webkit.messageHandlers.askaraPasskey) return;
       for (const name of ['get', 'create']) {
         const original = c[name] && c[name].bind(c);
         if (!original) continue;
@@ -132,7 +132,7 @@ enum Passkey {
           if (options && options.publicKey) {
             promise.catch((e) => {
               if (e && e.name === 'NotAllowedError') {
-                window.webkit.messageHandlers.hematPasskey.postMessage(name);
+                window.webkit.messageHandlers.askaraPasskey.postMessage(name);
               }
             });
           }

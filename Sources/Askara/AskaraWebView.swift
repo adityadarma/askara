@@ -11,11 +11,11 @@ struct ContextTarget {
 /// Sends the link/image/selected text under the cursor on right-click. The `contextmenu` event fires
 /// in the page process before WebKit requests the menu, so the data arrives before `willOpenMenu`.
 enum ContextMenuProbe {
-    static let handlerName = "hematContext"
+    static let handlerName = "askaraContext"
 
     static let script = """
     document.addEventListener('contextmenu', (e) => {
-      const handler = window.webkit && window.webkit.messageHandlers.hematContext;
+      const handler = window.webkit && window.webkit.messageHandlers.askaraContext;
       if (!handler) return;
       const el = e.target instanceof Element ? e.target : (e.target && e.target.parentElement);
       const link = el && el.closest('a[href]');
@@ -31,7 +31,7 @@ enum ContextMenuProbe {
 
 /// WKWebView with a fuller right-click menu (new tab, background tab, private window,
 /// search text, copy address, bookmark, etc.).
-final class HematWebView: WKWebView {
+final class AskaraWebView: WKWebView {
     weak var browser: BrowserWindowController?
     var contextTarget = ContextTarget()
 
@@ -61,7 +61,7 @@ final class HematWebView: WKWebView {
         ]
         for (id, title) in renames { if let index = find(id) { menu.items[index].title = title } }
 
-        // WebKit's built-in search uses the system service (opens Safari). Replaced with search in Hemat.
+        // WebKit's built-in search uses the system service (opens Safari). Replaced with search in Askara.
         if let index = find("WKMenuItemIdentifierSearchWeb") { menu.removeItem(at: index) }
 
         if let link = target.link {

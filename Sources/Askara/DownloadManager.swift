@@ -1,6 +1,6 @@
 import AppKit
 import WebKit
-import HematCore
+import AskaraCore
 
 /// Manages WebKit downloads. Files are saved to ~/Downloads with unique names.
 @MainActor
@@ -67,7 +67,7 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
 
     /// Short message shown as a toast in the active window.
     private func announce(_ text: String) {
-        NotificationCenter.default.post(name: .hematDownloadEvent, object: nil, userInfo: ["text": text])
+        NotificationCenter.default.post(name: .askaraDownloadEvent, object: nil, userInfo: ["text": text])
     }
 
     func cancel(_ item: Item) {
@@ -88,7 +88,7 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
     }
 
     private func changed() {
-        NotificationCenter.default.post(name: .hematDownloadsChanged, object: nil)
+        NotificationCenter.default.post(name: .askaraDownloadsChanged, object: nil)
     }
 
     // MARK: - WKDownloadDelegate

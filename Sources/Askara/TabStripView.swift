@@ -1,6 +1,6 @@
 import AppKit
 
-enum HematColors {
+enum AskaraColors {
     private static func dynamic(dark: NSColor, light: NSColor) -> NSColor {
         NSColor(name: nil) { appearance in
             appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
@@ -18,7 +18,7 @@ enum HematColors {
 
 /// Solid-color view with a thin bottom border.
 final class FillView: NSView {
-    var color: NSColor = HematColors.toolbar { didSet { needsDisplay = true } }
+    var color: NSColor = AskaraColors.toolbar { didSet { needsDisplay = true } }
     var drawsBottomBorder = true
 
     override func draw(_ dirtyRect: NSRect) {
@@ -215,11 +215,11 @@ final class TabStripView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        (isPrivate ? HematColors.privateStrip : HematColors.strip).setFill()
+        (isPrivate ? AskaraColors.privateStrip : AskaraColors.strip).setFill()
         bounds.fill()
     }
 
-    var activeTabColor: NSColor { isPrivate ? HematColors.privateToolbar : HematColors.toolbar }
+    var activeTabColor: NSColor { isPrivate ? AskaraColors.privateToolbar : AskaraColors.toolbar }
 
     // Empty tab strip area acts like a titlebar: drag to move, double-click to zoom.
     override func mouseDown(with event: NSEvent) {
@@ -355,7 +355,7 @@ final class TabItemView: NSView, NSViewToolTipOwner {
             path.close()
             path.fill()
         } else if isHovered {
-            HematColors.hover.setFill()
+            AskaraColors.hover.setFill()
             NSBezierPath(roundedRect: bounds.insetBy(dx: 2, dy: 4), xRadius: 8, yRadius: 8).fill()
         } else {
             NSColor.separatorColor.setFill()

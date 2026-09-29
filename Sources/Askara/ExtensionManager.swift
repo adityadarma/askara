@@ -2,7 +2,7 @@ import AppKit
 import WebKit
 
 extension Notification.Name {
-    static let hematExtensionsChanged = Notification.Name("HematExtensionsChanged")
+    static let askaraExtensionsChanged = Notification.Name("AskaraExtensionsChanged")
 }
 
 /// A Safari extension (Web Extension) found inside an installed app.
@@ -19,8 +19,8 @@ struct InstalledExtension: Equatable {
 @MainActor
 final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     private enum Keys {
-        static let enabled = "HematEnabledExtensions"
-        static let identifiers = "HematExtensionIdentifiers"
+        static let enabled = "AskaraEnabledExtensions"
+        static let identifiers = "AskaraExtensionIdentifiers"
     }
 
     let controller: WKWebExtensionController
@@ -52,7 +52,7 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             self.installed = await Task.detached(priority: .utility) { Self.discover() }.value
             for item in self.installed where self.enabledIDs.contains(item.bundleID) {
                 do { try await self.load(item) } catch {
-                    Log.error("Hemat: failed to load extension \(item.name): \(error)")
+                    Log.error("Askara: failed to load extension \(item.name): \(error)")
                 }
             }
             self.changed()
@@ -137,7 +137,7 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         }
         // Extensions don't access private windows.
         context.hasAccessToPrivateData = false
-        // Inspectable via Safari > Develop > Hemat, to debug a stuck extension.
+        // Inspectable via Safari > Develop > Askara, to debug a stuck extension.
         context.isInspectable = true
         try controller.load(context)
         loaded.append((item, context))
@@ -146,13 +146,13 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
                                                object: context, queue: .main) { note in
             MainActor.assumeIsolated {
                 guard let context = note.object as? WKWebExtensionContext else { return }
-                for error in context.errors { Log.error("Hemat extension \(item.name): \(error.localizedDescription)") }
+                for error in context.errors { Log.error("Askara extension \(item.name): \(error.localizedDescription)") }
             }
         }
-        context.errors.forEach { Log.error("Hemat extension \(item.name): \($0.localizedDescription)") }
+        context.errors.forEach { Log.error("Askara extension \(item.name): \($0.localizedDescription)") }
         // Load the background page now so the popup doesn't lag on the first click.
         context.loadBackgroundContent { error in
-            if let error { Log.error("Hemat extension \(item.name): background failed: \(error)") }
+            if let error { Log.error("Askara extension \(item.name): background failed: \(error)") }
         }
         loaded.sort { a, b in
             (installed.firstIndex(of: a.item) ?? 0) < (installed.firstIndex(of: b.item) ?? 0)
@@ -173,7 +173,7 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     }
 
     private func changed() {
-        NotificationCenter.default.post(name: .hematExtensionsChanged, object: nil)
+        NotificationCenter.default.post(name: .askaraExtensionsChanged, object: nil)
     }
 
     /// Extension internal page URLs (popup, settings) must not be blocked by the navigation policy.
@@ -201,7 +201,7 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             "contextMenus": String(localized: "Add items to the right-click menu"),
             "menus": String(localized: "Add items to the right-click menu"),
             "alarms": String(localized: "Run scheduled tasks"),
-            "nativeMessaging": String(localized: "Communicate with its app (not supported by Hemat)"),
+            "nativeMessaging": String(localized: "Communicate with its app (not supported by Askara)"),
             "cookies": String(localized: "Read and change cookies"),
             "scripting": String(localized: "Run scripts on pages"),
             "notifications": String(localized: "Show notifications"),
@@ -327,7 +327,7 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         completionHandler(nil)
     }
 
-    /// Native messaging. In Safari, the extension's companion app answers these messages. Hemat answers
+    /// Native messaging. In Safari, the extension's companion app answers these messages. Askara answers
     /// Bitwarden commands that are safe to emulate itself; the rest (e.g. Touch ID) get an error.
     func webExtensionController(_ controller: WKWebExtensionController, sendMessage message: Any,
                                 toApplicationWithIdentifier applicationIdentifier: String?,

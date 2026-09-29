@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import HematCore
+@testable import AskaraCore
 
 @Suite struct AddressParserTests {
     @Test func fullURLUnchanged() {
@@ -17,11 +17,11 @@ import Testing
     }
 
     @Test func textBecomesSearch() throws {
-        let url = try #require(AddressParser.url(from: "browser hemat ram & cepat"))
+        let url = try #require(AddressParser.url(from: "lightweight browser low ram & fast"))
         #expect(url.host == "www.google.com")
         #expect(url.path == "/search")
         let q = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first?.value
-        #expect(q == "browser hemat ram & cepat")
+        #expect(q == "lightweight browser low ram & fast")
     }
 
     @Test func singleWordBecomesSearch() {

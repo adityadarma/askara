@@ -1,6 +1,6 @@
 import AppKit
 import WebKit
-import HematCore
+import AskaraCore
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
@@ -52,7 +52,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return true
     }
 
-    /// Opens links/files from other apps (when Hemat is the default browser).
+    /// Opens links/files from other apps (when Askara is the default browser).
     func application(_ application: NSApplication, open urls: [URL]) {
         urls.forEach { services.open($0, newTab: true) }
     }
@@ -360,17 +360,17 @@ enum MainMenu {
         let blockStatus = NSMenuItem(title: String(localized: "Ad Blocker"), action: nil, keyEquivalent: "")
         blockStatus.isEnabled = false
         blockStatus.tag = blockStatusTag
-        let appMenu = submenu("Hemat", [
-            item(String(localized: "About Hemat"), #selector(NSApplication.orderFrontStandardAboutPanel(_:))),
+        let appMenu = submenu("Askara", [
+            item(String(localized: "About Askara"), #selector(NSApplication.orderFrontStandardAboutPanel(_:))),
             .separator(),
             blockStatus,
             item(String(localized: "Update Ad Block List"), #selector(A.updateBlockListAction(_:))),
             .separator(),
-            item(String(localized: "Hide Hemat"), #selector(NSApplication.hide(_:)), "h"),
+            item(String(localized: "Hide Askara"), #selector(NSApplication.hide(_:)), "h"),
             item(String(localized: "Hide Others"), #selector(NSApplication.hideOtherApplications(_:)), "h", [.command, .option]),
             item(String(localized: "Show All"), #selector(NSApplication.unhideAllApplications(_:))),
             .separator(),
-            item(String(localized: "Quit Hemat"), #selector(NSApplication.terminate(_:)), "q"),
+            item(String(localized: "Quit Askara"), #selector(NSApplication.terminate(_:)), "q"),
         ])
         appMenu.identifier = appMenuID
         appMenu.delegate = delegate

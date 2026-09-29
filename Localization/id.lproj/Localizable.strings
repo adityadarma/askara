@@ -8,7 +8,7 @@
 "%lld tabs put to sleep" = "%lld tab ditidurkan";
 ", loading" = ", memuat";
 ", sleeping" = ", tidur";
-"About Hemat" = "Tentang Hemat";
+"About Askara" = "Tentang Askara";
 "Access the current tab when you use it" = "Mengakses tab yang sedang dibuka saat Anda memakainya";
 "Access to websites: %@" = "Akses ke situs: %@";
 "Actual Size" = "Ukuran Sebenarnya";
@@ -51,7 +51,7 @@
 "Close tab" = "Tutup tab";
 "Close tab %@" = "Tutup tab %@";
 "Close tab (⌘W)" = "Tutup tab (⌘W)";
-"Communicate with its app (not supported by Hemat)" = "Berkomunikasi dengan aplikasinya (tidak didukung Hemat)";
+"Communicate with its app (not supported by Askara)" = "Berkomunikasi dengan aplikasinya (tidak didukung Askara)";
 "Copy" = "Salin";
 "Copy Address" = "Salin Alamat";
 "Copy Page Address" = "Salin Alamat Halaman";
@@ -90,7 +90,7 @@
 "Finished" = "Selesai";
 "Forward" = "Maju";
 "Forward (⌘])" = "Maju (⌘])";
-"Hide Hemat" = "Sembunyikan Hemat";
+"Hide Askara" = "Sembunyikan Askara";
 "Hide Others" = "Sembunyikan Lainnya";
 "History" = "Riwayat";
 "History, cookies, cache, and website data will be removed. You will be signed out of all websites. Bookmarks and downloaded files are not removed. This can’t be undone." = "Riwayat, cookie, cache, dan data situs akan dihapus. Anda akan keluar dari semua situs. Bookmark dan file unduhan tidak ikut dihapus. Tindakan ini tidak bisa dibatalkan.";
@@ -132,13 +132,13 @@
 "Open in Safari" = "Buka di Safari";
 "Opened in background tab (sleeping until clicked)" = "Dibuka di tab latar belakang (tidur sampai diklik)";
 "Page source" = "Sumber halaman";
-"Passkeys can't be used in Hemat yet" = "Passkey belum bisa dipakai di Hemat";
+"Passkeys can't be used in Askara yet" = "Passkey belum bisa dipakai di Askara";
 "Paste" = "Tempel";
 "Previous match (⇧⌘G)" = "Hasil sebelumnya (⇧⌘G)";
 "Print…" = "Cetak…";
 "Private" = "Pribadi";
 "Private: search or enter address" = "Pribadi: cari atau ketik alamat";
-"Quit Hemat" = "Keluar dari Hemat";
+"Quit Askara" = "Keluar dari Askara";
 "RAM: %@" = "RAM: %@";
 "RAM: 0 MB (sleeping)" = "RAM: 0 MB (tidur)";
 "RAM: unknown" = "RAM: tidak diketahui";
@@ -199,14 +199,14 @@
 "Updating ad block list…" = "Memperbarui daftar blokir iklan…";
 "View" = "Tampilan";
 "Waiting…" = "Menunggu…";
-"Web Inspector isn't available on this macOS version. Use Safari > Develop > Hemat." = "Web Inspector tidak tersedia di versi macOS ini. Pakai Safari > Develop > Hemat.";
+"Web Inspector isn't available on this macOS version. Use Safari > Develop > Askara." = "Web Inspector tidak tersedia di versi macOS ini. Pakai Safari > Develop > Askara.";
 "Window" = "Jendela";
 "Write to the clipboard" = "Menulis ke clipboard";
 "Zoom" = "Zoom";
 "Zoom %@" = "Zoom %@";
 "Zoom In" = "Perbesar";
 "Zoom Out" = "Perkecil";
-"macOS only lets third-party browsers use passkeys and security keys if the app is signed with a special entitlement from Apple (requires an Apple Developer account). This Hemat build doesn't have that entitlement yet, so passkey requests are always rejected by the system.\n\nFor now, sign in to %@ through Safari, or use a password." = "macOS hanya mengizinkan browser pihak ketiga memakai passkey dan security key bila aplikasinya ditandatangani dengan izin khusus dari Apple (butuh akun Apple Developer). Build Hemat ini belum punya izin tersebut, jadi permintaan passkey selalu ditolak oleh sistem.\n\nUntuk sementara, masuk ke %@ lewat Safari, atau pakai kata sandi.";
+"macOS only lets third-party browsers use passkeys and security keys if the app is signed with a special entitlement from Apple (requires an Apple Developer account). This Askara build doesn't have that entitlement yet, so passkey requests are always rejected by the system.\n\nFor now, sign in to %@ through Safari, or use a password." = "macOS hanya mengizinkan browser pihak ketiga memakai passkey dan security key bila aplikasinya ditandatangani dengan izin khusus dari Apple (butuh akun Apple Developer). Build Askara ini belum punya izin tersebut, jadi permintaan passkey selalu ditolak oleh sistem.\n\nUntuk sementara, masuk ke %@ lewat Safari, atau pakai kata sandi.";
 "no response" = "tidak ada respons";
 "this site" = "situs ini";
 

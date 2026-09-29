@@ -1,5 +1,5 @@
 import AppKit
-import HematCore
+import AskaraCore
 
 /// Borderless panel that never becomes key, so the keyboard stays in the address bar.
 private final class SuggestionPanel: NSPanel {

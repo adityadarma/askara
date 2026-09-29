@@ -5,20 +5,20 @@
             "request": "launch",
             "args": [],
             "cwd": "${workspaceFolder:browser-individual}",
-            "name": "Debug Hemat",
-            "target": "Hemat",
+            "name": "Debug Askara",
+            "target": "Askara",
             "configuration": "debug",
-            "preLaunchTask": "swift: Build Debug Hemat"
+            "preLaunchTask": "swift: Build Debug Askara"
         },
         {
             "type": "swift",
             "request": "launch",
             "args": [],
             "cwd": "${workspaceFolder:browser-individual}",
-            "name": "Release Hemat",
-            "target": "Hemat",
+            "name": "Release Askara",
+            "target": "Askara",
             "configuration": "release",
-            "preLaunchTask": "swift: Build Release Hemat"
+            "preLaunchTask": "swift: Build Release Askara"
         }
     ]
 }
