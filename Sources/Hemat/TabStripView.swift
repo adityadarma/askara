@@ -1,0 +1,450 @@
+import AppKit
+
+enum HematColors {
+    private static func dynamic(dark: NSColor, light: NSColor) -> NSColor {
+        NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
+        }
+    }
+
+    /// Tab strip background (darker), like Chrome.
+    static let strip = dynamic(dark: NSColor(white: 0.10, alpha: 1), light: NSColor(white: 0.86, alpha: 1))
+    static let privateStrip = NSColor(srgbRed: 0.15, green: 0.11, blue: 0.24, alpha: 1)
+    /// Active tab and toolbar share one color so they blend.
+    static let toolbar = dynamic(dark: NSColor(white: 0.20, alpha: 1), light: NSColor(white: 0.98, alpha: 1))
+    static let privateToolbar = NSColor(srgbRed: 0.23, green: 0.18, blue: 0.33, alpha: 1)
+    static let hover = dynamic(dark: NSColor(white: 1, alpha: 0.08), light: NSColor(white: 0, alpha: 0.06))
+}
+
+/// Solid-color view with a thin bottom border.
+final class FillView: NSView {
+    var color: NSColor = HematColors.toolbar { didSet { needsDisplay = true } }
+    var drawsBottomBorder = true
+
+    override func draw(_ dirtyRect: NSRect) {
+        color.setFill()
+        bounds.fill()
+        if drawsBottomBorder {
+            NSColor.separatorColor.setFill()
+            NSRect(x: 0, y: 0, width: bounds.width, height: 1).fill()
+        }
+    }
+}
+
+@MainActor
+protocol TabStripDelegate: AnyObject {
+    func tabStrip(_ strip: TabStripView, didSelect index: Int)
+    func tabStrip(_ strip: TabStripView, didClose index: Int)
+    func tabStripNewTab(_ strip: TabStripView)
+    /// Called when the cursor rests on a tab; computed on demand to avoid polling.
+    func tabStrip(_ strip: TabStripView, tooltipFor index: Int) -> String
+}
+
+struct TabStripItem: Equatable {
+    var title: String
+    var isSleeping: Bool
+    var isPlayingAudio: Bool
+    var isLoading = false
+    var favicon: NSImage? = nil
+}
+
+/// Thin progress line under the toolbar (like Safari). Advances with `estimatedProgress`,
+/// then fills and fades out when the page finishes loading.
+final class LoadingBar: NSView {
+    private let fill = CALayer()
+    private var fraction: Double = 0
+    private var hideWork: DispatchWorkItem?
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.addSublayer(fill)
+        isHidden = true
+        setAccessibilityElement(true)
+        setAccessibilityRole(.progressIndicator)
+        setAccessibilityLabel(String(localized: "Loading page"))
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    /// `animated: false` is used when switching tabs so the bar shows the new tab's state immediately.
+    func update(loading: Bool, progress: Double, animated: Bool = true) {
+        if loading {
+            hideWork?.cancel()
+            hideWork = nil
+            if isHidden {
+                isHidden = false
+                alphaValue = 1
+                setFraction(0, animated: false)
+            }
+            // Start at 10% so the bar is visible as soon as navigation begins.
+            setFraction(max(0.1, progress), animated: animated)
+        } else if !isHidden, hideWork == nil {
+            guard animated else { isHidden = true; return }
+            setFraction(1, animated: true)
+            let work = DispatchWorkItem { [weak self] in
+                NSAnimationContext.runAnimationGroup({ context in
+                    context.duration = 0.25
+                    self?.animator().alphaValue = 0
+                }, completionHandler: {
+                    MainActor.assumeIsolated {
+                        guard let self, self.hideWork != nil else { return }
+                        self.isHidden = true
+                        self.hideWork = nil
+                    }
+                })
+            }
+            hideWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: work)
+        }
+    }
+
+    private func setFraction(_ value: Double, animated: Bool) {
+        // Progress never goes backward within one navigation (except reset to 0).
+        fraction = value == 0 ? 0 : max(fraction, value)
+        setAccessibilityValue(Int(fraction * 100))
+        CATransaction.begin()
+        CATransaction.setDisableActions(!animated)
+        CATransaction.setAnimationDuration(0.2)
+        fill.frame = CGRect(x: 0, y: 0, width: bounds.width * fraction, height: bounds.height)
+        CATransaction.commit()
+    }
+
+    override func layout() {
+        super.layout()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        fill.frame = CGRect(x: 0, y: 0, width: bounds.width * fraction, height: bounds.height)
+        fill.backgroundColor = NSColor.controlAccentColor.cgColor
+        CATransaction.commit()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsLayout = true
+    }
+
+    // Clicks pass through to the view underneath.
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+/// Tab strip in the titlebar area, next to the window buttons (red/yellow/green).
+final class TabStripView: NSView {
+    static let height: CGFloat = 40
+    private static let topGap: CGFloat = 6
+
+    weak var delegate: TabStripDelegate?
+    var isPrivate = false {
+        didSet {
+            privateBadge.isHidden = !isPrivate
+            needsDisplay = true
+            needsLayout = true
+        }
+    }
+
+    private var itemViews: [TabItemView] = []
+    private let newTabButton = NSButton()
+    private let privateBadge = NSTextField(labelWithString: String(localized: "Private"))
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        newTabButton.image = NSImage(systemSymbolName: "plus", accessibilityDescription: String(localized: "New tab"))
+        newTabButton.isBordered = false
+        newTabButton.target = self
+        newTabButton.action = #selector(newTabClicked(_:))
+        newTabButton.toolTip = String(localized: "New tab (⌘T)")
+        newTabButton.setAccessibilityLabel(String(localized: "New tab"))
+        addSubview(newTabButton)
+
+        privateBadge.font = .boldSystemFont(ofSize: NSFont.smallSystemFontSize)
+        privateBadge.textColor = .systemPurple
+        privateBadge.isHidden = true
+        addSubview(privateBadge)
+
+        setAccessibilityRole(.tabGroup)
+        setAccessibilityLabel(String(localized: "Tabs"))
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    func update(items: [TabStripItem], activeIndex: Int) {
+        while itemViews.count > items.count { itemViews.removeLast().removeFromSuperview() }
+        while itemViews.count < items.count {
+            let view = TabItemView(strip: self)
+            addSubview(view, positioned: .below, relativeTo: newTabButton)
+            itemViews.append(view)
+        }
+        for (index, item) in items.enumerated() {
+            itemViews[index].configure(index: index, item: item, isActive: index == activeIndex)
+        }
+        needsLayout = true
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        NotificationCenter.default.removeObserver(self)
+        guard let window else { return }
+        // Window buttons disappear in full screen, so tabs can start at the left edge.
+        for name in [NSWindow.didEnterFullScreenNotification, NSWindow.didExitFullScreenNotification] {
+            NotificationCenter.default.addObserver(self, selector: #selector(relayout), name: name, object: window)
+        }
+    }
+
+    @objc private func relayout() { needsLayout = true }
+
+    override func layout() {
+        super.layout()
+        let fullScreen = window?.styleMask.contains(.fullScreen) ?? false
+        let leading: CGFloat = fullScreen ? 8 : 78
+        let badgeWidth: CGFloat = isPrivate ? privateBadge.intrinsicContentSize.width + 12 : 0
+        let buttonSize: CGFloat = 28
+        let available = bounds.width - leading - badgeWidth - buttonSize - 16
+        let width = floor(min(240, available / CGFloat(max(itemViews.count, 1))))
+        let tabHeight = bounds.height - Self.topGap
+
+        for (index, view) in itemViews.enumerated() {
+            view.frame = NSRect(x: leading + CGFloat(index) * width, y: 0, width: width, height: tabHeight)
+        }
+        newTabButton.frame = NSRect(x: leading + CGFloat(itemViews.count) * width + 6,
+                                    y: (tabHeight - buttonSize) / 2, width: buttonSize, height: buttonSize)
+        let badgeSize = privateBadge.intrinsicContentSize
+        privateBadge.frame = NSRect(x: bounds.width - badgeSize.width - 10, y: (tabHeight - badgeSize.height) / 2,
+                                    width: badgeSize.width, height: badgeSize.height)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        (isPrivate ? HematColors.privateStrip : HematColors.strip).setFill()
+        bounds.fill()
+    }
+
+    var activeTabColor: NSColor { isPrivate ? HematColors.privateToolbar : HematColors.toolbar }
+
+    // Empty tab strip area acts like a titlebar: drag to move, double-click to zoom.
+    override func mouseDown(with event: NSEvent) {
+        guard let window else { return }
+        if event.clickCount == 2 {
+            switch UserDefaults.standard.string(forKey: "AppleActionOnDoubleClick") {
+            case "Minimize": window.miniaturize(nil)
+            case "None": break
+            default: window.zoom(nil)
+            }
+        } else {
+            window.performDrag(with: event)
+        }
+    }
+
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    @objc private func newTabClicked(_ sender: Any?) { delegate?.tabStripNewTab(self) }
+
+    fileprivate func select(_ index: Int) { delegate?.tabStrip(self, didSelect: index) }
+    fileprivate func close(_ index: Int) { delegate?.tabStrip(self, didClose: index) }
+    fileprivate func tooltip(_ index: Int) -> String { delegate?.tabStrip(self, tooltipFor: index) ?? "" }
+}
+
+/// A single tab: icon, title, close button. Hovering shows a tooltip with memory usage.
+final class TabItemView: NSView, NSViewToolTipOwner {
+    private weak var strip: TabStripView?
+    private var index = 0
+    private var isActive = false
+    private var isHovered = false { didSet { updateCloseVisibility(); needsDisplay = true } }
+    private let icon = NSImageView()
+    private let spinner = NSProgressIndicator()
+    private let label = NSTextField(labelWithString: "")
+    private let closeButton = NSButton()
+    private var title = ""
+    private var isLoading = false
+
+    init(strip: TabStripView) {
+        self.strip = strip
+        super.init(frame: .zero)
+        icon.imageScaling = .scaleProportionallyDown
+        icon.contentTintColor = .secondaryLabelColor
+        // Spinner replaces the icon while the tab loads, like Chrome.
+        spinner.style = .spinning
+        spinner.controlSize = .small
+        spinner.isDisplayedWhenStopped = false
+        spinner.isHidden = true
+        addSubview(spinner)
+        label.font = .systemFont(ofSize: 12)
+        label.lineBreakMode = .byTruncatingTail
+        label.cell?.truncatesLastVisibleLine = true
+        closeButton.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: String(localized: "Close tab"))?
+            .withSymbolConfiguration(.init(pointSize: 10, weight: .semibold))
+        closeButton.isBordered = false
+        closeButton.target = self
+        closeButton.action = #selector(closeClicked(_:))
+        closeButton.toolTip = String(localized: "Close tab (⌘W)")
+        [icon, label, closeButton].forEach(addSubview)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    func configure(index: Int, item: TabStripItem, isActive: Bool) {
+        self.index = index
+        self.isActive = isActive
+        title = item.title
+        label.stringValue = item.title
+        label.textColor = item.isSleeping ? .secondaryLabelColor : .labelColor
+        if item.isPlayingAudio {
+            icon.image = NSImage(systemSymbolName: "speaker.wave.2.fill", accessibilityDescription: nil)
+            icon.alphaValue = 1
+        } else if let favicon = item.favicon {
+            // Site favicon; sleeping tabs are shown dimmed.
+            icon.image = favicon
+            icon.alphaValue = item.isSleeping ? 0.45 : 1
+        } else {
+            icon.image = NSImage(systemSymbolName: item.isSleeping ? "moon.zzz" : "globe", accessibilityDescription: nil)
+            icon.alphaValue = 1
+        }
+        if item.isLoading != isLoading {
+            isLoading = item.isLoading
+            if isLoading { spinner.startAnimation(nil) } else { spinner.stopAnimation(nil) }
+        }
+        closeButton.setAccessibilityLabel(String(localized: "Close tab \(item.title)"))
+        setAccessibilityElement(true)
+        setAccessibilityRole(.radioButton)
+        let state = item.isLoading ? String(localized: ", loading") : (item.isSleeping ? String(localized: ", sleeping") : "")
+        setAccessibilityLabel(item.title + state)
+        setAccessibilityValue(isActive)
+        updateCloseVisibility()
+        needsLayout = true
+        needsDisplay = true
+    }
+
+    private func updateCloseVisibility() {
+        // Like Chrome: narrow tabs show the close button only on the active tab / on hover.
+        closeButton.isHidden = !(isActive || isHovered || bounds.width > 110)
+    }
+
+    override func layout() {
+        super.layout()
+        let h = bounds.height
+        let showIcon = bounds.width > 44 || !isActive
+        icon.isHidden = !showIcon || isLoading
+        spinner.isHidden = !showIcon || !isLoading
+        icon.frame = NSRect(x: 12, y: (h - 16) / 2, width: 16, height: 16)
+        spinner.frame = icon.frame
+        closeButton.frame = NSRect(x: bounds.width - 26, y: (h - 18) / 2, width: 18, height: 18)
+        let labelX: CGFloat = showIcon ? 34 : 10
+        let labelHeight = label.intrinsicContentSize.height
+        label.frame = NSRect(x: labelX, y: (h - labelHeight) / 2,
+                             width: max(0, bounds.width - labelX - 30), height: labelHeight)
+        updateCloseVisibility()
+
+        removeAllToolTips()
+        addToolTip(bounds, owner: self, userData: nil)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard let strip else { return }
+        if isActive {
+            // Active tab: rounded top corners, blending into the toolbar below.
+            strip.activeTabColor.setFill()
+            let r: CGFloat = 8
+            let path = NSBezierPath()
+            path.move(to: NSPoint(x: 0, y: 0))
+            path.line(to: NSPoint(x: 0, y: bounds.height - r))
+            path.appendArc(withCenter: NSPoint(x: r, y: bounds.height - r), radius: r, startAngle: 180, endAngle: 90, clockwise: true)
+            path.line(to: NSPoint(x: bounds.width - r, y: bounds.height))
+            path.appendArc(withCenter: NSPoint(x: bounds.width - r, y: bounds.height - r), radius: r, startAngle: 90, endAngle: 0, clockwise: true)
+            path.line(to: NSPoint(x: bounds.width, y: 0))
+            path.close()
+            path.fill()
+        } else if isHovered {
+            HematColors.hover.setFill()
+            NSBezierPath(roundedRect: bounds.insetBy(dx: 2, dy: 4), xRadius: 8, yRadius: 8).fill()
+        } else {
+            NSColor.separatorColor.setFill()
+            NSRect(x: bounds.width - 1, y: 10, width: 1, height: max(0, bounds.height - 20)).fill()
+        }
+    }
+
+    private var hoverArea: NSTrackingArea?
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        // Only remove our own tracking area; tooltips have their own tracking.
+        if let hoverArea { removeTrackingArea(hoverArea) }
+        let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                                  owner: self, userInfo: nil)
+        addTrackingArea(area)
+        hoverArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) { isHovered = true }
+    override func mouseExited(with event: NSEvent) { isHovered = false }
+    override func mouseDown(with event: NSEvent) { strip?.select(index) }
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    /// Middle-click closes the tab.
+    override func otherMouseUp(with event: NSEvent) {
+        if event.buttonNumber == 2 { strip?.close(index) } else { super.otherMouseUp(with: event) }
+    }
+
+    override func accessibilityPerformPress() -> Bool {
+        strip?.select(index)
+        return true
+    }
+
+    @objc private func closeClicked(_ sender: Any?) { strip?.close(index) }
+
+    func view(_ view: NSView, stringForToolTip tag: NSView.ToolTipTag, point: NSPoint,
+              userData data: UnsafeMutableRawPointer?) -> String {
+        strip?.tooltip(index) ?? title
+    }
+}
+
+/// Short message in the bottom-left corner, replacing a status bar.
+final class ToastView: NSVisualEffectView {
+    private let label = NSTextField(wrappingLabelWithString: "")
+    private var hideWork: DispatchWorkItem?
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        material = .hudWindow
+        blendingMode = .withinWindow
+        state = .active
+        wantsLayer = true
+        layer?.cornerRadius = 8
+        layer?.masksToBounds = true
+        isHidden = true
+        label.font = .systemFont(ofSize: 12)
+        label.maximumNumberOfLines = 3
+        label.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(label)
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
+            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+            label.topAnchor.constraint(equalTo: topAnchor, constant: 6),
+            label.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -6),
+        ])
+        setAccessibilityElement(true)
+        setAccessibilityRole(.staticText)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    /// `duration: nil` = stays visible until `hide()` is called.
+    func show(_ text: String, duration: TimeInterval? = 3) {
+        hideWork?.cancel()
+        label.stringValue = text
+        setAccessibilityLabel(text)
+        isHidden = false
+        NSAccessibility.post(element: self, notification: .announcementRequested,
+                             userInfo: [.announcement: text, .priority: NSAccessibilityPriorityLevel.medium.rawValue])
+        guard let duration else { return }
+        let work = DispatchWorkItem { [weak self] in self?.isHidden = true }
+        hideWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + duration, execute: work)
+    }
+
+    func hide() {
+        hideWork?.cancel()
+        isHidden = true
+    }
+}

@@ -1,0 +1,1305 @@
+import AppKit
+import WebKit
+import HematCore
+
+/// A single tab. `webView` is nil while the tab sleeps: only the URL, title, zoom, and
+/// `interactionState` (back/forward history + scroll position) are kept.
+@MainActor
+final class Tab: NSObject {
+    let id = UUID()
+    /// Window that owns the tab (for the extension API).
+    weak var owner: BrowserWindowController?
+    var url: URL?
+    /// URL shown in the address bar. Only updated once the page has loaded, so
+    /// redirect hops (tracking links, SSO logins, etc.) stay hidden.
+    var displayURL: URL?
+    var title: String
+    var zoom: Double = 1
+    var lastActive = Date()
+    var interactionState: Any?
+    /// Frames on this page with unsubmitted form input (reported by FormGuard).
+    var dirtyFrames: Set<String> = []
+    var hasUnsavedInput: Bool { !dirtyFrames.isEmpty }
+    var webView: WKWebView? {
+        didSet {
+            if webView == nil {
+                observations.removeAll()
+                dirtyFrames.removeAll()
+            }
+        }
+    }
+    var observations: [NSKeyValueObservation] = []
+
+    init(url: URL?, title: String? = nil) {
+        self.url = url
+        self.displayURL = url
+        self.title = title ?? url?.host ?? String(localized: "New Tab")
+        super.init()
+    }
+
+    var isPlayingAudio: Bool {
+        guard let webView else { return false }
+        return webView.hematIsPlayingAudio || webView.hematIsCapturingMedia
+    }
+}
+
+/// Address bar: the first click selects the whole URL (like Safari/Chrome), so it can be
+/// retyped right away. Later clicks while editing place the cursor as usual.
+final class AddressField: NSTextField {
+    /// Set when the field has just become first responder. AppKit makes the field editable inside
+    /// becomeFirstResponder, *before* mouseDown runs, so checking `currentEditor()` in mouseDown
+    /// can't tell a focusing click from a click while already editing.
+    private var justFocused = false
+
+    override func becomeFirstResponder() -> Bool {
+        let accepted = super.becomeFirstResponder()
+        if accepted {
+            justFocused = true
+            DispatchQueue.main.async { [weak self] in self?.justFocused = false }
+        }
+        return accepted
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let selectAll = justFocused
+        justFocused = false
+        // super tracks the click/drag until the mouse button is released.
+        super.mouseDown(with: event)
+        // A drag that selected part of the text is respected.
+        guard selectAll, let editor = currentEditor(), editor.selectedRange.length == 0 else { return }
+        editor.selectAll(nil)
+    }
+}
+
+/// Forwards JS messages without a retain cycle (WKUserContentController holds handlers strongly).
+private final class WeakScriptHandler: NSObject, WKScriptMessageHandler {
+    weak var target: BrowserWindowController?
+    init(_ target: BrowserWindowController) { self.target = target }
+
+    func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+        MainActor.assumeIsolated {
+            switch message.name {
+            case FormGuard.handlerName:
+                guard let body = message.body as? [String: Any], let frame = body["frame"] as? String else { return }
+                target?.formStateChanged(in: message.webView, frame: frame, dirty: (body["dirty"] as? Bool) ?? false)
+            case ContextMenuProbe.handlerName:
+                guard let web = message.webView as? HematWebView, let body = message.body as? [String: Any] else { return }
+                func url(_ key: String) -> URL? {
+                    guard let text = body[key] as? String, !text.isEmpty else { return nil }
+                    return URL(string: text)
+                }
+                web.contextTarget = ContextTarget(link: url("link"), image: url("image"),
+                                                  selection: body["selection"] as? String ?? "")
+            default:
+                target?.passkeyFailed(in: message.webView)
+            }
+        }
+    }
+}
+
+@MainActor
+final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNavigationDelegate,
+                                     WKUIDelegate, NSSearchFieldDelegate, NSTextFieldDelegate,
+                                     NSMenuItemValidation, TabStripDelegate {
+    let isPrivate: Bool
+
+    private let dataStore: WKWebsiteDataStore
+    private var tabs: [Tab] = []
+    private var activeIndex = -1
+    private var passkeyWarnedHosts: Set<String> = []
+    private var focusAddressBarOnActivate = false
+    private var services: BrowserServices { .shared }
+
+    // UI
+    private let tabStrip = TabStripView()
+    private let toolbar = FillView()
+    private let addressField = AddressField()
+    /// Created on first keystroke in the address bar.
+    private lazy var suggestions: AddressSuggestionsController = {
+        let controller = AddressSuggestionsController()
+        controller.onChoose = { [weak self] in self?.chooseSuggestion($0) }
+        return controller
+    }()
+    /// What the user actually typed, restored when arrowing back past the first suggestion.
+    private var typedAddress = ""
+    private let backButton = NSButton()
+    private let forwardButton = NSButton()
+    private let reloadButton = NSButton()
+    private let bookmarkButton = NSButton()
+    private let findBar = NSStackView()
+    private let findField = NSSearchField()
+    private let findStatus = NSTextField(labelWithString: "")
+    private let contentView = NSView()
+    private let toast = ToastView()
+    private let loadingBar = LoadingBar()
+
+    private var activeTab: Tab? { tabs.indices.contains(activeIndex) ? tabs[activeIndex] : nil }
+
+    init(isPrivate: Bool) {
+        self.isPrivate = isPrivate
+        // Private window: cookies/cache live in memory only and vanish when the window closes.
+        dataStore = isPrivate ? .nonPersistent() : .default()
+
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),
+                              styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+                              backing: .buffered, defer: true)
+        window.isReleasedWhenClosed = false
+        window.minSize = NSSize(width: 480, height: 320)
+        // Tabs sit in the titlebar area, like Chrome. An empty toolbar makes the titlebar as tall as
+        // the tab strip so the red/yellow/green buttons line up with the tabs.
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.toolbar = NSToolbar(identifier: "HematTitlebar")
+        window.toolbarStyle = .unifiedCompact
+        window.center()
+        if isPrivate { window.appearance = NSAppearance(named: .darkAqua) }
+        super.init(window: window)
+        window.delegate = self
+        buildUI()
+
+        let center = NotificationCenter.default
+        center.addObserver(self, selector: #selector(bookmarksChanged),
+                           name: .hematBookmarksChanged, object: nil)
+        center.addObserver(self, selector: #selector(downloadEvent(_:)),
+                           name: .hematDownloadEvent, object: nil)
+        center.addObserver(self, selector: #selector(refreshExtensionButtons),
+                           name: .hematExtensionsChanged, object: nil)
+        refreshExtensionButtons()
+        extensionController?.didOpenWindow(self)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    // MARK: - UI
+
+    private func buildUI() {
+        guard let root = window?.contentView else { return }
+
+        func configure(_ button: NSButton, symbol: String, label: String, action: Selector) {
+            button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)?
+                .withSymbolConfiguration(.init(pointSize: 14, weight: .medium))
+            button.isBordered = false
+            button.imagePosition = .imageOnly
+            button.contentTintColor = .secondaryLabelColor
+            button.target = self
+            button.action = action
+            button.toolTip = label
+            button.setAccessibilityLabel(label)
+            button.widthAnchor.constraint(equalToConstant: 28).isActive = true
+            button.heightAnchor.constraint(equalToConstant: 28).isActive = true
+        }
+        configure(backButton, symbol: "arrow.left", label: String(localized: "Back (⌘[)"), action: #selector(backAction(_:)))
+        configure(forwardButton, symbol: "arrow.right", label: String(localized: "Forward (⌘])"), action: #selector(forwardAction(_:)))
+        configure(reloadButton, symbol: "arrow.clockwise", label: String(localized: "Reload (⌘R)"), action: #selector(reloadAction(_:)))
+        configure(bookmarkButton, symbol: "star", label: String(localized: "Add bookmark (⌘D)"),
+                  action: #selector(toggleBookmarkAction(_:)))
+
+        tabStrip.delegate = self
+        tabStrip.isPrivate = isPrivate
+
+        addressField.placeholderString = isPrivate ? String(localized: "Private: search or enter address") : String(localized: "Search or enter address")
+        addressField.setAccessibilityLabel(String(localized: "Address bar"))
+        addressField.target = self
+        addressField.action = #selector(addressSubmitted(_:))
+        addressField.delegate = self
+        addressField.bezelStyle = .roundedBezel
+        addressField.controlSize = .large
+        addressField.font = .systemFont(ofSize: 14)
+        addressField.cell?.sendsActionOnEndEditing = false
+        addressField.lineBreakMode = .byTruncatingTail
+        addressField.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        let toolbarStack = NSStackView(views: [backButton, forwardButton, reloadButton, addressField, bookmarkButton])
+        toolbarStack.orientation = .horizontal
+        toolbarStack.spacing = 6
+        toolbarStack.edgeInsets = NSEdgeInsets(top: 5, left: 10, bottom: 6, right: 10)
+
+        // Find-in-page bar (⌘F), hidden by default.
+        findField.placeholderString = String(localized: "Find in page")
+        findField.setAccessibilityLabel(String(localized: "Find in page"))
+        findField.sendsWholeSearchString = false
+        findField.target = self
+        findField.action = #selector(findFieldChanged(_:))
+        findField.delegate = self
+        let prev = NSButton()
+        configure(prev, symbol: "chevron.up", label: String(localized: "Previous match (⇧⌘G)"), action: #selector(findPreviousAction(_:)))
+        let next = NSButton()
+        configure(next, symbol: "chevron.down", label: String(localized: "Next match (⌘G)"), action: #selector(findNextAction(_:)))
+        let done = NSButton(title: String(localized: "Done"), target: self, action: #selector(hideFindBar(_:)))
+        done.bezelStyle = .rounded
+        findStatus.textColor = .secondaryLabelColor
+        findField.widthAnchor.constraint(equalToConstant: 260).isActive = true
+        [findField, prev, next, findStatus, NSView(), done].forEach(findBar.addArrangedSubview)
+        findBar.orientation = .horizontal
+        findBar.spacing = 6
+        findBar.edgeInsets = NSEdgeInsets(top: 0, left: 10, bottom: 6, right: 10)
+        findBar.isHidden = true
+
+        // Toolbar + find bar in one block, colored the same as the active tab.
+        toolbar.color = isPrivate ? HematColors.privateToolbar : HematColors.toolbar
+        let toolbarContent = NSStackView(views: [toolbarStack, findBar])
+        toolbarContent.orientation = .vertical
+        toolbarContent.spacing = 0
+        for v in [toolbarStack, findBar] { v.widthAnchor.constraint(equalTo: toolbarContent.widthAnchor).isActive = true }
+
+        for v in [tabStrip, toolbar, contentView, loadingBar, toast] as [NSView] {
+            v.translatesAutoresizingMaskIntoConstraints = false
+            root.addSubview(v)
+        }
+        toolbarContent.translatesAutoresizingMaskIntoConstraints = false
+        toolbar.addSubview(toolbarContent)
+
+        NSLayoutConstraint.activate([
+            tabStrip.topAnchor.constraint(equalTo: root.topAnchor),
+            tabStrip.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            tabStrip.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            tabStrip.heightAnchor.constraint(equalToConstant: TabStripView.height),
+
+            toolbar.topAnchor.constraint(equalTo: tabStrip.bottomAnchor),
+            toolbar.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            toolbar.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            toolbarContent.topAnchor.constraint(equalTo: toolbar.topAnchor),
+            toolbarContent.leadingAnchor.constraint(equalTo: toolbar.leadingAnchor),
+            toolbarContent.trailingAnchor.constraint(equalTo: toolbar.trailingAnchor),
+            toolbarContent.bottomAnchor.constraint(equalTo: toolbar.bottomAnchor, constant: -1),
+
+            contentView.topAnchor.constraint(equalTo: toolbar.bottomAnchor),
+            contentView.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            contentView.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            contentView.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+
+            // Progress line sits on the toolbar's bottom edge, above the page.
+            loadingBar.bottomAnchor.constraint(equalTo: toolbar.bottomAnchor),
+            loadingBar.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            loadingBar.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            loadingBar.heightAnchor.constraint(equalToConstant: 2),
+
+            toast.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 10),
+            toast.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -10),
+            toast.widthAnchor.constraint(lessThanOrEqualToConstant: 520),
+        ])
+    }
+
+    func refreshTabStrip() {
+        let items = tabs.map {
+            TabStripItem(title: $0.title, isSleeping: $0.webView == nil, isPlayingAudio: $0.isPlayingAudio,
+                         isLoading: $0.webView?.isLoading ?? false,
+                         favicon: FaviconStore.shared.icon(for: $0.webView?.url ?? $0.url))
+        }
+        tabStrip.update(items: items, activeIndex: activeIndex)
+    }
+
+    private func updateToolbar() {
+        let tab = activeTab
+        let web = tab?.webView
+        backButton.isEnabled = web?.canGoBack ?? false
+        forwardButton.isEnabled = web?.canGoForward ?? false
+        if addressField.currentEditor() == nil {
+            addressField.stringValue = tab?.displayURL?.absoluteString ?? ""
+        }
+        // Title is still set for the Window menu, Mission Control, and VoiceOver, even though hidden.
+        let title = tab?.title ?? "Hemat"
+        window?.title = isPrivate ? String(localized: "\(title) (Private)") : title
+        let loading = web?.isLoading == true
+        reloadButton.image = NSImage(systemSymbolName: loading ? "xmark" : "arrow.clockwise",
+                                     accessibilityDescription: loading ? String(localized: "Stop") : String(localized: "Reload"))?
+            .withSymbolConfiguration(.init(pointSize: 14, weight: .medium))
+        updateBookmarkButton()
+    }
+
+    private func updateBookmarkButton() {
+        let url = activeTab?.url
+        let saved = url.map(services.bookmarks.contains) ?? false
+        let label = saved ? String(localized: "Remove bookmark (⌘D)") : String(localized: "Add bookmark (⌘D)")
+        bookmarkButton.image = NSImage(systemSymbolName: saved ? "star.fill" : "star", accessibilityDescription: label)?
+            .withSymbolConfiguration(.init(pointSize: 14, weight: .medium))
+        bookmarkButton.contentTintColor = saved ? .systemYellow : .secondaryLabelColor
+        bookmarkButton.toolTip = label
+        bookmarkButton.setAccessibilityLabel(label)
+        bookmarkButton.isEnabled = url != nil
+    }
+
+    func showToast(_ text: String, duration: TimeInterval? = 3) { toast.show(text, duration: duration) }
+
+    @objc private func bookmarksChanged() { updateBookmarkButton() }
+
+    @objc private func downloadEvent(_ note: Notification) {
+        guard services.keyBrowserWindow === self, let text = note.userInfo?["text"] as? String else { return }
+        showToast(text, duration: 4)
+    }
+
+    // MARK: - TabStripDelegate
+
+    func tabStrip(_ strip: TabStripView, didSelect index: Int) { activate(index: index) }
+    func tabStrip(_ strip: TabStripView, didClose index: Int) { closeTab(at: index) }
+    func tabStripNewTab(_ strip: TabStripView) { openBlankTab() }
+
+    func tabStrip(_ strip: TabStripView, tooltipFor index: Int) -> String {
+        guard tabs.indices.contains(index) else { return "" }
+        // Only this tab's RAM usage.
+        guard let web = tabs[index].webView else { return String(localized: "RAM: 0 MB (sleeping)") }
+        guard let pid = web.hematProcessID, let bytes = ProcessMemory.footprint(pid: pid) else {
+            return String(localized: "RAM: unknown")
+        }
+        return String(localized: "RAM: \(ProcessMemory.format(bytes))")
+    }
+
+    // MARK: - Tab lifecycle
+
+    /// New tab from ⌘T / the + button: opens Google right away, with the address bar selected
+    /// so the user can type another address immediately.
+    func openBlankTab() {
+        focusAddressBarOnActivate = true
+        newTab(url: AddressParser.defaultHomeURL)
+    }
+
+    /// `activate: false` opens the tab in the background, asleep (using no RAM).
+    func newTab(url: URL?, activate: Bool = true) {
+        if activate || tabs.isEmpty {
+            insertTab(url: url, at: tabs.count, activate: true)
+        } else {
+            insertTab(url: url, at: activeIndex + 1, activate: false)
+            showToast(String(localized: "Opened in background tab (sleeping until clicked)"), duration: 2)
+        }
+    }
+
+    /// The only path for adding tabs, so extensions are always notified.
+    @discardableResult
+    func insertTab(url: URL?, at index: Int, activate: Bool, webView: WKWebView? = nil) -> Tab {
+        let tab = Tab(url: url ?? (webView == nil ? AddressParser.defaultHomeURL : nil))
+        tab.owner = self
+        if let webView { attach(webView, to: tab) }
+        let position = min(max(0, index), tabs.count)
+        tabs.insert(tab, at: position)
+        if position <= activeIndex { activeIndex += 1 }
+        extensionController?.didOpenTab(tab)
+        if activate || activeIndex < 0 {
+            self.activate(index: position)
+        } else {
+            refreshTabStrip()
+        }
+        sessionChanged()
+        return tab
+    }
+
+    // MARK: - Tab access for extensions
+
+    /// Extension controller, for normal windows only. Private windows are invisible to extensions.
+    var extensionController: WKWebExtensionController? {
+        isPrivate ? nil : services.extensions.controller
+    }
+
+    var allTabs: [Tab] { tabs }
+    var currentTab: Tab? { activeTab }
+    func index(of tab: Tab) -> Int { tabs.firstIndex { $0 === tab } ?? NSNotFound }
+    func isActive(_ tab: Tab) -> Bool { activeTab === tab }
+
+    func activate(tab: Tab) {
+        guard let index = tabs.firstIndex(where: { $0 === tab }) else { return }
+        activate(index: index)
+        showWindow(nil)
+    }
+
+    func close(tab: Tab) {
+        if let index = tabs.firstIndex(where: { $0 === tab }) { closeTab(at: index) }
+    }
+
+    /// Loads a URL in a given tab. A sleeping tab just gets its URL replaced and loads when opened.
+    func load(_ url: URL, in tab: Tab) {
+        if tab === activeTab { return load(url) }
+        tab.url = url
+        tab.displayURL = url
+        tab.interactionState = nil
+        tab.webView?.load(URLRequest(url: url))
+    }
+
+    private func tabChanged(_ tab: Tab, _ properties: WKWebExtension.TabChangedProperties) {
+        extensionController?.didChangeTabProperties(properties, for: tab)
+    }
+
+    /// Loads a URL in the active tab (or a new tab if there is none).
+    func load(_ url: URL) {
+        guard let tab = activeTab else { return newTab(url: url) }
+        tab.url = url
+        // The typed address stays visible until the final page (after redirects) is done.
+        tab.displayURL = url
+        tab.interactionState = nil
+        let web = tab.webView ?? wake(tab, loadURL: false)
+        web.load(URLRequest(url: url))
+        window?.makeFirstResponder(web)
+    }
+
+    func restore(_ saved: SessionState.SavedWindow) {
+        tabs = saved.tabs.map { saved in
+            let tab = Tab(url: saved.url, title: saved.title)
+            tab.owner = self
+            return tab
+        }
+        tabs.forEach { extensionController?.didOpenTab($0) }
+        activate(index: saved.activeIndex)
+    }
+
+    func savedState() -> SessionState.SavedWindow {
+        var saved: [SessionState.SavedTab] = []
+        var active = 0
+        for (index, tab) in tabs.enumerated() {
+            // Temporary extension pages (e.g. passkey confirmation) are not restored.
+            guard let url = tab.webView?.url ?? tab.url, url.scheme != "webkit-extension" else { continue }
+            if index == activeIndex { active = saved.count }
+            saved.append(.init(url: url, title: tab.title))
+        }
+        return .init(tabs: saved, activeIndex: active)
+    }
+
+    private func sessionChanged() {
+        if !isPrivate { services.scheduleSessionSave() }
+    }
+
+    private func activate(index: Int) {
+        guard tabs.indices.contains(index) else { return }
+        if index != activeIndex { hideFindBar(nil) }
+        let previous = activeTab
+        previous?.lastActive = Date()
+        previous?.webView?.removeFromSuperview()
+
+        activeIndex = index
+        let tab = tabs[index]
+        tab.lastActive = Date()
+        let webView = tab.webView ?? wake(tab)
+        if previous !== tab { extensionController?.didActivateTab(tab, previousActiveTab: previous) }
+        refreshExtensionButtons()
+
+        webView.frame = contentView.bounds
+        webView.autoresizingMask = [.width, .height]
+        contentView.addSubview(webView)
+        // Fill the address bar before focusing: while editing, updateToolbar won't overwrite it,
+        // so the previous tab's URL could linger.
+        addressField.abortEditing()
+        addressField.stringValue = tab.displayURL?.absoluteString ?? ""
+        if focusAddressBarOnActivate {
+            focusAddressBarOnActivate = false
+            focusAddressBar(nil)
+        } else {
+            window?.makeFirstResponder(tab.url == nil ? addressField : webView)
+        }
+
+        refreshTabStrip()
+        updateToolbar()
+        loadingBar.update(loading: webView.isLoading, progress: webView.estimatedProgress, animated: false)
+        // Tab count and memory limits are enforced across all windows right away.
+        services.enforceHibernation()
+    }
+
+    /// Creates a WebView for a tab (new or sleeping). If the tab slept, back/forward
+    /// history and scroll position are restored via `interactionState`.
+    @discardableResult
+    private func wake(_ tab: Tab, loadURL: Bool = true) -> WKWebView {
+        let configuration = (isPrivate ? nil : services.extensions.webViewConfiguration(for: tab.url))
+            ?? makeConfiguration()
+        let webView = HematWebView(frame: contentView.bounds, configuration: configuration)
+        attach(webView, to: tab)
+        guard loadURL else { return webView }
+        if let state = tab.interactionState {
+            webView.interactionState = state
+            tab.interactionState = nil
+        } else if let url = tab.url {
+            webView.load(URLRequest(url: url))
+        }
+        return webView
+    }
+
+    private func attach(_ webView: WKWebView, to tab: Tab) {
+        webView.navigationDelegate = self
+        webView.uiDelegate = self
+        webView.allowsBackForwardNavigationGestures = true
+        webView.allowsMagnification = true
+        webView.pageZoom = tab.zoom
+        // Inspectable from Web Inspector (Develop menu) and from Safari > Develop.
+        webView.isInspectable = true
+        (webView as? HematWebView)?.browser = self
+        tab.webView = webView
+
+        tab.observations = [
+            webView.observe(\.title) { [weak self, weak tab] web, _ in
+                MainActor.assumeIsolated {
+                    guard let self, let tab, let title = web.title, !title.isEmpty else { return }
+                    tab.title = title
+                    if !self.isPrivate, let url = web.url { self.services.updateHistoryTitle(title, for: url) }
+                    self.tabChanged(tab, .title)
+                    self.refreshTabStrip()
+                    self.updateToolbar()
+                }
+            },
+            webView.observe(\.url) { [weak self, weak tab] web, _ in
+                MainActor.assumeIsolated {
+                    guard let tab, let url = web.url else { return }
+                    tab.url = url
+                    self?.tabChanged(tab, .URL)
+                    // During navigation the URL can jump due to redirects: don't show it.
+                    // The address bar updates in didCommit (final page starts showing). Without navigation
+                    // (e.g. SPA via pushState), show it immediately.
+                    if !web.isLoading {
+                        tab.displayURL = url
+                        self?.updateToolbar()
+                    }
+                }
+            },
+            webView.observe(\.isLoading) { [weak self, weak tab] web, _ in
+                MainActor.assumeIsolated {
+                    // Navigation failed before commit: revert to the URL of the page being shown.
+                    if !web.isLoading, let tab, let url = web.url { tab.displayURL = url }
+                    if let tab { self?.tabChanged(tab, .loading) }
+                    // estimatedProgress hits 1.0 before isLoading becomes false, so the bar can only
+                    // be hidden from here.
+                    if let self, let tab, tab === self.activeTab {
+                        self.loadingBar.update(loading: web.isLoading, progress: web.estimatedProgress)
+                    }
+                    self?.updateToolbar()
+                    self?.refreshTabStrip()
+                }
+            },
+            webView.observe(\.estimatedProgress) { [weak self, weak tab] web, _ in
+                MainActor.assumeIsolated {
+                    guard let self, let tab, tab === self.activeTab else { return }
+                    self.loadingBar.update(loading: web.isLoading, progress: web.estimatedProgress)
+                }
+            },
+            webView.observe(\.canGoBack) { [weak self] _, _ in
+                MainActor.assumeIsolated { self?.updateToolbar() }
+            },
+            webView.observe(\.canGoForward) { [weak self] _, _ in
+                MainActor.assumeIsolated { self?.updateToolbar() }
+            },
+            webView.observe(\.cameraCaptureState) { [weak self] _, _ in
+                MainActor.assumeIsolated { self?.refreshTabStrip() }
+            },
+            webView.observe(\.microphoneCaptureState) { [weak self] _, _ in
+                MainActor.assumeIsolated { self?.refreshTabStrip() }
+            },
+        ]
+    }
+
+    private func makeConfiguration() -> WKWebViewConfiguration {
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = dataStore
+        config.applicationNameForUserAgent = UserAgent.applicationName
+        // No video/audio autoplay: saves RAM, CPU, and battery.
+        config.mediaTypesRequiringUserActionForPlayback = .all
+        // Popups only from user clicks.
+        config.preferences.javaScriptCanOpenWindowsAutomatically = false
+        config.preferences.isElementFullscreenEnabled = true
+        // Extensions (e.g. Bitwarden) inject their scripts via this controller. Not for private windows.
+        if let extensionController { config.webExtensionController = extensionController }
+        if let list = services.ruleList { config.userContentController.add(list) }
+        // Detect form input in all frames (including iframes) so tabs with input aren't put to sleep.
+        config.userContentController.add(WeakScriptHandler(self), name: FormGuard.handlerName)
+        config.userContentController.addUserScript(WKUserScript(
+            source: FormGuard.script, injectionTime: .atDocumentStart, forMainFrameOnly: false))
+        // Link/image/text under the cursor for the context menu.
+        config.userContentController.add(WeakScriptHandler(self), name: ContextMenuProbe.handlerName)
+        config.userContentController.addUserScript(WKUserScript(
+            source: ContextMenuProbe.script, injectionTime: .atDocumentStart, forMainFrameOnly: false))
+        // "Inspect Element" in the context menu.
+        DevTools.enable(on: config)
+        if !Passkey.isAvailable {
+            // Without the entitlement, WebKit always rejects passkeys. Detect it so we can explain.
+            config.userContentController.add(WeakScriptHandler(self), name: "hematPasskey")
+            config.userContentController.addUserScript(WKUserScript(
+                source: Passkey.detectionScript, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        }
+        return config
+    }
+
+    func applyRuleList(_ list: WKContentRuleList) {
+        for tab in tabs {
+            guard let controller = tab.webView?.configuration.userContentController else { continue }
+            controller.removeAllContentRuleLists()
+            controller.add(list)
+        }
+    }
+
+    // MARK: - Hibernation
+
+    /// Snapshots for the global policy. Shared process memory is counted only once.
+    func hibernationSnapshots(seenProcesses: inout Set<pid_t>) -> [TabSnapshot] {
+        tabs.enumerated().map { index, tab in
+            var bytes: UInt64 = 0
+            if let pid = tab.webView?.hematProcessID, seenProcesses.insert(pid).inserted {
+                bytes = ProcessMemory.footprint(pid: pid) ?? 0
+            }
+            return TabSnapshot(id: tab.id, lastActive: tab.lastActive, isLoaded: tab.webView != nil,
+                               isActive: index == activeIndex, memoryBytes: bytes,
+                               isPlayingAudio: tab.isPlayingAudio, hasUnsavedInput: tab.hasUnsavedInput)
+        }
+    }
+
+
+    func hibernate(tabIDs: Set<UUID>) {
+        var changed = false
+        for (index, tab) in tabs.enumerated()
+        where index != activeIndex && tabIDs.contains(tab.id) && !tab.hasUnsavedInput {
+            dropWebView(of: tab)
+            changed = true
+        }
+        if changed { refreshTabStrip() }
+    }
+
+    /// "Sleep Background Tabs" menu: every tab except the active one in this window.
+    @objc func hibernateNowAction(_ sender: Any?) {
+        let before = tabs.filter { $0.webView != nil }.count
+        hibernate(tabIDs: Set(tabs.map(\.id)))
+        let slept = before - tabs.filter { $0.webView != nil }.count
+        showToast(slept > 0 ? String(localized: "\(slept) tabs put to sleep") : String(localized: "No active background tabs"), duration: 2)
+    }
+
+    private func dropWebView(of tab: Tab) {
+        guard let web = tab.webView else { return }
+        if let url = web.url { tab.url = url }
+        // Keep back/forward history and scroll position so the tab feels intact when woken.
+        tab.interactionState = web.interactionState
+        web.stopLoading()
+        web.navigationDelegate = nil
+        web.uiDelegate = nil
+        web.removeFromSuperview()
+        tab.webView = nil
+    }
+
+    private func closeTab(at index: Int) {
+        guard tabs.indices.contains(index) else { return }
+        let tab = tabs[index]
+        if !isPrivate, let url = tab.webView?.url ?? tab.url {
+            services.recentlyClosed.push(ClosedTab(url: url, title: tab.title))
+        }
+        dropWebView(of: tab)
+        tabs.remove(at: index)
+        extensionController?.didCloseTab(tab, windowIsClosing: tabs.isEmpty)
+        if tabs.isEmpty {
+            activeIndex = -1
+            window?.close()
+            return
+        }
+        if index < activeIndex {
+            activeIndex -= 1
+            refreshTabStrip()
+        } else if index == activeIndex {
+            activeIndex = -1 // old tab is already detached; don't touch it again
+            activate(index: min(index, tabs.count - 1))
+        } else {
+            refreshTabStrip()
+        }
+        sessionChanged()
+    }
+
+    // MARK: - Actions: tabs & navigation
+
+    @objc func newTabAction(_ sender: Any?) { openBlankTab() }
+    @objc func closeTabAction(_ sender: Any?) { closeTab(at: activeIndex) }
+    @objc func backAction(_ sender: Any?) { activeTab?.webView?.goBack() }
+    @objc func forwardAction(_ sender: Any?) { activeTab?.webView?.goForward() }
+
+    /// Data for the Tab menu: open tabs only.
+    var tabMenuEntries: [(title: String, isActive: Bool, isSleeping: Bool)] {
+        tabs.enumerated().map { ($1.title, $0 == activeIndex, $1.webView == nil) }
+    }
+
+    @objc func selectTabFromMenu(_ sender: NSMenuItem) { activate(index: sender.tag) }
+
+    /// ⌘1–⌘8 select the nth tab, ⌘9 selects the last tab.
+    @objc func selectTabNumberAction(_ sender: NSMenuItem) {
+        guard !tabs.isEmpty else { return }
+        activate(index: sender.tag >= 9 ? tabs.count - 1 : min(sender.tag - 1, tabs.count - 1))
+    }
+
+    @objc func reloadAction(_ sender: Any?) {
+        guard let web = activeTab?.webView else { return }
+        if web.isLoading { web.stopLoading() } else { web.reload() }
+    }
+
+    @objc func nextTabAction(_ sender: Any?) {
+        guard !tabs.isEmpty else { return }
+        activate(index: (activeIndex + 1) % tabs.count)
+    }
+
+    @objc func previousTabAction(_ sender: Any?) {
+        guard !tabs.isEmpty else { return }
+        activate(index: (activeIndex - 1 + tabs.count) % tabs.count)
+    }
+
+    @objc func focusAddressBar(_ sender: Any?) {
+        window?.makeFirstResponder(addressField)
+        addressField.currentEditor()?.selectAll(nil)
+    }
+
+    @objc private func addressSubmitted(_ sender: NSTextField) {
+        if let chosen = suggestions.isVisible ? suggestions.selected : nil { return chooseSuggestion(chosen) }
+        suggestions.hide()
+        guard let url = AddressParser.url(from: sender.stringValue) else { return }
+        load(url)
+    }
+
+    private func chooseSuggestion(_ suggestion: AddressSuggestion) {
+        suggestions.hide()
+        addressField.stringValue = suggestion.url.absoluteString
+        load(suggestion.url)
+    }
+
+    private func updateSuggestions() {
+        typedAddress = addressField.stringValue
+        let found = AddressSuggester.suggestions(for: typedAddress, history: services.history.entries,
+                                                 bookmarks: services.bookmarks.bookmarks)
+        if found.isEmpty { suggestions.hide() } else { suggestions.show(found, below: addressField) }
+    }
+
+    func controlTextDidChange(_ obj: Notification) {
+        guard (obj.object as? NSTextField) === addressField else { return }
+        updateSuggestions()
+    }
+
+    func controlTextDidEndEditing(_ obj: Notification) {
+        guard (obj.object as? NSTextField) === addressField else { return }
+        // Let a click on a suggestion row land before the panel disappears.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.addressField.currentEditor() == nil else { return }
+            self.suggestions.hide()
+        }
+    }
+
+    @objc func toggleBookmarkAction(_ sender: Any?) {
+        guard let tab = activeTab, let url = tab.url else { return }
+        let added = services.toggleBookmark(url: url, title: tab.title)
+        showToast(added ? String(localized: "Bookmark added: \(tab.title)") : String(localized: "Bookmark removed"), duration: 2)
+    }
+
+    @objc func openInSafariAction(_ sender: Any?) {
+        guard let url = activeTab?.url,
+              let safari = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Safari")
+        else { return }
+        NSWorkspace.shared.open([url], withApplicationAt: safari, configuration: NSWorkspace.OpenConfiguration())
+    }
+
+    // MARK: - Actions: context menu
+
+    @objc func openLinkInNewTab(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL else { return }
+        newTab(url: url)
+    }
+
+    @objc func openLinkInBackgroundTab(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL else { return }
+        newTab(url: url, activate: false)
+    }
+
+    @objc func openLinkInPrivateWindow(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL else { return }
+        services.makeWindow(isPrivate: true).newTab(url: url)
+    }
+
+    @objc func searchSelection(_ sender: NSMenuItem) {
+        guard let text = sender.representedObject as? String, let url = AddressParser.searchURL(for: text) else { return }
+        newTab(url: url)
+    }
+
+    @objc func copyPageAddress(_ sender: Any?) {
+        guard let url = activeTab?.displayURL ?? activeTab?.url else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(url.absoluteString, forType: .string)
+        showToast(String(localized: "Address copied"), duration: 1.5)
+    }
+
+    // MARK: - Actions: Develop
+
+    @objc func showWebInspectorAction(_ sender: Any?) { openDevTools(.inspector) }
+    @objc func showConsoleAction(_ sender: Any?) { openDevTools(.console) }
+    @objc func showResourcesAction(_ sender: Any?) { openDevTools(.resources) }
+    @objc func selectElementAction(_ sender: Any?) { openDevTools(.elementSelection) }
+
+    private func openDevTools(_ panel: DevTools.Panel) {
+        guard let web = activeTab?.webView else { return }
+        if !DevTools.open(panel, for: web) {
+            showToast(String(localized: "Web Inspector isn't available on this macOS version. Use Safari > Develop > Hemat."), duration: 5)
+        }
+    }
+
+    @objc func viewSourceAction(_ sender: Any?) {
+        guard let url = activeTab?.webView?.url, ["http", "https"].contains(url.scheme ?? "") else { return }
+        activeTab?.webView?.evaluateJavaScript("document.documentElement.outerHTML") { [weak self] result, _ in
+            guard let self, let html = result as? String else { return }
+            SourceWindow.show(html: html, url: url, relativeTo: self.window)
+        }
+    }
+
+    @objc func reloadIgnoringCacheAction(_ sender: Any?) { activeTab?.webView?.reloadFromOrigin() }
+
+    @objc func toggleJavaScriptAction(_ sender: Any?) {
+        guard let web = activeTab?.webView else { return }
+        let prefs = web.configuration.defaultWebpagePreferences!
+        prefs.allowsContentJavaScript.toggle()
+        showToast(prefs.allowsContentJavaScript ? String(localized: "JavaScript enabled for this tab") : String(localized: "JavaScript disabled for this tab (reload)"),
+                  duration: 3)
+        web.reload()
+    }
+
+    // MARK: - Actions: zoom & print
+
+    @objc func zoomInAction(_ sender: Any?) { setZoom(ZoomLevels.zoomIn(from: activeTab?.zoom ?? 1)) }
+    @objc func zoomOutAction(_ sender: Any?) { setZoom(ZoomLevels.zoomOut(from: activeTab?.zoom ?? 1)) }
+    @objc func zoomResetAction(_ sender: Any?) { setZoom(1) }
+
+    private func setZoom(_ zoom: Double) {
+        guard let tab = activeTab else { return }
+        tab.zoom = zoom
+        tab.webView?.pageZoom = zoom
+        showToast(String(localized: "Zoom \(ZoomLevels.label(zoom))"), duration: 1.5)
+    }
+
+    @objc func printPageAction(_ sender: Any?) {
+        guard let web = activeTab?.webView, let window else { return }
+        let operation = web.printOperation(with: NSPrintInfo.shared)
+        operation.view?.frame = web.bounds
+        operation.runModal(for: window, delegate: nil, didRun: nil, contextInfo: nil)
+    }
+
+    // MARK: - Find in page
+
+    @objc func showFindBar(_ sender: Any?) {
+        findBar.isHidden = false
+        window?.makeFirstResponder(findField)
+        findField.selectText(nil)
+    }
+
+    @objc func hideFindBar(_ sender: Any?) {
+        guard !findBar.isHidden else { return }
+        findBar.isHidden = true
+        findStatus.stringValue = ""
+        if let web = activeTab?.webView {
+            web.evaluateJavaScript("window.getSelection().removeAllRanges()")
+            window?.makeFirstResponder(web)
+        }
+    }
+
+    @objc func findNextAction(_ sender: Any?) { find(backwards: false) }
+    @objc func findPreviousAction(_ sender: Any?) { find(backwards: true) }
+    @objc private func findFieldChanged(_ sender: Any?) { find(backwards: false) }
+
+    private func find(backwards: Bool) {
+        let query = findField.stringValue
+        guard let web = activeTab?.webView, !query.isEmpty else {
+            findStatus.stringValue = ""
+            return
+        }
+        let config = WKFindConfiguration()
+        config.backwards = backwards
+        config.caseSensitive = false
+        config.wraps = true
+        web.find(query, configuration: config) { [weak self] result in
+            self?.findStatus.stringValue = result.matchFound ? "" : String(localized: "Not found")
+        }
+    }
+
+    /// Enter/Shift+Enter and Esc in the find bar; Esc in the address bar restores the URL.
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        if control === findField {
+            switch selector {
+            case #selector(NSResponder.insertNewline(_:)):
+                find(backwards: NSApp.currentEvent?.modifierFlags.contains(.shift) == true)
+                return true
+            case #selector(NSResponder.cancelOperation(_:)):
+                hideFindBar(nil)
+                return true
+            default:
+                return false
+            }
+        }
+        if control === addressField, suggestions.isVisible {
+            let delta: Int? = switch selector {
+            case #selector(NSResponder.moveDown(_:)): 1
+            case #selector(NSResponder.moveUp(_:)): -1
+            default: nil
+            }
+            if let delta {
+                let chosen = suggestions.moveSelection(by: delta)
+                addressField.stringValue = chosen?.url.absoluteString ?? typedAddress
+                textView.moveToEndOfDocument(nil)
+                return true
+            }
+            if selector == #selector(NSResponder.cancelOperation(_:)) {
+                // First Esc closes the list and restores what was typed; the second restores the URL.
+                suggestions.hide()
+                addressField.stringValue = typedAddress
+                return true
+            }
+        }
+        if control === addressField, selector == #selector(NSResponder.cancelOperation(_:)) {
+            addressField.stringValue = activeTab?.displayURL?.absoluteString ?? ""
+            if let web = activeTab?.webView { window?.makeFirstResponder(web) }
+            return true
+        }
+        return false
+    }
+
+    // MARK: - Form input
+
+    func formStateChanged(in webView: WKWebView?, frame: String, dirty: Bool) {
+        guard let webView, let tab = tabs.first(where: { $0.webView === webView }) else { return }
+        if dirty { tab.dirtyFrames.insert(frame) } else { tab.dirtyFrames.remove(frame) }
+    }
+
+    // MARK: - Passkey
+
+    /// Called from the detection script when a page fails to use a passkey (NotAllowedError).
+    func passkeyFailed(in webView: WKWebView?) {
+        guard let webView, webView === activeTab?.webView, let window, window.attachedSheet == nil else { return }
+        let host = webView.url?.host ?? ""
+        // Once per site per window, to avoid nagging.
+        guard passkeyWarnedHosts.insert(host).inserted else { return }
+
+        let alert = NSAlert()
+        alert.messageText = String(localized: "Passkeys can't be used in Hemat yet")
+        alert.informativeText = String(localized: "macOS only lets third-party browsers use passkeys and security keys if the app is signed with a special entitlement from Apple (requires an Apple Developer account). This Hemat build doesn't have that entitlement yet, so passkey requests are always rejected by the system.\n\nFor now, sign in to \(host.isEmpty ? String(localized: "this site") : host) through Safari, or use a password.")
+        alert.addButton(withTitle: String(localized: "Open in Safari"))
+        alert.addButton(withTitle: String(localized: "Close"))
+        alert.beginSheetModal(for: window) { [weak self] response in
+            if response == .alertFirstButtonReturn { self?.openInSafariAction(nil) }
+        }
+    }
+
+    // MARK: - Menu validation
+
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        let web = activeTab?.webView
+        switch item.action {
+        case #selector(backAction(_:)): return web?.canGoBack ?? false
+        case #selector(forwardAction(_:)): return web?.canGoForward ?? false
+        case #selector(toggleBookmarkAction(_:)):
+            guard let url = activeTab?.url else { return false }
+            item.title = services.bookmarks.contains(url) ? String(localized: "Remove Bookmark") : String(localized: "Add Bookmark")
+            return true
+        case #selector(findNextAction(_:)), #selector(findPreviousAction(_:)):
+            return web != nil && !findField.stringValue.isEmpty
+        case #selector(printPageAction(_:)), #selector(showFindBar(_:)), #selector(reloadAction(_:)),
+             #selector(showWebInspectorAction(_:)), #selector(showConsoleAction(_:)),
+             #selector(showResourcesAction(_:)), #selector(selectElementAction(_:)),
+             #selector(reloadIgnoringCacheAction(_:)), #selector(toggleJavaScriptAction(_:)):
+            return web != nil
+        case #selector(viewSourceAction(_:)):
+            return ["http", "https"].contains(web?.url?.scheme ?? "")
+        case #selector(copyPageAddress(_:)):
+            return activeTab?.url != nil
+        case #selector(openInSafariAction(_:)):
+            return activeTab?.url != nil
+        case #selector(selectTabNumberAction(_:)):
+            // ⌘n does nothing if the nth tab doesn't exist (⌘9 = last tab).
+            return item.tag == 9 ? !tabs.isEmpty : item.tag <= tabs.count
+        case #selector(zoomResetAction(_:)):
+            return abs((activeTab?.zoom ?? 1) - 1) > 0.001
+        default:
+            return true
+        }
+    }
+
+    // MARK: - WKNavigationDelegate
+
+    func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
+                 decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
+        if action.shouldPerformDownload { return decisionHandler(.download) }
+
+        guard let url = action.request.url else { return decisionHandler(.allow) }
+        let scheme = url.scheme?.lowercased() ?? ""
+        let isUserClick = action.navigationType == .linkActivated
+
+        // ⌘+click: open in a background tab (asleep until opened).
+        if isUserClick, action.modifierFlags.contains(.command), ["http", "https"].contains(scheme) {
+            newTab(url: url, activate: false)
+            return decisionHandler(.cancel)
+        }
+
+        // mailto:, tel:, zoommtg:, etc. go to the matching app, only when clicked by the user.
+        let webSchemes: Set<String> = ["http", "https", "about", "file", "blob", "data", "javascript"]
+        // Internal extension pages (settings, popups opened in a tab) still load in Hemat.
+        if !webSchemes.contains(scheme), !services.extensions.isExtensionURL(url) {
+            if isUserClick { NSWorkspace.shared.open(url) }
+            return decisionHandler(.cancel)
+        }
+        decisionHandler(.allow)
+    }
+
+    func webView(_ webView: WKWebView, decidePolicyFor response: WKNavigationResponse,
+                 decisionHandler: @escaping @MainActor (WKNavigationResponsePolicy) -> Void) {
+        let disposition = (response.response as? HTTPURLResponse)?
+            .value(forHTTPHeaderField: "Content-Disposition")?.lowercased() ?? ""
+        if response.isForMainFrame, !response.canShowMIMEType || disposition.hasPrefix("attachment") {
+            return decisionHandler(.download)
+        }
+        decisionHandler(.allow)
+    }
+
+    func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
+        services.downloads.track(download)
+    }
+
+    func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
+        services.downloads.track(download)
+    }
+
+    /// The final page starts showing: all server redirects are done, so this URL is the one
+    /// displayed. The address bar always matches the visible content.
+    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        guard let tab = tabs.first(where: { $0.webView === webView }), let url = webView.url else { return }
+        tab.url = url
+        tab.displayURL = url
+        // New page: the old page's form input is gone.
+        tab.dirtyFrames.removeAll()
+        if tab === activeTab { updateToolbar() }
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        if !isPrivate, let url = webView.url { services.recordVisit(url: url, title: webView.title) }
+        sessionChanged()
+        loadFavicon(for: webView)
+    }
+
+    /// Fetch the page's icon list, then download the best match (once per site per app session).
+    private func loadFavicon(for webView: WKWebView) {
+        guard let pageURL = webView.url, ["http", "https"].contains(pageURL.scheme ?? "") else { return }
+        webView.evaluateJavaScript(FaviconStore.script) { [weak self] result, _ in
+            guard let self else { return }
+            let candidates = result as? [[String: Any]] ?? []
+            FaviconStore.shared.update(pageURL: pageURL, candidates: candidates, persist: !self.isPrivate) {
+                BrowserServices.shared.windows.forEach { $0.refreshTabStrip() }
+            }
+        }
+    }
+
+    /// If the page process crashes or is killed by the system, treat the tab as sleeping.
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        guard let index = tabs.firstIndex(where: { $0.webView === webView }) else { return }
+        if index == activeIndex {
+            webView.reload()
+        } else {
+            dropWebView(of: tabs[index])
+            refreshTabStrip()
+        }
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        showLoadError(error, in: webView)
+    }
+
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!,
+                 withError error: Error) {
+        showLoadError(error, in: webView)
+    }
+
+    private func showLoadError(_ error: Error, in webView: WKWebView) {
+        let nsError = error as NSError
+        // Not a real error: navigation was cancelled, or the page turned into a download.
+        if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled { return }
+        if nsError.domain == "WebKitErrorDomain" && nsError.code == 102 { return }
+        guard webView === activeTab?.webView else { return }
+        showToast(String(localized: "Failed to load: \(nsError.localizedDescription)"), duration: 5)
+    }
+
+    // MARK: - WKUIDelegate
+
+    /// target=_blank and window.open: the popup WebView becomes a new tab. A WebView built with
+    /// WebKit's `configuration` keeps `window.opener`, so OAuth/payment logins still work.
+    func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
+                 for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+        let popup = HematWebView(frame: contentView.bounds, configuration: configuration)
+        insertTab(url: navigationAction.request.url, at: activeIndex + 1, activate: true, webView: popup)
+        return popup
+    }
+
+    /// window.close() from the page.
+    func webViewDidClose(_ webView: WKWebView) {
+        if let index = tabs.firstIndex(where: { $0.webView === webView }) { closeTab(at: index) }
+    }
+
+    private func pageAlert(_ frame: WKFrameInfo, message: String) -> NSAlert {
+        let alert = NSAlert()
+        let host = frame.securityOrigin.host
+        alert.messageText = host.isEmpty ? String(localized: "This page says") : String(localized: "\(host) says")
+        alert.informativeText = message
+        return alert
+    }
+
+    func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String,
+                 initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping @MainActor () -> Void) {
+        guard let window else { return completionHandler() }
+        let alert = pageAlert(frame, message: message)
+        alert.addButton(withTitle: String(localized: "OK"))
+        alert.beginSheetModal(for: window) { _ in completionHandler() }
+    }
+
+    func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String,
+                 initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping @MainActor (Bool) -> Void) {
+        guard let window else { return completionHandler(false) }
+        let alert = pageAlert(frame, message: message)
+        alert.addButton(withTitle: String(localized: "OK"))
+        alert.addButton(withTitle: String(localized: "Cancel"))
+        alert.beginSheetModal(for: window) { completionHandler($0 == .alertFirstButtonReturn) }
+    }
+
+    func webView(_ webView: WKWebView, runJavaScriptTextInputPanelWithPrompt prompt: String,
+                 defaultText: String?, initiatedByFrame frame: WKFrameInfo,
+                 completionHandler: @escaping @MainActor (String?) -> Void) {
+        guard let window else { return completionHandler(nil) }
+        let alert = pageAlert(frame, message: prompt)
+        let input = NSTextField(string: defaultText ?? "")
+        input.frame = NSRect(x: 0, y: 0, width: 280, height: 24)
+        input.setAccessibilityLabel(prompt)
+        alert.accessoryView = input
+        alert.addButton(withTitle: String(localized: "OK"))
+        alert.addButton(withTitle: String(localized: "Cancel"))
+        alert.window.initialFirstResponder = input
+        alert.beginSheetModal(for: window) { response in
+            completionHandler(response == .alertFirstButtonReturn ? input.stringValue : nil)
+        }
+    }
+
+    /// <input type="file">
+    func webView(_ webView: WKWebView, runOpenPanelWith parameters: WKOpenPanelParameters,
+                 initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping @MainActor ([URL]?) -> Void) {
+        guard let window else { return completionHandler(nil) }
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = parameters.allowsMultipleSelection
+        panel.canChooseDirectories = parameters.allowsDirectories
+        panel.canChooseFiles = true
+        panel.beginSheetModal(for: window) { response in
+            completionHandler(response == .OK ? panel.urls : nil)
+        }
+    }
+
+    // MARK: - NSWindowDelegate
+
+    func windowDidBecomeKey(_ notification: Notification) {
+        activeTab?.lastActive = Date()
+        extensionController?.didFocusWindow(self)
+    }
+
+    func windowDidResignKey(_ notification: Notification) { suggestions.hide() }
+    func windowWillStartLiveResize(_ notification: Notification) { suggestions.hide() }
+    func windowWillMove(_ notification: Notification) { suggestions.hide() }
+
+    func windowWillClose(_ notification: Notification) {
+        suggestions.hide()
+        services.windowWillClose(self)
+        let closing = tabs
+        tabs.forEach(dropWebView(of:))
+        tabs.removeAll()
+        if let controller = extensionController {
+            closing.forEach { controller.didCloseTab($0, windowIsClosing: true) }
+            controller.didCloseWindow(self)
+        }
+    }
+
+    // MARK: - Extension buttons
+
+    private var extensionButtons: [NSButton] = []
+    private var extensionPopover: NSPopover?
+
+    /// One button per active extension, right of the address bar. Icon and badge come from the extension.
+    @objc func refreshExtensionButtons() {
+        guard let stack = bookmarkButton.superview as? NSStackView else { return }
+        extensionButtons.forEach { $0.removeFromSuperview() }
+        extensionButtons.removeAll()
+        guard !isPrivate else { return }
+
+        for (index, entry) in services.extensions.loaded.enumerated() {
+            let action = entry.context.action(for: activeTab)
+            let label = action?.label.isEmpty == false ? action!.label : (entry.context.webExtension.displayName ?? entry.item.name)
+            let button = NSButton()
+            button.isBordered = false
+            button.imagePosition = .imageOnly
+            button.imageScaling = .scaleProportionallyDown
+            button.image = action?.icon(for: NSSize(width: 18, height: 18))
+                ?? NSImage(systemSymbolName: "puzzlepiece.extension", accessibilityDescription: label)
+            button.tag = index
+            button.target = self
+            button.action = #selector(extensionButtonClicked(_:))
+            let badge = action?.badgeText ?? ""
+            button.toolTip = badge.isEmpty ? label : "\(label) (\(badge))"
+            button.setAccessibilityLabel(button.toolTip)
+            button.isEnabled = action?.isEnabled ?? true
+            button.widthAnchor.constraint(equalToConstant: 28).isActive = true
+            button.heightAnchor.constraint(equalToConstant: 28).isActive = true
+            if !badge.isEmpty { addBadge(badge, to: button) }
+            stack.addArrangedSubview(button)
+            extensionButtons.append(button)
+        }
+    }
+
+    private func addBadge(_ text: String, to button: NSButton) {
+        let badge = NSTextField(labelWithString: text)
+        badge.font = .boldSystemFont(ofSize: 8)
+        badge.textColor = .white
+        badge.alignment = .center
+        badge.wantsLayer = true
+        badge.layer?.backgroundColor = NSColor.systemRed.cgColor
+        badge.layer?.cornerRadius = 5
+        badge.translatesAutoresizingMaskIntoConstraints = false
+        button.addSubview(badge)
+        NSLayoutConstraint.activate([
+            badge.trailingAnchor.constraint(equalTo: button.trailingAnchor),
+            badge.bottomAnchor.constraint(equalTo: button.bottomAnchor),
+            badge.heightAnchor.constraint(equalToConstant: 11),
+            badge.widthAnchor.constraint(greaterThanOrEqualToConstant: 11),
+        ])
+    }
+
+    @objc private func extensionButtonClicked(_ sender: NSButton) {
+        let loaded = services.extensions.loaded
+        guard loaded.indices.contains(sender.tag) else { return }
+        // WebKit handles the click: opens the popup (via the presentActionPopup delegate) or sends the onClicked event.
+        loaded[sender.tag].context.performAction(for: activeTab)
+    }
+
+    /// Shows the extension popup below its button. WebKit has already prepared the NSPopover.
+    func presentExtensionPopup(_ action: WKWebExtension.Action) -> Bool {
+        guard let popover = action.popupPopover else { return false }
+        let index = services.extensions.loaded.firstIndex { $0.context === action.webExtensionContext }
+        let anchor: NSView = index.flatMap { extensionButtons.indices.contains($0) ? extensionButtons[$0] : nil }
+            ?? addressField
+        showWindow(nil)
+        extensionPopover?.close()
+        popover.behavior = .transient
+        popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .maxY)
+        extensionPopover = popover
+        return true
+    }
+}
+
+// MARK: - Window as WKWebExtensionWindow
+
+extension BrowserWindowController: WKWebExtensionWindow {
+    func tabs(for context: WKWebExtensionContext) -> [any WKWebExtensionTab] { tabs }
+
+    func activeTab(for context: WKWebExtensionContext) -> (any WKWebExtensionTab)? { activeTab }
+
+    func windowType(for context: WKWebExtensionContext) -> WKWebExtension.WindowType { .normal }
+
+    func windowState(for context: WKWebExtensionContext) -> WKWebExtension.WindowState {
+        guard let window else { return .normal }
+        if window.styleMask.contains(.fullScreen) { return .fullscreen }
+        if window.isMiniaturized { return .minimized }
+        return window.isZoomed ? .maximized : .normal
+    }
+
+    func isPrivate(for context: WKWebExtensionContext) -> Bool { isPrivate }
+
+    func frame(for context: WKWebExtensionContext) -> CGRect { window?.frame ?? .null }
+
+    func screenFrame(for context: WKWebExtensionContext) -> CGRect { window?.screen?.frame ?? .null }
+
+    func focus(for context: WKWebExtensionContext, completionHandler: @escaping ((any Error)?) -> Void) {
+        showWindow(nil)
+        NSApp.activate()
+        completionHandler(nil)
+    }
+
+    func close(for context: WKWebExtensionContext, completionHandler: @escaping ((any Error)?) -> Void) {
+        window?.performClose(nil)
+        completionHandler(nil)
+    }
+}

@@ -1,0 +1,251 @@
+import AppKit
+import WebKit
+import HematCore
+
+extension Notification.Name {
+    static let hematHistoryChanged = Notification.Name("HematHistoryChanged")
+    static let hematBookmarksChanged = Notification.Name("HematBookmarksChanged")
+    static let hematDownloadsChanged = Notification.Name("HematDownloadsChanged")
+    static let hematBlockListReady = Notification.Name("HematBlockListReady")
+    static let hematDownloadEvent = Notification.Name("HematDownloadEvent")
+}
+
+struct ClosedTab {
+    let url: URL
+    let title: String
+}
+
+/// App-wide shared state: history, bookmarks, downloads, session, and the window list.
+@MainActor
+final class BrowserServices {
+    static let shared = BrowserServices()
+
+    private(set) var history: HistoryStore
+    private(set) var bookmarks: BookmarkStore
+    private(set) var ruleList: WKContentRuleList?
+    private(set) var windows: [BrowserWindowController] = []
+    var recentlyClosed = RecentlyClosed<ClosedTab>(capacity: 25)
+    let downloads = DownloadManager()
+
+    private let historyFile = JSONFile<HistoryStore>.inAppSupport("history.json")
+    private let bookmarksFile = JSONFile<BookmarkStore>.inAppSupport("bookmarks.json")
+    private let sessionFile = JSONFile<SessionState>.inAppSupport("session.json")
+    private var saveTasks: [String: Task<Void, Never>] = [:]
+
+    private init() {
+        history = historyFile.load() ?? HistoryStore()
+        bookmarks = bookmarksFile.load() ?? BookmarkStore()
+    }
+
+    // MARK: - Windows
+
+    /// The browser window the user is currently using.
+    var keyBrowserWindow: BrowserWindowController? {
+        if let c = NSApp.keyWindow?.windowController as? BrowserWindowController { return c }
+        if let c = NSApp.mainWindow?.windowController as? BrowserWindowController { return c }
+        return windows.last
+    }
+
+    @discardableResult
+    func makeWindow(isPrivate: Bool) -> BrowserWindowController {
+        let controller = BrowserWindowController(isPrivate: isPrivate)
+        if let last = windows.last?.window, let window = controller.window {
+            let topLeft = NSPoint(x: last.frame.minX, y: last.frame.maxY)
+            window.setFrameTopLeftPoint(window.cascadeTopLeft(from: topLeft))
+        } else {
+            controller.window?.setFrameAutosaveName("HematMainWindow")
+        }
+        windows.append(controller)
+        controller.showWindow(nil)
+        return controller
+    }
+
+    func windowWillClose(_ controller: BrowserWindowController) {
+        if !controller.isPrivate {
+            let remainingNormal = windows.filter { $0 !== controller && !$0.isPrivate }
+            if remainingNormal.isEmpty {
+                // Last normal window: save it so it is restored when the app reopens.
+                saveSession(SessionState(windows: [controller.savedState()]))
+            } else {
+                controller.savedState().tabs.forEach {
+                    recentlyClosed.push(ClosedTab(url: $0.url, title: $0.title))
+                }
+                scheduleSessionSave()
+            }
+        }
+        windows.removeAll { $0 === controller }
+    }
+
+    /// Opens a URL in the active window. `nonPrivate` forces a normal window (e.g. reopening a tab).
+    func open(_ url: URL, newTab: Bool, nonPrivate: Bool = false) {
+        var target = keyBrowserWindow
+        if nonPrivate, target?.isPrivate == true { target = windows.last { !$0.isPrivate } }
+        let controller = target ?? makeWindow(isPrivate: false)
+        controller.showWindow(nil)
+        if newTab { controller.newTab(url: url) } else { controller.load(url) }
+    }
+
+    func reopenClosedTab() {
+        guard let closed = recentlyClosed.pop() else { return }
+        open(closed.url, newTab: true, nonPrivate: true)
+    }
+
+    // MARK: - Hibernation (global, across windows)
+
+    /// Max 5 tabs in memory, sleep after 5 minutes, and total tab memory ≤ 1/8 RAM (512 MB–1.5 GB).
+    let hibernationPolicy = HibernationPolicy(idleTimeout: 5 * 60, maxLoadedTabs: 5,
+                                              memoryBudget: HibernationPolicy.defaultMemoryBudget())
+    private var hibernationTimer: Timer?
+
+    func startHibernationTimer() {
+        guard hibernationTimer == nil else { return }
+        // Large tolerance so the timer rarely wakes the CPU.
+        let timer = Timer(timeInterval: 30, repeats: true) { _ in
+            MainActor.assumeIsolated {
+                let services = BrowserServices.shared
+                services.enforceHibernation()
+                services.windows.forEach { $0.refreshTabStrip() } // audio icon
+            }
+        }
+        timer.tolerance = 10
+        RunLoop.main.add(timer, forMode: .common)
+        hibernationTimer = timer
+    }
+
+    func enforceHibernation(underMemoryPressure: Bool = false) {
+        var seen = Set<pid_t>()
+        let snapshots = windows.flatMap { $0.hibernationSnapshots(seenProcesses: &seen) }
+        let ids = Set(hibernationPolicy.tabsToHibernate(snapshots, underMemoryPressure: underMemoryPressure))
+        guard !ids.isEmpty else { return }
+        windows.forEach { $0.hibernate(tabIDs: ids) }
+    }
+
+    // MARK: - Ad blocker
+
+    let blockListUpdater = BlockListUpdater()
+    let extensions = ExtensionManager()
+
+    /// Loads the saved blocklist, then updates it automatically once a day.
+    func compileBlockList() {
+        blockListUpdater.onCompiled = { [weak self] list in
+            guard let self else { return }
+            self.ruleList = list
+            // Replace the old list in all loaded tabs; new tabs use the new one directly.
+            self.windows.forEach { $0.applyRuleList(list) }
+            NotificationCenter.default.post(name: .hematBlockListReady, object: nil)
+        }
+        blockListUpdater.start()
+        // Old versions used a different identifier; remove it so it doesn't waste disk.
+        WKContentRuleListStore.default().removeContentRuleList(forIdentifier: "hemat-blocklist-v1") { _ in }
+    }
+
+    // MARK: - History
+
+    func recordVisit(url: URL, title: String?) {
+        history.record(url: url, title: title)
+        historyChanged()
+    }
+
+    func updateHistoryTitle(_ title: String, for url: URL) {
+        history.updateTitle(title, for: url)
+        historyChanged()
+    }
+
+    func removeHistory(urls: [URL]) {
+        urls.forEach { history.remove(url: $0) }
+        historyChanged()
+    }
+
+    /// Clears history, closed tabs, cookies, cache, and other website data.
+    func clearBrowsingData(completion: @escaping @MainActor () -> Void) {
+        history.clear()
+        recentlyClosed = RecentlyClosed(capacity: 25)
+        historyChanged()
+        saveHistory()
+        SessionCookies.delete()
+        FaviconStore.shared.removeAll()
+        let store = WKWebsiteDataStore.default()
+        store.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast) {
+            MainActor.assumeIsolated { completion() }
+        }
+    }
+
+    private func historyChanged() {
+        NotificationCenter.default.post(name: .hematHistoryChanged, object: nil)
+        scheduleSave("history") { $0.saveHistory() }
+    }
+
+    private func saveHistory() {
+        do { try historyFile.save(history) } catch { NSLog("Hemat: failed to save history: \(error)") }
+    }
+
+    // MARK: - Bookmarks
+
+    @discardableResult
+    func toggleBookmark(url: URL, title: String) -> Bool {
+        let added = bookmarks.toggle(url: url, title: title)
+        bookmarksChanged()
+        return added
+    }
+
+    func removeBookmarks(ids: [UUID]) {
+        ids.forEach { bookmarks.remove(id: $0) }
+        bookmarksChanged()
+    }
+
+    func renameBookmark(id: UUID, to title: String) {
+        bookmarks.rename(id: id, to: title)
+        bookmarksChanged()
+    }
+
+    private func bookmarksChanged() {
+        NotificationCenter.default.post(name: .hematBookmarksChanged, object: nil)
+        // Bookmarks change rarely and matter: save immediately.
+        do { try bookmarksFile.save(bookmarks) } catch { NSLog("Hemat: failed to save bookmarks: \(error)") }
+    }
+
+    // MARK: - Session
+
+    func scheduleSessionSave() {
+        scheduleSave("session") { services in
+            services.saveSession(services.currentSession())
+        }
+    }
+
+    private func currentSession() -> SessionState {
+        SessionState(windows: windows.filter { !$0.isPrivate }.map { $0.savedState() })
+    }
+
+    private func saveSession(_ state: SessionState) {
+        saveTasks["session"]?.cancel()
+        do { try sessionFile.save(state) } catch { NSLog("Hemat: failed to save session: \(error)") }
+    }
+
+    /// Restores windows from the last session. Tabs are restored asleep.
+    func restoreSession() -> Bool {
+        guard let state = sessionFile.load(), !state.isEmpty else { return false }
+        for saved in state.windows {
+            makeWindow(isPrivate: false).restore(saved)
+        }
+        return true
+    }
+
+    /// Called when the app quits: write everything pending.
+    func saveAll() {
+        saveTasks.values.forEach { $0.cancel() }
+        saveTasks.removeAll()
+        saveHistory()
+        if !windows.filter({ !$0.isPrivate }).isEmpty { saveSession(currentSession()) }
+    }
+
+    /// Debounces disk writes so rapid successive changes are written once.
+    private func scheduleSave(_ key: String, _ action: @escaping @MainActor (BrowserServices) -> Void) {
+        saveTasks[key]?.cancel()
+        saveTasks[key] = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled, let self else { return }
+            self.saveTasks[key] = nil
+            action(self)
+        }
+    }
+}

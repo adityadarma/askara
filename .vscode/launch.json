@@ -1,0 +1,24 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:browser-individual}",
+            "name": "Debug Hemat",
+            "target": "Hemat",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug Hemat"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:browser-individual}",
+            "name": "Release Hemat",
+            "target": "Hemat",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release Hemat"
+        }
+    ]
+}
