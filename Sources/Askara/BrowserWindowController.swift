@@ -13,6 +13,14 @@ final class Tab: NSObject {
     /// URL shown in the address bar. Only updated once the page has loaded, so
     /// redirect hops (tracking links, SSO logins, etc.) stay hidden.
     var displayURL: URL?
+    /// New tab (⌘T): the search engine's page loads, but the address bar stays empty and ready
+    /// for typing, like Chrome's new tab page. Ends once the tab goes to another page.
+    var hidesHomeAddress = false
+    /// First page the new tab committed (after redirects); the address stays hidden only on it.
+    var homeLandingURL: URL?
+    /// New tab: put the cursor back in the address bar once the page has rendered, since pages
+    /// like Google focus their own search box while loading and take the keyboard away.
+    var refocusAddressAfterLoad = false
     var title: String
     var zoom: Double = 1
     var lastActive = Date()
@@ -115,6 +123,10 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
                                      WKUIDelegate, NSSearchFieldDelegate, NSTextFieldDelegate,
                                      NSMenuItemValidation, TabStripDelegate {
     let isPrivate: Bool
+    /// The profile whose logins, history, and bookmarks this window uses.
+    let profile: ProfileData
+    /// When this window was last focused; the most recent one is the profile's "current" window.
+    private(set) var lastFocused = Date()
 
     private let dataStore: WKWebsiteDataStore
     private var tabs: [Tab] = []
@@ -139,6 +151,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     private let forwardButton = NSButton()
     private let reloadButton = NSButton()
     private let bookmarkButton = NSButton()
+    /// Profile avatar at the right end of the toolbar, like Chrome.
+    private let profileButton = FirstClickButton()
     private let findBar = NSStackView()
     private let findField = NSSearchField()
     private let findStatus = NSTextField(labelWithString: "")
@@ -148,10 +162,11 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
 
     private var activeTab: Tab? { tabs.indices.contains(activeIndex) ? tabs[activeIndex] : nil }
 
-    init(isPrivate: Bool) {
+    init(profile: ProfileData, isPrivate: Bool) {
+        self.profile = profile
         self.isPrivate = isPrivate
         // Private window: cookies/cache live in memory only and vanish when the window closes.
-        dataStore = isPrivate ? .nonPersistent() : .default()
+        dataStore = isPrivate ? .nonPersistent() : profile.dataStore
 
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
@@ -172,11 +187,13 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
 
         let center = NotificationCenter.default
         center.addObserver(self, selector: #selector(bookmarksChanged),
-                           name: .askaraBookmarksChanged, object: nil)
+                           name: .askaraBookmarksChanged, object: profile)
+        center.addObserver(self, selector: #selector(profilesChanged),
+                           name: .askaraProfilesChanged, object: nil)
         center.addObserver(self, selector: #selector(downloadEvent(_:)),
                            name: .askaraDownloadEvent, object: nil)
         center.addObserver(self, selector: #selector(refreshExtensionButtons),
-                           name: .askaraExtensionsChanged, object: nil)
+                           name: .askaraExtensionsChanged, object: profile)
         center.addObserver(self, selector: #selector(preferencesChanged),
                            name: .askaraPreferencesChanged, object: nil)
         // Device Mode keeps the emulated screen centered and fitted when the window resizes.
@@ -229,7 +246,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         addressField.lineBreakMode = .byTruncatingTail
         addressField.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
-        let toolbarStack = NSStackView(views: [backButton, forwardButton, reloadButton, addressField, bookmarkButton])
+        configureProfileButton()
+        let toolbarStack = NSStackView(views: [backButton, forwardButton, reloadButton, addressField, bookmarkButton, profileButton])
         toolbarStack.orientation = .horizontal
         toolbarStack.spacing = 6
         toolbarStack.edgeInsets = NSEdgeInsets(top: 5, left: 10, bottom: 6, right: 10)
@@ -319,11 +337,13 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         backButton.isEnabled = web?.canGoBack ?? false
         forwardButton.isEnabled = web?.canGoForward ?? false
         if addressField.currentEditor() == nil {
-            addressField.stringValue = tab?.displayURL?.absoluteString ?? ""
+            addressField.stringValue = addressText(for: tab)
         }
         // Title is still set for the Window menu, Mission Control, and VoiceOver, even though hidden.
         let title = tab?.title ?? "Askara"
-        window?.title = isPrivate ? String(localized: "\(title) (Private)") : title
+        // Profile name in the title only once there is more than one profile (Window menu, Mission Control).
+        let named = services.profileList.profiles.count > 1 ? "\(title) – \(profile.profile.name)" : title
+        window?.title = isPrivate ? String(localized: "\(named) (Private)") : named
         let loading = web?.isLoading == true
         reloadButton.image = NSImage(systemSymbolName: loading ? "xmark" : "arrow.clockwise",
                                      accessibilityDescription: loading ? String(localized: "Stop") : String(localized: "Reload"))?
@@ -333,7 +353,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
 
     private func updateBookmarkButton() {
         let url = activeTab?.url
-        let saved = url.map(services.bookmarks.contains) ?? false
+        let saved = url.map(profile.bookmarks.contains) ?? false
         let label = saved ? String(localized: "Remove bookmark (⌘D)") : String(localized: "Add bookmark (⌘D)")
         bookmarkButton.image = NSImage(systemSymbolName: saved ? "star.fill" : "star", accessibilityDescription: label)?
             .withSymbolConfiguration(.init(pointSize: 14, weight: .medium))
@@ -346,6 +366,44 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     func showToast(_ text: String, duration: TimeInterval? = 3) { toast.show(text, duration: duration) }
 
     @objc private func bookmarksChanged() { updateBookmarkButton() }
+
+    // MARK: - Profile button
+
+    private func configureProfileButton() {
+        profileButton.isBordered = false
+        profileButton.imagePosition = .imageOnly
+        profileButton.target = self
+        profileButton.action = #selector(profileButtonClicked(_:))
+        profileButton.widthAnchor.constraint(equalToConstant: 28).isActive = true
+        profileButton.heightAnchor.constraint(equalToConstant: 28).isActive = true
+        updateProfileButton()
+    }
+
+    private func updateProfileButton() {
+        let current = profile.profile
+        profileButton.image = ProfileColors.avatar(for: current, size: 20)
+        // Private windows show the profile too, but dimmed: they don't use its logins.
+        profileButton.alphaValue = isPrivate ? 0.6 : 1
+        let label = isPrivate ? String(localized: "Profile: \(current.name) (private window)")
+                              : String(localized: "Profile: \(current.name)")
+        profileButton.toolTip = label
+        profileButton.setAccessibilityLabel(label)
+    }
+
+    @objc private func profilesChanged() {
+        // This window's profile was deleted: it's being closed.
+        guard services.profileList.profile(profile.id) != nil else { return }
+        updateProfileButton()
+        updateToolbar()
+    }
+
+    @objc private func profileButtonClicked(_ sender: NSButton) {
+        guard let delegate = NSApp.delegate as? AppDelegate else { return }
+        let menu = NSMenu()
+        ProfileMenu.fill(menu, current: profile.id, target: delegate)
+        // Actions act on the profile in use, which is this window's (it's key when clicked).
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 4), in: sender)
+    }
 
     @objc private func downloadEvent(_ note: Notification) {
         guard services.keyBrowserWindow === self, let text = note.userInfo?["text"] as? String else { return }
@@ -392,11 +450,39 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
 
     // MARK: - Tab lifecycle
 
-    /// New tab from ⌘T / the + button: opens Google right away, with the address bar selected
-    /// so the user can type another address immediately.
+    /// New tab from ⌘T / the + button: shows the search engine's page (or the home page), with an
+    /// empty, focused address bar so the user can type right away.
     func openBlankTab() {
         focusAddressBarOnActivate = true
         newTab(url: services.homeURL)
+        activeTab?.hidesHomeAddress = true
+        activeTab?.refocusAddressAfterLoad = true
+        addressField.stringValue = ""
+    }
+
+    /// The new tab's page has rendered: empty, focused address bar, unless the user already typed
+    /// there or clicked into the page.
+    private func refocusAddressBarIfNeeded(_ tab: Tab) {
+        guard tab.refocusAddressAfterLoad, tab === activeTab, window?.isKeyWindow == true else { return }
+        tab.refocusAddressAfterLoad = false
+        guard tab.hidesHomeAddress else { return }
+        let editing = addressField.currentEditor() != nil
+        if editing, !addressField.stringValue.isEmpty { return } // already typing: leave it alone
+        if !editing, let web = tab.webView, window?.firstResponder !== web,
+           window?.firstResponder !== window { return } // focus moved elsewhere on purpose
+        addressField.stringValue = ""
+        focusAddressBar(nil)
+    }
+
+    /// Address bar text for a tab. Empty on a new tab's start page.
+    private func addressText(for tab: Tab?) -> String {
+        guard let tab else { return "" }
+        if tab.hidesHomeAddress {
+            if tab.homeLandingURL == nil || tab.displayURL == tab.homeLandingURL { return "" }
+            // Moved on to another page (link, search, pushState): show addresses from now on.
+            tab.hidesHomeAddress = false
+        }
+        return AddressParser.displayString(for: tab.displayURL)
     }
 
     /// `activate: false` opens the tab in the background, asleep (using no RAM).
@@ -412,7 +498,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     /// The only path for adding tabs, so extensions are always notified.
     @discardableResult
     func insertTab(url: URL?, at index: Int, activate: Bool, webView: WKWebView? = nil) -> Tab {
-        let tab = Tab(url: url ?? (webView == nil ? services.homeURL : nil))
+        // nil = empty tab (e.g. ⌘T, or an extension opening a tab without an address).
+        let tab = Tab(url: url)
         tab.owner = self
         if let webView { attach(webView, to: tab) }
         // New tabs never go between pinned tabs.
@@ -434,7 +521,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
 
     /// Extension controller, for normal windows only. Private windows are invisible to extensions.
     var extensionController: WKWebExtensionController? {
-        isPrivate ? nil : services.extensions.controller
+        isPrivate ? nil : profile.extensions.controller
     }
 
     var allTabs: [Tab] { tabs }
@@ -456,6 +543,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     /// Loads a URL in a given tab. A sleeping tab just gets its URL replaced and loads when opened.
     func load(_ url: URL, in tab: Tab) {
         if tab === activeTab { return load(url) }
+        tab.hidesHomeAddress = false
         tab.url = url
         tab.displayURL = url
         tab.interactionState = nil
@@ -469,6 +557,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     /// Loads a URL in the active tab (or a new tab if there is none).
     func load(_ url: URL) {
         guard let tab = activeTab else { return newTab(url: url) }
+        tab.hidesHomeAddress = false
         tab.url = url
         // The typed address stays visible until the final page (after redirects) is done.
         tab.displayURL = url
@@ -507,7 +596,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     }
 
     private func sessionChanged() {
-        if !isPrivate { services.scheduleSessionSave() }
+        if !isPrivate { profile.scheduleSessionSave() }
     }
 
     private func activate(index: Int) {
@@ -529,7 +618,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         // Fill the address bar before focusing: while editing, updateToolbar won't overwrite it,
         // so the previous tab's URL could linger.
         addressField.abortEditing()
-        addressField.stringValue = tab.displayURL?.absoluteString ?? ""
+        addressField.stringValue = addressText(for: tab)
         if focusAddressBarOnActivate {
             focusAddressBarOnActivate = false
             focusAddressBar(nil)
@@ -548,7 +637,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     /// history and scroll position are restored via `interactionState`.
     @discardableResult
     private func wake(_ tab: Tab, loadURL: Bool = true) -> WKWebView {
-        let configuration = (isPrivate ? nil : services.extensions.webViewConfiguration(for: tab.url))
+        let configuration = (isPrivate ? nil : profile.extensions.webViewConfiguration(for: tab.url))
             ?? makeConfiguration()
         let webView = AskaraWebView(frame: contentView.bounds, configuration: configuration)
         attach(webView, to: tab)
@@ -582,7 +671,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
                 MainActor.assumeIsolated {
                     guard let self, let tab, let title = web.title, !title.isEmpty else { return }
                     tab.title = title
-                    if !self.isPrivate, let url = web.url { self.services.updateHistoryTitle(title, for: url) }
+                    if !self.isPrivate, let url = web.url { self.profile.updateHistoryTitle(title, for: url) }
                     self.tabChanged(tab, .title)
                     self.refreshTabStrip()
                     self.updateToolbar()
@@ -743,7 +832,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         guard tabs.indices.contains(index) else { return }
         let tab = tabs[index]
         if !isPrivate, let url = tab.webView?.url ?? tab.url {
-            services.recentlyClosed.push(ClosedTab(url: url, title: tab.title))
+            profile.recentlyClosed.push(ClosedTab(url: url, title: tab.title))
         }
         dropWebView(of: tab)
         tabs.remove(at: index)
@@ -949,14 +1038,14 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
 
     private func chooseSuggestion(_ suggestion: AddressSuggestion) {
         suggestions.hide()
-        addressField.stringValue = suggestion.url.absoluteString
+        addressField.stringValue = AddressParser.displayString(for: suggestion.url)
         load(suggestion.url)
     }
 
     private func updateSuggestions() {
         typedAddress = addressField.stringValue
-        let found = AddressSuggester.suggestions(for: typedAddress, history: services.history.entries,
-                                                 bookmarks: services.bookmarks.bookmarks)
+        let found = AddressSuggester.suggestions(for: typedAddress, history: profile.history.entries,
+                                                 bookmarks: profile.bookmarks.bookmarks)
         if found.isEmpty { suggestions.hide() } else { suggestions.show(found, below: addressField) }
     }
 
@@ -976,7 +1065,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
 
     @objc func toggleBookmarkAction(_ sender: Any?) {
         guard let tab = activeTab, let url = tab.url else { return }
-        let added = services.toggleBookmark(url: url, title: tab.title)
+        let added = profile.toggleBookmark(url: url, title: tab.title)
         showToast(added ? String(localized: "Bookmark added: \(tab.title)") : String(localized: "Bookmark removed"), duration: 2)
     }
 
@@ -1001,7 +1090,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
 
     @objc func openLinkInPrivateWindow(_ sender: NSMenuItem) {
         guard let url = sender.representedObject as? URL else { return }
-        services.makeWindow(isPrivate: true).newTab(url: url)
+        services.makeWindow(profile: profile, isPrivate: true).newTab(url: url)
     }
 
     @objc func searchSelection(_ sender: NSMenuItem) {
@@ -1267,7 +1356,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
             }
         }
         if control === addressField, selector == #selector(NSResponder.cancelOperation(_:)) {
-            addressField.stringValue = activeTab?.displayURL?.absoluteString ?? ""
+            addressField.stringValue = addressText(for: activeTab)
             if let web = activeTab?.webView { window?.makeFirstResponder(web) }
             return true
         }
@@ -1309,7 +1398,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         case #selector(forwardAction(_:)): return web?.canGoForward ?? false
         case #selector(toggleBookmarkAction(_:)):
             guard let url = activeTab?.url else { return false }
-            item.title = services.bookmarks.contains(url) ? String(localized: "Remove Bookmark") : String(localized: "Add Bookmark")
+            item.title = profile.bookmarks.contains(url) ? String(localized: "Remove Bookmark") : String(localized: "Add Bookmark")
             return true
         case #selector(findNextAction(_:)), #selector(findPreviousAction(_:)):
             return web != nil && !findField.stringValue.isEmpty
@@ -1417,7 +1506,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         // mailto:, tel:, zoommtg:, etc. go to the matching app, only when clicked by the user.
         let webSchemes: Set<String> = ["http", "https", "about", "file", "blob", "data", "javascript"]
         // Internal extension pages (settings, popups opened in a tab) still load in Askara.
-        if !webSchemes.contains(scheme), !services.extensions.isExtensionURL(url) {
+        if !webSchemes.contains(scheme), !(profile.loadedExtensions?.isExtensionURL(url) ?? false) {
             if isUserClick { NSWorkspace.shared.open(url) }
             return .cancel
         }
@@ -1448,6 +1537,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         guard let tab = tabs.first(where: { $0.webView === webView }), let url = webView.url else { return }
         tab.url = url
         tab.displayURL = url
+        if tab.hidesHomeAddress, tab.homeLandingURL == nil { tab.homeLandingURL = url }
         tab.httpFallbackURL = nil
         // New page: the old page's form input is gone.
         tab.dirtyFrames.removeAll()
@@ -1460,7 +1550,13 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         // Again once loaded: at commit time the document can still be too empty to take the CSS.
         applySiteCSS(to: webView)
-        if !isPrivate, let url = webView.url { services.recordVisit(url: url, title: webView.title) }
+        if let tab = tabs.first(where: { $0.webView === webView }), tab.refocusAddressAfterLoad {
+            // After the page's own autofocus scripts have run.
+            DispatchQueue.main.async { [weak self, weak tab] in
+                MainActor.assumeIsolated { if let tab { self?.refocusAddressBarIfNeeded(tab) } }
+            }
+        }
+        if !isPrivate, let url = webView.url { profile.recordVisit(url: url, title: webView.title) }
         sessionChanged()
         loadFavicon(for: webView)
     }
@@ -1634,7 +1730,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     private func decidePermission(_ kinds: [PermissionKind], host: String, in webView: WKWebView,
                                   completion: @escaping @MainActor (Bool) -> Void) {
         guard !host.isEmpty else { return completion(false) }
-        if !isPrivate, let saved = services.permissions.decision(for: kinds, host: host) {
+        if !isPrivate, let saved = profile.permissions.decision(for: kinds, host: host) {
             return completion(saved == .allow)
         }
         guard let window, let tab = tabs.first(where: { $0.webView === webView }) else { return completion(false) }
@@ -1666,7 +1762,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         alert.beginSheetModal(for: window) { [weak self] response in
             let allowed = response == .alertFirstButtonReturn
             if let self, !self.isPrivate, alert.suppressionButton?.state == .on {
-                kinds.forEach { self.services.setPermission(allowed ? .allow : .block, for: $0, host: host) }
+                kinds.forEach { self.profile.setPermission(allowed ? .allow : .block, for: $0, host: host) }
             }
             completion(allowed)
         }
@@ -1689,6 +1785,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
 
     func windowDidBecomeKey(_ notification: Notification) {
         activeTab?.lastActive = Date()
+        lastFocused = Date()
+        if !isPrivate { services.profileUsed(profile) }
         extensionController?.didFocusWindow(self)
     }
 
@@ -1720,7 +1818,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         extensionButtons.removeAll()
         guard !isPrivate else { return }
 
-        for (index, entry) in services.extensions.loaded.enumerated() {
+        for (index, entry) in (profile.loadedExtensions?.loaded ?? []).enumerated() {
             let action = entry.context.action(for: activeTab)
             let label = action?.label.isEmpty == false ? action!.label : (entry.context.webExtension.displayName ?? entry.item.name)
             let button = FirstClickButton()
@@ -1739,7 +1837,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
             button.widthAnchor.constraint(equalToConstant: 28).isActive = true
             button.heightAnchor.constraint(equalToConstant: 28).isActive = true
             if !badge.isEmpty { addBadge(badge, to: button) }
-            stack.addArrangedSubview(button)
+            // Extension buttons sit between the bookmark star and the profile avatar.
+            stack.insertArrangedSubview(button, at: stack.arrangedSubviews.firstIndex(of: profileButton) ?? stack.arrangedSubviews.count)
             extensionButtons.append(button)
         }
     }
@@ -1763,7 +1862,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     }
 
     @objc private func extensionButtonClicked(_ sender: NSButton) {
-        let loaded = services.extensions.loaded
+        let loaded = profile.loadedExtensions?.loaded ?? []
         guard loaded.indices.contains(sender.tag) else { return }
         // WebKit handles the click: opens the popup (via the presentActionPopup delegate) or sends the onClicked event.
         // Don't touch action.popupWebView before this: WebKit only presents a popup whose page finishes
@@ -1788,7 +1887,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     /// Shows the extension popup below its button. WebKit has already prepared the NSPopover.
     func presentExtensionPopup(_ action: WKWebExtension.Action) -> Bool {
         guard let popover = action.popupPopover else { return false }
-        let index = services.extensions.loaded.firstIndex { $0.context === action.webExtensionContext }
+        let index = profile.loadedExtensions?.loaded.firstIndex { $0.context === action.webExtensionContext }
         let anchor: NSView = index.flatMap { extensionButtons.indices.contains($0) ? extensionButtons[$0] : nil }
             ?? addressField
         showWindow(nil)

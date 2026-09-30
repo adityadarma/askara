@@ -97,7 +97,7 @@ final class AskaraWebView: WKWebView {
 
         // Page menu (not a link, image, or text): add page actions.
         if target.link == nil, target.image == nil, target.selection.isEmpty {
-            let bookmarked = url.map(BrowserServices.shared.bookmarks.contains) ?? false
+            let bookmarked = url.map(browser.profile.bookmarks.contains) ?? false
             let pageItems: [NSMenuItem] = [
                 .separator(),
                 item(bookmarked ? String(localized: "Remove Bookmark") : String(localized: "Add Bookmark"),

@@ -3,6 +3,15 @@ import Testing
 @testable import AskaraCore
 
 @Suite struct AddressParserTests {
+    @Test func displayHidesRootSlashOnly() {
+        #expect(AddressParser.displayString(for: URL(string: "https://www.google.com/")) == "https://www.google.com")
+        #expect(AddressParser.displayString(for: URL(string: "https://example.com/a/")) == "https://example.com/a/")
+        #expect(AddressParser.displayString(for: URL(string: "https://example.com/?q=1")) == "https://example.com/?q=1")
+        #expect(AddressParser.displayString(for: URL(string: "https://example.com/#top")) == "https://example.com/#top")
+        #expect(AddressParser.displayString(for: URL(string: "file:///")) == "file:///")
+        #expect(AddressParser.displayString(for: nil) == "")
+    }
+
     @Test func fullURLUnchanged() {
         #expect(AddressParser.url(from: "https://example.com/a?b=1")?.absoluteString
                 == "https://example.com/a?b=1")

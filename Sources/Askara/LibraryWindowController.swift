@@ -42,6 +42,8 @@ final class LibraryWindowController: NSWindowController, NSTableViewDataSource, 
     private let actionButton = NSButton()
     private let emptyLabel = NSTextField(labelWithString: "")
     private var services: BrowserServices { .shared }
+    /// History and bookmarks shown are those of the profile in use when the window was opened.
+    private var profile: ProfileData = BrowserServices.shared.currentProfile
     private let dateFormatter: DateFormatter = {
         let f = DateFormatter()
         f.dateStyle = .medium
@@ -70,6 +72,7 @@ final class LibraryWindowController: NSWindowController, NSTableViewDataSource, 
     required init?(coder: NSCoder) { fatalError("not used") }
 
     func show(_ mode: Mode) {
+        profile = services.currentProfile
         self.mode = mode
         picker.selectedSegment = mode.rawValue
         searchField.stringValue = ""
@@ -160,7 +163,8 @@ final class LibraryWindowController: NSWindowController, NSTableViewDataSource, 
     @objc private func dataChanged(_ note: Notification) {
         let relevant: Notification.Name = [.askaraHistoryChanged, .askaraBookmarksChanged, .askaraDownloadsChanged][mode.rawValue]
         // No need to refresh a table that isn't visible.
-        guard note.name == relevant, window?.isVisible == true else { return }
+        guard note.name == relevant, window?.isVisible == true,
+              note.object == nil || note.object as AnyObject === profile else { return }
         reload()
     }
 
@@ -174,14 +178,14 @@ final class LibraryWindowController: NSWindowController, NSTableViewDataSource, 
 
         switch mode {
         case .history:
-            rows = services.history.search(query, limit: 1_000).map {
+            rows = profile.history.search(query, limit: 1_000).map {
                 Row(id: $0.url, title: $0.title.isEmpty ? ($0.url.host ?? "") : $0.title,
                     detail: $0.url.absoluteString, date: $0.lastVisited, url: $0.url)
             }
             actionButton.title = String(localized: "Clear History…")
             emptyLabel.stringValue = String(localized: "No history yet")
         case .bookmarks:
-            rows = services.bookmarks.bookmarks.reversed()
+            rows = profile.bookmarks.bookmarks.reversed()
                 .filter { matches($0.title, $0.url.absoluteString) }
                 .map { Row(id: $0.id, title: $0.title, detail: $0.url.absoluteString, date: $0.created, url: $0.url) }
             actionButton.title = String(localized: "Remove Selected")
@@ -193,7 +197,8 @@ final class LibraryWindowController: NSWindowController, NSTableViewDataSource, 
             actionButton.title = String(localized: "Clear List")
             emptyLabel.stringValue = String(localized: "No downloads yet")
         }
-        window?.title = mode.title
+        // Profile name only once there is more than one profile.
+        window?.title = services.profileList.profiles.count > 1 ? "\(mode.title) – \(profile.profile.name)" : mode.title
         emptyLabel.isHidden = !rows.isEmpty
         table.reloadData()
     }
@@ -222,12 +227,12 @@ final class LibraryWindowController: NSWindowController, NSTableViewDataSource, 
             return
         }
         for (index, row) in selected.enumerated() {
-            if let url = row.url { services.open(url, newTab: index > 0) }
+            if let url = row.url { services.open(url, newTab: index > 0, profile: profile) }
         }
     }
 
     @objc private func openSelectedInNewTabs(_ sender: Any?) {
-        selectedRows.compactMap(\.url).forEach { services.open($0, newTab: true) }
+        selectedRows.compactMap(\.url).forEach { services.open($0, newTab: true, profile: profile) }
     }
 
     @objc private func copyAddress(_ sender: Any?) {
@@ -256,7 +261,7 @@ final class LibraryWindowController: NSWindowController, NSTableViewDataSource, 
         alert.window.initialFirstResponder = input
         alert.beginSheetModal(for: window) { [weak self] response in
             guard response == .alertFirstButtonReturn else { return }
-            self?.services.renameBookmark(id: id, to: input.stringValue)
+            self?.profile.renameBookmark(id: id, to: input.stringValue)
         }
     }
 
@@ -265,8 +270,8 @@ final class LibraryWindowController: NSWindowController, NSTableViewDataSource, 
         let selected = selectedRows
         guard !selected.isEmpty else { return }
         switch mode {
-        case .history: services.removeHistory(urls: selected.compactMap { $0.id.base as? URL })
-        case .bookmarks: services.removeBookmarks(ids: selected.compactMap { $0.id.base as? UUID })
+        case .history: profile.removeHistory(urls: selected.compactMap { $0.id.base as? URL })
+        case .bookmarks: profile.removeBookmarks(ids: selected.compactMap { $0.id.base as? UUID })
         case .downloads:
             let ids = Set(selected.compactMap { $0.id.base as? UUID })
             // Removing from the list cancels it if still running. Finished files are not deleted.
@@ -296,7 +301,7 @@ final class LibraryWindowController: NSWindowController, NSTableViewDataSource, 
         alert.buttons.first?.hasDestructiveAction = true
         alert.beginSheetModal(for: window) { [weak self] response in
             guard response == .alertFirstButtonReturn else { return }
-            self?.services.clearBrowsingData {}
+            self?.profile.clearBrowsingData {}
         }
     }
 

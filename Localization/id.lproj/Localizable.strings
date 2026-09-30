@@ -306,3 +306,34 @@
 "Use Current Page" = "Pakai Halaman Ini";
 "You can change this later in Settings > Site Permissions." = "Anda bisa mengubahnya nanti di Pengaturan > Izin Situs.";
 "e.g. mail.google.com" = "mis. mail.google.com";
+
+/* Profiles */
+"Main" = "Utama";
+"Profiles" = "Profil";
+"Profile in use" = "Profil yang sedang dipakai";
+"Open a window for this profile" = "Buka jendela untuk profil ini";
+"Add Profile…" = "Tambah Profil…";
+"Edit “%@”…" = "Edit “%@”…";
+"Delete “%@”…" = "Hapus “%@”…";
+"Add Profile" = "Tambah Profil";
+"Edit Profile" = "Edit Profil";
+"Delete profile “%@”?" = "Hapus profil “%@”?";
+"Delete" = "Hapus";
+"Profile name, e.g. Work" = "Nama profil, mis. Kerja";
+"Profile name" = "Nama profil";
+"Profile color" = "Warna profil";
+"Name:" = "Nama:";
+"Color:" = "Warna:";
+"Indigo" = "Nila";
+"Teal" = "Hijau Toska";
+"Terracotta" = "Terakota";
+"Purple" = "Ungu";
+"Green" = "Hijau";
+"Rose" = "Merah Muda";
+"Ochre" = "Oker";
+"Slate" = "Abu Batu";
+"Profile: %@" = "Profil: %@";
+"Profile: %@ (private window)" = "Profil: %@ (jendela pribadi)";
+"Applies to profile: %@" = "Berlaku untuk profil: %@";
+"A profile has its own logins, history, bookmarks, site permissions, and extensions. Settings are shared." = "Profil punya login, riwayat, bookmark, izin situs, dan ekstensi sendiri. Pengaturan dipakai bersama.";
+"Its windows close, and its logins, cookies, history, bookmarks, site permissions, and extension data are removed from this Mac. This can’t be undone." = "Jendelanya ditutup, lalu login, cookie, riwayat, bookmark, izin situs, dan data ekstensinya dihapus dari Mac ini. Tindakan ini tidak bisa dibatalkan.";

@@ -7,25 +7,29 @@ import WebKit
 /// and restores them before tabs are restored.
 ///
 /// The file is readable only by this user account (0600 permissions), like WebKit's own cookie file.
+/// One per profile, since each profile has its own cookie store.
 @MainActor
-enum SessionCookies {
-    private static let fileURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        .appendingPathComponent("Askara/session-cookies.plist")
+final class SessionCookies {
+    private let fileURL: URL
+    private let store: WKHTTPCookieStore
 
-    private static var store: WKHTTPCookieStore { WKWebsiteDataStore.default().httpCookieStore }
+    init(store: WKHTTPCookieStore, fileURL: URL) {
+        self.store = store
+        self.fileURL = fileURL
+    }
 
-    static func save(completion: @escaping @MainActor () -> Void = {}) {
+    func save(completion: @escaping @MainActor () -> Void = {}) {
         store.getAllCookies { cookies in
             MainActor.assumeIsolated {
-                let list = cookies.filter(\.isSessionOnly).map(plist)
-                write(list)
+                let list = cookies.filter(\.isSessionOnly).map(Self.plist)
+                self.write(list)
                 completion()
             }
         }
     }
 
     /// Installs saved cookies. `completion` is called once all are set, before tabs load.
-    static func restore(completion: @escaping @MainActor () -> Void) {
+    func restore(completion: @escaping @MainActor () -> Void) {
         guard let data = try? Data(contentsOf: fileURL),
               let list = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [[String: Any]],
               !list.isEmpty else { return completion() }
@@ -41,7 +45,7 @@ enum SessionCookies {
         group.notify(queue: .main) { MainActor.assumeIsolated { completion() } }
     }
 
-    static func delete() {
+    func delete() {
         try? FileManager.default.removeItem(at: fileURL)
     }
 
@@ -60,7 +64,7 @@ enum SessionCookies {
         return result
     }
 
-    private static func write(_ list: [[String: Any]]) {
+    private func write(_ list: [[String: Any]]) {
         do {
             let data = try PropertyListSerialization.data(fromPropertyList: list, format: .binary, options: 0)
             try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(),

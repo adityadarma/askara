@@ -9,6 +9,7 @@ extension Notification.Name {
     static let askaraBlockListReady = Notification.Name("AskaraBlockListReady")
     static let askaraDownloadEvent = Notification.Name("AskaraDownloadEvent")
     static let askaraPreferencesChanged = Notification.Name("AskaraPreferencesChanged")
+    static let askaraProfilesChanged = Notification.Name("AskaraProfilesChanged")
 }
 
 struct ClosedTab {
@@ -16,41 +17,34 @@ struct ClosedTab {
     let title: String
 }
 
-/// App-wide shared state: history, bookmarks, downloads, session, and the window list.
+/// App-wide shared state: profiles, settings, downloads, ad blocker, and the window list.
+/// Per-profile data (history, bookmarks, logins, session, extensions) lives in `ProfileData`.
 @MainActor
 final class BrowserServices {
     static let shared = BrowserServices()
 
-    private(set) var history: HistoryStore
-    private(set) var bookmarks: BookmarkStore
     private(set) var ruleList: WKContentRuleList?
     private(set) var windows: [BrowserWindowController] = []
-    var recentlyClosed = RecentlyClosed<ClosedTab>(capacity: 25)
     let downloads = DownloadManager()
 
-    private let historyFile = JSONFile<HistoryStore>.inAppSupport("history.json")
-    private let bookmarksFile = JSONFile<BookmarkStore>.inAppSupport("bookmarks.json")
-    private let sessionFile = JSONFile<SessionState>.inAppSupport("session.json")
     private let siteSettingsFile = JSONFile<SiteSettings>.inAppSupport("site-settings.json")
     private let preferencesFile = JSONFile<BrowserPreferences>.inAppSupport("preferences.json")
-    private let permissionsFile = JSONFile<SitePermissions>.inAppSupport("site-permissions.json")
-    private var saveTasks: [String: Task<Void, Never>] = [:]
+    private let profilesFile = JSONFile<ProfileList>.inAppSupport("profiles.json")
     /// Per-site JavaScript blocking and custom CSS/JavaScript. Kept when browsing data is cleared, like Chrome.
     private(set) var siteSettings: SiteSettings
-    /// Settings window (⌘,).
+    /// Settings window (⌘,). Shared by all profiles.
     private(set) var preferences: BrowserPreferences
-    /// Remembered camera/microphone/location choices.
-    private(set) var permissions: SitePermissions
+    private(set) var profileList: ProfileList
+    /// Profiles opened since launch.
+    private var profileData: [UUID: ProfileData] = [:]
 
     private init() {
-        history = historyFile.load() ?? HistoryStore()
-        bookmarks = bookmarksFile.load() ?? BookmarkStore()
         siteSettings = siteSettingsFile.load() ?? SiteSettings()
         preferences = preferencesFile.load() ?? BrowserPreferences()
-        permissions = permissionsFile.load() ?? SitePermissions()
+        profileList = profilesFile.load() ?? ProfileList(defaultName: String(localized: "Main"))
     }
 
-    // MARK: - Preferences & permissions
+    // MARK: - Preferences
 
     func updatePreferences(_ change: (inout BrowserPreferences) -> Void) {
         let before = preferences
@@ -68,21 +62,6 @@ final class BrowserServices {
     var searchEngine: SearchEngine { preferences.searchEngine }
     var homeURL: URL { preferences.homeURL }
 
-    func setPermission(_ choice: PermissionChoice?, for kind: PermissionKind, host: String) {
-        permissions.set(choice, for: kind, host: host)
-        savePermissions()
-    }
-
-    func removePermissions(host: String) {
-        permissions.removeAll(host: host)
-        savePermissions()
-    }
-
-    private func savePermissions() {
-        do { try permissionsFile.save(permissions) } catch { Log.error("Askara: failed to save permissions: \(error)") }
-        NotificationCenter.default.post(name: .askaraPreferencesChanged, object: nil)
-    }
-
     // MARK: - Site settings
 
     func setJavaScriptBlocked(_ blocked: Bool, host: String) {
@@ -99,18 +78,103 @@ final class BrowserServices {
         do { try siteSettingsFile.save(siteSettings) } catch { Log.error("Askara: failed to save site settings: \(error)") }
     }
 
+    // MARK: - Profiles
+
+    /// Loaded data for a profile (created on first use).
+    func data(for id: UUID) -> ProfileData {
+        if let data = profileData[id] { return data }
+        let data = ProfileData(id: profileList.profile(id) != nil ? id : Profile.defaultID)
+        profileData[data.id] = data
+        return data
+    }
+
+    /// Profile of the window in use, or the last used profile when no window is open.
+    var currentProfile: ProfileData { keyBrowserWindow?.profile ?? data(for: profileList.lastUsedID) }
+
+    /// A normal window of this profile became active: it opens at next launch.
+    func profileUsed(_ profile: ProfileData) {
+        guard profileList.markUsed(profile.id) else { return }
+        saveProfiles()
+    }
+
+    func addProfile(name: String) -> Profile? {
+        guard let profile = profileList.add(name: name) else { return nil }
+        saveProfiles()
+        return profile
+    }
+
+    func updateProfile(_ id: UUID, name: String, colorIndex: Int) {
+        guard profileList.update(id, name: name, colorIndex: colorIndex) else { return }
+        saveProfiles()
+    }
+
+    /// Closes the profile's windows and deletes all its data: website data, history, bookmarks, session.
+    func removeProfile(_ id: UUID) {
+        guard profileList.canRemove(id) else { return }
+        let data = profileData[id]
+        data?.windows.forEach { $0.close() }
+        data?.discard()
+        profileData[id] = nil
+        profileList.remove(id)
+        saveProfiles()
+        let folder = JSONFile<Int>.inAppSupport(Profile.folder(for: id)).url
+        do { try FileManager.default.removeItem(at: folder) } catch CocoaError.fileNoSuchFile {} catch {
+            Log.error("Askara: failed to delete profile folder: \(error)")
+        }
+        // WebKit can only remove the store once no web view uses it; closed web views go away
+        // on the next run loop turn. If it's still busy, it is retried at the next launch.
+        DispatchQueue.main.async { MainActor.assumeIsolated { self.removeDataStores() } }
+    }
+
+    /// Removes WebKit data stores of deleted profiles.
+    func removeDataStores() {
+        for id in profileList.pendingRemovals where profileData[id] == nil {
+            WKWebsiteDataStore.remove(forIdentifier: id) { error in
+                MainActor.assumeIsolated {
+                    if let error {
+                        Log.error("Askara: profile data store not removed yet (retried at next launch): \(error)")
+                        return
+                    }
+                    self.profileList.storeRemoved(id)
+                    self.saveProfiles()
+                }
+            }
+        }
+    }
+
+    private func saveProfiles() {
+        do { try profilesFile.save(profileList) } catch { Log.error("Askara: failed to save profiles: \(error)") }
+        NotificationCenter.default.post(name: .askaraProfilesChanged, object: nil)
+    }
+
+    /// Opens a profile: its existing normal window if one is open, otherwise a new window with
+    /// the tab that was active last time (or the home page).
+    func openProfile(_ id: UUID) {
+        let profile = data(for: id)
+        if let window = profile.windows.filter({ !$0.isPrivate }).max(by: { $0.lastFocused < $1.lastFocused }) {
+            window.showWindow(nil)
+            return
+        }
+        profile.prepare {
+            if !profile.openStartupWindow() {
+                self.makeWindow(profile: profile).newTab(url: self.homeURL)
+            }
+            NSApp.activate()
+        }
+    }
+
     // MARK: - Windows
 
     /// The browser window the user is currently using.
     var keyBrowserWindow: BrowserWindowController? {
         if let c = NSApp.keyWindow?.windowController as? BrowserWindowController { return c }
         if let c = NSApp.mainWindow?.windowController as? BrowserWindowController { return c }
-        return windows.last
+        return windows.max { $0.lastFocused < $1.lastFocused }
     }
 
     @discardableResult
-    func makeWindow(isPrivate: Bool) -> BrowserWindowController {
-        let controller = BrowserWindowController(isPrivate: isPrivate)
+    func makeWindow(profile: ProfileData? = nil, isPrivate: Bool = false) -> BrowserWindowController {
+        let controller = BrowserWindowController(profile: profile ?? currentProfile, isPrivate: isPrivate)
         if let last = windows.last?.window, let window = controller.window {
             let topLeft = NSPoint(x: last.frame.minX, y: last.frame.maxY)
             window.setFrameTopLeftPoint(window.cascadeTopLeft(from: topLeft))
@@ -123,26 +187,40 @@ final class BrowserServices {
     }
 
     func windowWillClose(_ controller: BrowserWindowController) {
+        let profile = controller.profile
         if !controller.isPrivate {
-            let remainingNormal = windows.filter { $0 !== controller && !$0.isPrivate }
+            let remainingNormal = profile.windows.filter { $0 !== controller && !$0.isPrivate }
             if remainingNormal.isEmpty {
-                // Last normal window: save it so it is restored when the app reopens.
-                saveSession(SessionState(windows: [controller.savedState()]))
+                // Last normal window of this profile: save it so it is restored when the profile reopens.
+                profile.saveSession(SessionState(windows: [controller.savedState()]))
             } else {
                 controller.savedState().tabs.forEach {
-                    recentlyClosed.push(ClosedTab(url: $0.url, title: $0.title))
+                    profile.recentlyClosed.push(ClosedTab(url: $0.url, title: $0.title))
                 }
-                scheduleSessionSave()
+                profile.scheduleSessionSave()
             }
         }
         windows.removeAll { $0 === controller }
+        // No window left for this profile: free its extension background pages.
+        if !profile.windows.contains(where: { !$0.isPrivate }) {
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    if !profile.windows.contains(where: { !$0.isPrivate }) { profile.unloadExtensions() }
+                }
+            }
+        }
     }
 
     /// Opens a URL in the active window. `nonPrivate` forces a normal window (e.g. reopening a tab).
-    func open(_ url: URL, newTab: Bool, nonPrivate: Bool = false) {
+    /// `profile` limits it to that profile's windows.
+    func open(_ url: URL, newTab: Bool, nonPrivate: Bool = false, profile: ProfileData? = nil) {
         var target = keyBrowserWindow
-        if nonPrivate, target?.isPrivate == true { target = windows.last { !$0.isPrivate } }
-        let controller = target ?? makeWindow(isPrivate: false)
+        if let profile, target?.profile !== profile { target = nil }
+        let profile = profile ?? target?.profile ?? currentProfile
+        if target == nil || (nonPrivate && target?.isPrivate == true) {
+            target = profile.windows.filter { !$0.isPrivate }.max { $0.lastFocused < $1.lastFocused }
+        }
+        let controller = target ?? makeWindow(profile: profile)
         controller.showWindow(nil)
         if newTab { controller.newTab(url: url) } else { controller.load(url) }
     }
@@ -151,8 +229,9 @@ final class BrowserServices {
     lazy var settingsWindow = SettingsWindowController()
 
     func reopenClosedTab() {
-        guard let closed = recentlyClosed.pop() else { return }
-        open(closed.url, newTab: true, nonPrivate: true)
+        let profile = currentProfile
+        guard let closed = profile.recentlyClosed.pop() else { return }
+        open(closed.url, newTab: true, nonPrivate: true, profile: profile)
     }
 
     // MARK: - Hibernation (global, across windows)
@@ -202,7 +281,6 @@ final class BrowserServices {
     // MARK: - Ad blocker
 
     let blockListUpdater = BlockListUpdater()
-    let extensions = ExtensionManager()
 
     /// Loads the saved blocklist, then updates it automatically once a day.
     func compileBlockList() {
@@ -216,113 +294,20 @@ final class BrowserServices {
         blockListUpdater.start()
     }
 
-    // MARK: - History
-
-    func recordVisit(url: URL, title: String?) {
-        history.record(url: url, title: title)
-        historyChanged()
-    }
-
-    func updateHistoryTitle(_ title: String, for url: URL) {
-        history.updateTitle(title, for: url)
-        historyChanged()
-    }
-
-    func removeHistory(urls: [URL]) {
-        urls.forEach { history.remove(url: $0) }
-        historyChanged()
-    }
-
-    /// Clears history, closed tabs, cookies, cache, and other website data.
-    func clearBrowsingData(completion: @escaping @MainActor () -> Void) {
-        history.clear()
-        recentlyClosed = RecentlyClosed(capacity: 25)
-        historyChanged()
-        saveHistory()
-        SessionCookies.delete()
-        FaviconStore.shared.removeAll()
-        let store = WKWebsiteDataStore.default()
-        store.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast) {
-            MainActor.assumeIsolated { completion() }
-        }
-    }
-
-    private func historyChanged() {
-        NotificationCenter.default.post(name: .askaraHistoryChanged, object: nil)
-        scheduleSave("history") { $0.saveHistory() }
-    }
-
-    private func saveHistory() {
-        do { try historyFile.save(history) } catch { Log.error("Askara: failed to save history: \(error)") }
-    }
-
-    // MARK: - Bookmarks
-
-    @discardableResult
-    func toggleBookmark(url: URL, title: String) -> Bool {
-        let added = bookmarks.toggle(url: url, title: title)
-        bookmarksChanged()
-        return added
-    }
-
-    func removeBookmarks(ids: [UUID]) {
-        ids.forEach { bookmarks.remove(id: $0) }
-        bookmarksChanged()
-    }
-
-    func renameBookmark(id: UUID, to title: String) {
-        bookmarks.rename(id: id, to: title)
-        bookmarksChanged()
-    }
-
-    private func bookmarksChanged() {
-        NotificationCenter.default.post(name: .askaraBookmarksChanged, object: nil)
-        // Bookmarks change rarely and matter: save immediately.
-        do { try bookmarksFile.save(bookmarks) } catch { Log.error("Askara: failed to save bookmarks: \(error)") }
-    }
-
-    // MARK: - Session
-
-    func scheduleSessionSave() {
-        scheduleSave("session") { services in
-            services.saveSession(services.currentSession())
-        }
-    }
-
-    private func currentSession() -> SessionState {
-        SessionState(windows: windows.filter { !$0.isPrivate }.map { $0.savedState() })
-    }
-
-    private func saveSession(_ state: SessionState) {
-        saveTasks["session"]?.cancel()
-        do { try sessionFile.save(state) } catch { Log.error("Askara: failed to save session: \(error)") }
-    }
-
-    /// Restores windows from the last session. Tabs are restored asleep.
-    func restoreSession() -> Bool {
-        guard let state = sessionFile.load(), !state.isEmpty else { return false }
-        for saved in state.windows {
-            makeWindow(isPrivate: false).restore(saved)
-        }
-        return true
-    }
+    // MARK: - Saving
 
     /// Called when the app quits: write everything pending.
     func saveAll() {
-        saveTasks.values.forEach { $0.cancel() }
-        saveTasks.removeAll()
-        saveHistory()
-        if !windows.filter({ !$0.isPrivate }).isEmpty { saveSession(currentSession()) }
+        profileData.values.forEach { $0.saveAll() }
     }
 
-    /// Debounces disk writes so rapid successive changes are written once.
-    private func scheduleSave(_ key: String, _ action: @escaping @MainActor (BrowserServices) -> Void) {
-        saveTasks[key]?.cancel()
-        saveTasks[key] = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(2))
-            guard !Task.isCancelled, let self else { return }
-            self.saveTasks[key] = nil
-            action(self)
+    /// Session cookies of every opened profile. `completion` runs once all are written.
+    func saveSessionCookies(completion: @escaping @MainActor () -> Void) {
+        let group = DispatchGroup()
+        for profile in profileData.values where !profile.isDiscarded {
+            group.enter()
+            profile.sessionCookies.save { group.leave() }
         }
+        group.notify(queue: .main) { MainActor.assumeIsolated { completion() } }
     }
 }

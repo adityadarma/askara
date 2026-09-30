@@ -37,6 +37,17 @@ public enum AddressParser {
         return searchURL(for: input, template: searchTemplate)
     }
 
+    /// Text shown in the address bar. WebKit always normalizes "https://www.google.com" to
+    /// "https://www.google.com/" (it's the same address, not a redirect); like Safari, the lone
+    /// trailing slash of a site's root page is hidden. Other paths are shown unchanged.
+    public static func displayString(for url: URL?) -> String {
+        guard let url else { return "" }
+        let text = url.absoluteString
+        guard ["http", "https"].contains(url.scheme?.lowercased() ?? ""), url.host != nil,
+              url.path == "/", url.query == nil, url.fragment == nil, text.hasSuffix("/") else { return text }
+        return String(text.dropLast())
+    }
+
     public static func searchURL(for query: String,
                                  template: String = defaultSearchTemplate) -> URL? {
         var allowed = CharacterSet.urlQueryAllowed

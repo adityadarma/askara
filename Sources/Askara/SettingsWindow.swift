@@ -231,7 +231,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         maxTabsStepper.integerValue = prefs.maxLoadedTabs
         maxTabsLabel.stringValue = "\(prefs.maxLoadedTabs)"
         httpsOnlyBox.state = prefs.httpsOnly ? .on : .off
-        let permissions = services.permissions
+        let permissions = services.currentProfile.permissions
         permissionRows = permissions.hosts.flatMap { host in
             PermissionKind.allCases.compactMap { kind in
                 permissions.choice(kind, host: host).map { (host, kind, $0) }
@@ -294,7 +294,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     @objc private func forgetPermission(_ sender: Any?) {
         let rows = permissionTable.selectedRowIndexes.compactMap { permissionRows.indices.contains($0) ? permissionRows[$0] : nil }
         guard !rows.isEmpty else { return NSSound.beep() }
-        rows.forEach { services.setPermission(nil, for: $0.kind, host: $0.host) }
+        let profile = services.currentProfile
+        rows.forEach { profile.setPermission(nil, for: $0.kind, host: $0.host) }
     }
 
     // MARK: - Tables

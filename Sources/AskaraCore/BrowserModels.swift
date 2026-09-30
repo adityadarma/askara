@@ -34,6 +34,13 @@ public struct SessionState: Codable, Equatable {
     }
 
     public var isEmpty: Bool { windows.isEmpty }
+
+    /// The active tab of the most recently used window (saved first). Askara opens only this tab
+    /// when a profile opens, so launching doesn't bring back a pile of tabs.
+    public var startupTab: SavedTab? {
+        guard let window = windows.first else { return nil }
+        return window.tabs.indices.contains(window.activeIndex) ? window.tabs[window.activeIndex] : window.tabs.first
+    }
 }
 
 /// Stack of recently closed tabs, for "Reopen Closed Tab" (⌘⇧T).

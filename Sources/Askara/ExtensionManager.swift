@@ -1,5 +1,6 @@
 import AppKit
 import WebKit
+import AskaraCore
 
 extension Notification.Name {
     static let askaraExtensionsChanged = Notification.Name("AskaraExtensionsChanged")
@@ -12,15 +13,22 @@ struct InstalledExtension: Equatable {
     let bundleURL: URL
 }
 
-/// Loads installed Safari extensions (e.g. Bitwarden) via the WKWebExtension API.
+/// Loads installed Safari extensions (e.g. Bitwarden) via the WKWebExtension API. One per profile:
+/// each profile has its own enabled list and extension storage (e.g. a separate Bitwarden vault login).
 ///
 /// Extensions load only after the user enables them and approves their permissions. That choice is saved,
-/// and approved permissions are re-granted every time the app launches.
+/// and approved permissions are re-granted every time the profile opens.
 @MainActor
 final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
-    private enum Keys {
-        static let enabled = "AskaraEnabledExtensions"
-        static let identifiers = "AskaraExtensionIdentifiers"
+    private struct Keys {
+        let enabled: String
+        let identifiers: String
+        init(profile: UUID) {
+            // The first profile keeps the keys from before profiles existed.
+            let suffix = profile == Profile.defaultID ? "" : ".\(profile.uuidString)"
+            enabled = "AskaraEnabledExtensions" + suffix
+            identifiers = "AskaraExtensionIdentifiers" + suffix
+        }
     }
 
     let controller: WKWebExtensionController
@@ -28,18 +36,27 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// Stable order (matching the installed list) so toolbar buttons don't move around.
     private(set) var loaded: [(item: InstalledExtension, context: WKWebExtensionContext)] = []
     private var enabledIDs: Set<String>
+    private let keys: Keys
+    private unowned let profile: ProfileData
+    private var errorObservers: [NSObjectProtocol] = []
     private var services: BrowserServices { .shared }
 
-    override init() {
-        // Default configuration = persistent storage, so extension logins/vaults survive a restart.
-        let configuration = WKWebExtensionController.Configuration.default()
+    init(profile: ProfileData) {
+        self.profile = profile
+        keys = Keys(profile: profile.id)
+        // Persistent storage, so extension logins/vaults survive a restart. Separate per profile.
+        let configuration = profile.id == Profile.defaultID
+            ? WKWebExtensionController.Configuration.default()
+            : WKWebExtensionController.Configuration(identifier: profile.id)
+        // Requests made by extensions use this profile's cookies.
+        configuration.defaultWebsiteDataStore = profile.dataStore
         // Extension pages (background, popup) also need the Safari user agent; Bitwarden uses it
         // to identify the browser.
         let webConfig = configuration.webViewConfiguration ?? WKWebViewConfiguration()
         webConfig.applicationNameForUserAgent = UserAgent.applicationName
         configuration.webViewConfiguration = webConfig
         controller = WKWebExtensionController(configuration: configuration)
-        enabledIDs = Set(UserDefaults.standard.stringArray(forKey: Keys.enabled) ?? [])
+        enabledIDs = Set(UserDefaults.standard.stringArray(forKey: keys.enabled) ?? [])
         super.init()
         controller.delegate = self
     }
@@ -51,6 +68,7 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             // The app folder scan runs off the main thread.
             self.installed = await Task.detached(priority: .utility) { Self.discover() }.value
             for item in self.installed where self.enabledIDs.contains(item.bundleID) {
+                guard !self.isShutDown else { return }
                 do { try await self.load(item) } catch {
                     Log.error("Askara: failed to load extension \(item.name): \(error)")
                 }
@@ -91,6 +109,18 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         return result.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
+    private var isShutDown = false
+
+    /// The profile's last window closed: unload extensions to free their background pages.
+    func shutDown() {
+        isShutDown = true
+        errorObservers.forEach(NotificationCenter.default.removeObserver)
+        errorObservers.removeAll()
+        for entry in loaded { try? controller.unload(entry.context) }
+        loaded.removeAll()
+        changed()
+    }
+
     func isEnabled(_ item: InstalledExtension) -> Bool { enabledIDs.contains(item.bundleID) }
 
     func context(for item: InstalledExtension) -> WKWebExtensionContext? {
@@ -125,6 +155,7 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     private func load(_ item: InstalledExtension) async throws {
         guard context(for: item) == nil else { return }
         let ext = try await inspect(item)
+        guard !isShutDown, context(for: item) == nil else { return }
         let context = WKWebExtensionContext(for: ext)
         // Stable ID per extension: extension storage (vault, settings) is tied to this ID.
         context.uniqueIdentifier = stableIdentifier(for: item.bundleID)
@@ -142,13 +173,13 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         try controller.load(context)
         loaded.append((item, context))
         // Log extension errors (manifest, background script) to the system log for diagnosis.
-        NotificationCenter.default.addObserver(forName: WKWebExtensionContext.errorsDidUpdateNotification,
+        errorObservers.append(NotificationCenter.default.addObserver(forName: WKWebExtensionContext.errorsDidUpdateNotification,
                                                object: context, queue: .main) { note in
             MainActor.assumeIsolated {
                 guard let context = note.object as? WKWebExtensionContext else { return }
                 for error in context.errors { Log.error("Askara extension \(item.name): \(error.localizedDescription)") }
             }
-        }
+        })
         context.errors.forEach { Log.error("Askara extension \(item.name): \($0.localizedDescription)") }
         // Load the background page now so the popup doesn't lag on the first click.
         context.loadBackgroundContent { error in
@@ -160,20 +191,20 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     }
 
     private func stableIdentifier(for bundleID: String) -> String {
-        var map = UserDefaults.standard.dictionary(forKey: Keys.identifiers) as? [String: String] ?? [:]
+        var map = UserDefaults.standard.dictionary(forKey: keys.identifiers) as? [String: String] ?? [:]
         if let existing = map[bundleID] { return existing }
         let id = UUID().uuidString
         map[bundleID] = id
-        UserDefaults.standard.set(map, forKey: Keys.identifiers)
+        UserDefaults.standard.set(map, forKey: keys.identifiers)
         return id
     }
 
     private func saveEnabled() {
-        UserDefaults.standard.set(enabledIDs.sorted(), forKey: Keys.enabled)
+        UserDefaults.standard.set(enabledIDs.sorted(), forKey: keys.enabled)
     }
 
     private func changed() {
-        NotificationCenter.default.post(name: .askaraExtensionsChanged, object: nil)
+        NotificationCenter.default.post(name: .askaraExtensionsChanged, object: profile)
     }
 
     /// Extension internal page URLs (popup, settings) must not be blocked by the navigation policy.
@@ -226,12 +257,18 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
 
     func webExtensionController(_ controller: WKWebExtensionController,
                                 openWindowsFor extensionContext: WKWebExtensionContext) -> [any WKWebExtensionWindow] {
-        services.windows
+        profile.windows.filter { !$0.isPrivate }
     }
 
     func webExtensionController(_ controller: WKWebExtensionController,
                                 focusedWindowFor extensionContext: WKWebExtensionContext) -> (any WKWebExtensionWindow)? {
-        services.keyBrowserWindow
+        focusedWindow
+    }
+
+    /// This profile's normal window in use (or used most recently).
+    private var focusedWindow: BrowserWindowController? {
+        if let key = services.keyBrowserWindow, key.profile === profile, !key.isPrivate { return key }
+        return profile.windows.filter { !$0.isPrivate }.max { $0.lastFocused < $1.lastFocused }
     }
 
     func webExtensionController(_ controller: WKWebExtensionController,
@@ -239,8 +276,8 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
                                 for extensionContext: WKWebExtensionContext,
                                 completionHandler: @escaping ((any WKWebExtensionTab)?, (any Error)?) -> Void) {
         let window = (configuration.window as? BrowserWindowController)
-            ?? services.windows.last { !$0.isPrivate }
-            ?? services.makeWindow(isPrivate: false)
+            ?? focusedWindow
+            ?? services.makeWindow(profile: profile)
         let tab = window.insertTab(url: configuration.url, at: configuration.index,
                                    activate: configuration.shouldBeActive)
         completionHandler(tab, nil)
@@ -250,7 +287,7 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
                                 openNewWindowUsing configuration: WKWebExtension.WindowConfiguration,
                                 for extensionContext: WKWebExtensionContext,
                                 completionHandler: @escaping ((any WKWebExtensionWindow)?, (any Error)?) -> Void) {
-        let window = services.makeWindow(isPrivate: false)
+        let window = services.makeWindow(profile: profile)
         if configuration.tabURLs.isEmpty {
             window.openBlankTab()
         } else {
@@ -270,7 +307,7 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
 
     func openOptions(_ context: WKWebExtensionContext) {
         guard let url = context.optionsPageURL else { return }
-        services.open(url, newTab: true, nonPrivate: true)
+        services.open(url, newTab: true, nonPrivate: true, profile: profile)
     }
 
     /// Additional permissions requested at runtime (outside the manifest): ask the user.
@@ -305,7 +342,7 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         alert.informativeText = detail
         alert.addButton(withTitle: String(localized: "Allow"))
         alert.addButton(withTitle: String(localized: "Deny"))
-        guard let window = services.keyBrowserWindow?.window else {
+        guard let window = focusedWindow?.window else {
             return done(alert.runModal() == .alertFirstButtonReturn)
         }
         alert.beginSheetModal(for: window) { done($0 == .alertFirstButtonReturn) }
@@ -320,7 +357,7 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
                                 presentActionPopup action: WKWebExtension.Action,
                                 for context: WKWebExtensionContext,
                                 completionHandler: @escaping ((any Error)?) -> Void) {
-        let window = (action.associatedTab as? Tab)?.owner ?? services.keyBrowserWindow
+        let window = (action.associatedTab as? Tab)?.owner ?? focusedWindow
         guard let window, window.presentExtensionPopup(action) else {
             return completionHandler(CocoaError(.featureUnsupported))
         }
@@ -350,8 +387,7 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         case "readFromClipboard":
             replyHandler(NSPasteboard.general.string(forType: .string) ?? "", nil)
         case "showPopover":
-            let window = services.keyBrowserWindow
-            extensionContext.performAction(for: window?.currentTab)
+            extensionContext.performAction(for: focusedWindow?.currentTab)
             replyHandler(nil, nil)
         case "downloadFile":
             saveDownload(json: data)
@@ -376,7 +412,7 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
                 NSAlert(error: error).runModal()
             }
         }
-        if let window = services.keyBrowserWindow?.window {
+        if let window = focusedWindow?.window {
             panel.beginSheetModal(for: window, completionHandler: save)
         } else {
             save(panel.runModal())

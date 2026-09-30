@@ -11,18 +11,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.mainMenu = MainMenu.make(delegate: self)
         services.compileBlockList()
-        // Find installed Safari extensions and load the ones the user enabled.
-        services.extensions.start()
-
-        // Restore session login cookies before tabs so sites open already logged in.
-        SessionCookies.restore { [weak self] in
-            guard let self else { return }
-            // Restore the last session; tabs other than the active one are restored asleep.
-            if !self.services.restoreSession() {
-                self.services.makeWindow(isPrivate: false).newTab(url: self.homeURL)
-            }
-            NSApp.activate()
-        }
+        // Retry removing website data of deleted profiles that was still in use last time.
+        services.removeDataStores()
+        // Only the last used profile opens, with just the tab that was active. Its extensions load
+        // with its first window, and session login cookies are restored before the tab loads.
+        services.openProfile(services.profileList.lastUsedID)
         watchMemoryPressure()
         services.startHibernationTimer()
     }
@@ -38,7 +31,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             replied = true
             NSApp.reply(toApplicationShouldTerminate: true)
         }
-        SessionCookies.save { finish() }
+        services.saveSessionCookies { finish() }
         // Ensure the app can still quit if WebKit never responds.
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { MainActor.assumeIsolated { finish() } }
         return .terminateLater
@@ -48,7 +41,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// Dock icon clicked while no windows are open.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if services.windows.isEmpty { newWindowAction(nil) }
+        if services.windows.isEmpty { services.openProfile(services.profileList.lastUsedID) }
         return true
     }
 
@@ -79,13 +72,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: - Actions
 
+    /// New window for the profile in use.
     @objc func newWindowAction(_ sender: Any?) {
-        services.makeWindow(isPrivate: false).newTab(url: homeURL)
+        services.makeWindow(profile: services.currentProfile).newTab(url: homeURL)
     }
 
     @objc func newPrivateWindowAction(_ sender: Any?) {
-        services.makeWindow(isPrivate: true).openBlankTab()
+        services.makeWindow(profile: services.currentProfile, isPrivate: true).openBlankTab()
     }
+
+    /// Profile chosen in File > Profiles or the toolbar profile menu: go to its window, or open it.
+    @objc func openProfileAction(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? UUID else { return }
+        services.openProfile(id)
+    }
+
+    @objc func addProfileAction(_ sender: Any?) { ProfileDialogs.add() }
+    @objc func editProfileAction(_ sender: Any?) { ProfileDialogs.edit(services.currentProfile.id) }
+    @objc func deleteProfileAction(_ sender: Any?) { ProfileDialogs.delete(services.currentProfile.id) }
 
     /// ⌘T when there are no windows at all.
     @objc func newTabAction(_ sender: Any?) { newWindowAction(sender) }
@@ -109,7 +113,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc func validateMenuItem(_ item: NSMenuItem) -> Bool {
-        if item.action == #selector(reopenClosedTabAction(_:)) { return !services.recentlyClosed.isEmpty }
+        if item.action == #selector(reopenClosedTabAction(_:)) { return !services.currentProfile.recentlyClosed.isEmpty }
+        if item.action == #selector(deleteProfileAction(_:)) {
+            return services.profileList.canRemove(services.currentProfile.id)
+        }
         if item.action == #selector(updateBlockListAction(_:)) { return !services.blockListUpdater.isUpdating }
         return true
     }
@@ -119,7 +126,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Clicking an extension name: enable it (after permission consent) or disable it.
     @objc func toggleExtensionAction(_ sender: NSMenuItem) {
         guard let item = sender.representedObject as? InstalledExtensionBox else { return }
-        let manager = services.extensions
+        let manager = services.currentProfile.extensions
         if manager.isEnabled(item.value) {
             manager.disable(item.value)
             services.keyBrowserWindow?.showToast(String(localized: "\(item.value.name) disabled"), duration: 3)
@@ -149,13 +156,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc func extensionOptionsAction(_ sender: NSMenuItem) {
         guard let item = sender.representedObject as? InstalledExtensionBox,
-              let context = services.extensions.context(for: item.value) else { return }
-        services.extensions.openOptions(context)
+              let context = services.currentProfile.extensions.context(for: item.value) else { return }
+        services.currentProfile.extensions.openOptions(context)
     }
 
     fileprivate func updateExtensionMenu(_ menu: NSMenu) {
         menu.removeAllItems()
-        let manager = services.extensions
+        let manager = services.currentProfile.extensions
         guard !manager.installed.isEmpty else {
             let empty = NSMenuItem(title: String(localized: "No Safari extensions installed"), action: nil, keyEquivalent: "")
             empty.isEnabled = false
@@ -189,6 +196,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let note = NSMenuItem(title: String(localized: "Extensions use extra RAM while enabled"), action: nil, keyEquivalent: "")
         note.isEnabled = false
         menu.addItem(note)
+        if services.profileList.profiles.count > 1 {
+            let scope = NSMenuItem(title: String(localized: "Applies to profile: \(services.currentProfile.profile.name)"),
+                                   action: nil, keyEquivalent: "")
+            scope.isEnabled = false
+            menu.addItem(scope)
+        }
     }
 
     // MARK: - Develop
@@ -197,7 +210,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let types: Set<String> = [WKWebsiteDataTypeDiskCache, WKWebsiteDataTypeMemoryCache,
                                   WKWebsiteDataTypeFetchCache, WKWebsiteDataTypeOfflineWebApplicationCache]
         // Caches only; cookies, logins, and site storage are left untouched.
-        WKWebsiteDataStore.default().removeData(ofTypes: types, modifiedSince: .distantPast) { [weak self] in
+        services.currentProfile.dataStore.removeData(ofTypes: types, modifiedSince: .distantPast) { [weak self] in
             MainActor.assumeIsolated { self?.services.keyBrowserWindow?.showToast(String(localized: "Caches emptied"), duration: 2) }
         }
     }
@@ -205,7 +218,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Opens Web Inspector for an extension's background page.
     @objc func inspectExtensionAction(_ sender: NSMenuItem) {
         guard let box = sender.representedObject as? InstalledExtensionBox,
-              let context = services.extensions.context(for: box.value) else { return }
+              let context = services.currentProfile.loadedExtensions?.context(for: box.value) else { return }
         let open = { (web: WKWebView?) in
             guard let web, DevTools.open(.console, for: web) else {
                 self.services.keyBrowserWindow?.showToast(String(localized: "Background page for \(box.value.name) isn't running yet"), duration: 3)
@@ -222,7 +235,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let header = menu.item(withTag: MainMenu.developExtensionHeaderTag) else { return }
         let start = menu.index(of: header) + 1
         while menu.items.count > start { menu.removeItem(at: start) }
-        let loaded = services.extensions.loaded
+        let loaded = services.currentProfile.loadedExtensions?.loaded ?? []
         header.isHidden = loaded.isEmpty
         menu.items[max(0, start - 2)].isHidden = loaded.isEmpty // separator above the header
         for entry in loaded {
@@ -248,6 +261,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if menu.identifier == MainMenu.tabMenuID { return updateTabMenu(menu) }
         if menu.identifier == MainMenu.extensionMenuID { return updateExtensionMenu(menu) }
         if menu.identifier == MainMenu.developMenuID { return updateDevelopMenu(menu) }
+        if menu.identifier == MainMenu.profileMenuID {
+            menu.removeAllItems()
+            ProfileMenu.fill(menu, current: services.currentProfile.id, target: self)
+            return
+        }
         if menu.identifier == MainMenu.appMenuID {
             menu.item(withTag: MainMenu.blockStatusTag)?.title = services.blockListUpdater.statusText
             return
@@ -264,8 +282,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         while menu.items.count > fixedCount { menu.removeItem(at: fixedCount) }
 
         let entries: [(String, URL)] = isHistory
-            ? services.history.entries.prefix(15).map { ($0.title.isEmpty ? $0.url.absoluteString : $0.title, $0.url) }
-            : services.bookmarks.bookmarks.suffix(30).reversed().map { ($0.title, $0.url) }
+            ? services.currentProfile.history.entries.prefix(15).map { ($0.title.isEmpty ? $0.url.absoluteString : $0.title, $0.url) }
+            : services.currentProfile.bookmarks.bookmarks.suffix(30).reversed().map { ($0.title, $0.url) }
 
         if entries.isEmpty {
             let empty = NSMenuItem(title: isHistory ? String(localized: "No history yet") : String(localized: "No bookmarks yet"),
@@ -342,6 +360,7 @@ enum MainMenu {
     static let bookmarkFixedItems = 3
     static let memorySaverStatusTag = 7003
     static let viewMenuID = NSUserInterfaceItemIdentifier("view")
+    static let profileMenuID = NSUserInterfaceItemIdentifier("profiles")
     /// Next, Previous, separator, 3 tab actions, 9 hidden shortcuts, separator.
     static let tabFixedItems = 16
 
@@ -393,6 +412,15 @@ enum MainMenu {
             item(String(localized: "New Tab"), #selector(B.newTabAction(_:)), "t"),
             item(String(localized: "New Window"), #selector(A.newWindowAction(_:)), "n"),
             item(String(localized: "New Private Window"), #selector(A.newPrivateWindowAction(_:)), "n", [.command, .shift]),
+            {
+                // Filled when opened (menuNeedsUpdate), like the toolbar profile button.
+                let holder = NSMenuItem(title: String(localized: "Profiles"), action: nil, keyEquivalent: "")
+                let menu = NSMenu(title: String(localized: "Profiles"))
+                menu.identifier = profileMenuID
+                menu.delegate = delegate
+                holder.submenu = menu
+                return holder
+            }(),
             item(String(localized: "Open Location…"), #selector(B.focusAddressBar(_:)), "l"),
             .separator(),
             item(String(localized: "Close Tab"), #selector(B.closeTabAction(_:)), "w"),
