@@ -182,8 +182,9 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         })
         context.errors.forEach { Log.error("Askara extension \(item.name): \($0.localizedDescription)") }
         // Load the background page now so the popup doesn't lag on the first click.
-        context.loadBackgroundContent { error in
-            if let error { Log.error("Askara extension \(item.name): background failed: \(error)") }
+        Task { @MainActor in
+            do { try await context.loadBackgroundContent() }
+            catch { Log.error("Askara extension \(item.name): background failed: \(error)") }
         }
         loaded.sort { a, b in
             (installed.firstIndex(of: a.item) ?? 0) < (installed.firstIndex(of: b.item) ?? 0)

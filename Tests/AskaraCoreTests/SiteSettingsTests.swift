@@ -18,6 +18,15 @@ import Testing
         #expect(!s.isJavaScriptBlocked(host: "notexample.com"))
     }
 
+    @Test func adBlockExceptionCoversSubdomainsButNotLookalikes() {
+        var settings = SiteSettings()
+        settings.setAdBlockDisabled(true, host: "example.com")
+        #expect(settings.isAdBlockDisabled(host: "cdn.example.com"))
+        #expect(!settings.isAdBlockDisabled(host: "notexample.com"))
+        settings.setAdBlockDisabled(false, host: "www.example.com")
+        #expect(!settings.isAdBlockDisabled(host: "example.com"))
+    }
+
     @Test func unblockClearsParentDomainBlock() {
         var s = SiteSettings()
         s.setJavaScriptBlocked(true, host: "example.com")

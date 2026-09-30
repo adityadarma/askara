@@ -42,6 +42,17 @@ import Testing
     }
 }
 
+@Suite struct BlockListExceptionTests {
+    @Test func generatedRulesExcludeTopSite() throws {
+        let json = BlockList.contentRuleListJSON(domains: ["ads.example"], excludingSites: ["news.example"])
+        let data = try #require(json.data(using: .utf8))
+        let rules = try #require(JSONSerialization.jsonObject(with: data) as? [[String: Any]])
+        let trigger = try #require(rules.first?["trigger"] as? [String: Any])
+        let exclusions = try #require(trigger["unless-top-url"] as? [String])
+        #expect(exclusions.first?.contains("news\\.example") == true)
+    }
+}
+
 @Suite struct HibernationPolicyTests {
     let now = Date(timeIntervalSince1970: 10_000)
 

@@ -126,6 +126,7 @@ final class LibraryWindowController: NSWindowController, NSTableViewDataSource, 
         menu.addItem(withTitle: String(localized: "Copy Address"), action: #selector(copyAddress(_:)), keyEquivalent: "")
         menu.addItem(withTitle: String(localized: "Rename…"), action: #selector(renameSelected(_:)), keyEquivalent: "")
         menu.addItem(withTitle: String(localized: "Show in Finder"), action: #selector(revealSelected(_:)), keyEquivalent: "")
+        menu.addItem(withTitle: String(localized: "Copy SHA-256"), action: #selector(copySHA256(_:)), keyEquivalent: "")
         menu.addItem(.separator())
         menu.addItem(withTitle: String(localized: "Remove"), action: #selector(delete(_:)), keyEquivalent: "")
         menu.items.forEach { $0.target = self }
@@ -222,13 +223,39 @@ final class LibraryWindowController: NSWindowController, NSTableViewDataSource, 
     @objc private func openSelected(_ sender: Any?) {
         let selected = selectedRows
         if mode == .downloads {
-            selected.compactMap(\.url).filter { FileManager.default.fileExists(atPath: $0.path) }
-                .forEach { NSWorkspace.shared.open($0) }
+            for row in selected {
+                guard let url = row.url, FileManager.default.fileExists(atPath: url.path),
+                      let id = row.id.base as? UUID,
+                      let item = services.downloads.items.first(where: { $0.id == id }) else { continue }
+                if item.requiresOpenConfirmation, !confirmOpen(item) { continue }
+                NSWorkspace.shared.open(url)
+            }
             return
         }
         for (index, row) in selected.enumerated() {
             if let url = row.url { services.open(url, newTab: index > 0, profile: profile) }
         }
+    }
+
+    private func confirmOpen(_ item: DownloadManager.Item) -> Bool {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = String(localized: "Open this download?")
+        let finding = item.riskText.isEmpty ? item.statusText : item.riskText
+        alert.informativeText = String(localized: "Local scan result: \(finding). This scan cannot determine whether a file is malware. Only open files you trust.")
+        alert.addButton(withTitle: String(localized: "Open Anyway"))
+        alert.addButton(withTitle: String(localized: "Cancel"))
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    @objc private func copySHA256(_ sender: Any?) {
+        let hashes = selectedRows.compactMap { row -> String? in
+            guard let id = row.id.base as? UUID else { return nil }
+            return services.downloads.items.first { $0.id == id }?.sha256
+        }
+        guard !hashes.isEmpty else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(hashes.joined(separator: "\n"), forType: .string)
     }
 
     @objc private func openSelectedInNewTabs(_ sender: Any?) {
@@ -314,6 +341,12 @@ final class LibraryWindowController: NSWindowController, NSTableViewDataSource, 
         case #selector(revealSelected(_:)):
             item.isHidden = mode != .downloads
             return selected.contains { $0.url.map { FileManager.default.fileExists(atPath: $0.path) } ?? false }
+        case #selector(copySHA256(_:)):
+            item.isHidden = mode != .downloads
+            return selected.contains { row in
+                guard let id = row.id.base as? UUID else { return false }
+                return services.downloads.items.first { $0.id == id }?.sha256 != nil
+            }
         case #selector(openSelectedInNewTabs(_:)):
             item.isHidden = mode == .downloads
             return !selected.isEmpty

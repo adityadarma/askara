@@ -25,6 +25,8 @@ public struct SiteCustomization: Codable, Equatable, Sendable {
 public struct SiteSettings: Codable, Equatable, Sendable {
     public private(set) var javaScriptBlocked: Set<String> = []
     public private(set) var customizations: [String: SiteCustomization] = [:]
+    /// Optional keeps files written before this setting backward compatible.
+    private var adBlockDisabled: Set<String>?
 
     public init() {}
 
@@ -49,6 +51,25 @@ public struct SiteSettings: Codable, Equatable, Sendable {
     public func isJavaScriptBlocked(host: String) -> Bool {
         Self.candidates(for: host).contains(where: javaScriptBlocked.contains)
     }
+
+    public func isAdBlockDisabled(host: String) -> Bool {
+        let disabled = adBlockDisabled ?? []
+        return Self.candidates(for: host).contains(where: disabled.contains)
+    }
+
+    public mutating func setAdBlockDisabled(_ disabled: Bool, host: String) {
+        let key = Self.key(for: host)
+        guard !key.isEmpty else { return }
+        var values = adBlockDisabled ?? []
+        if disabled {
+            values.insert(key)
+        } else {
+            Self.candidates(for: host).forEach { values.remove($0) }
+        }
+        adBlockDisabled = values.isEmpty ? nil : values
+    }
+
+    public var adBlockExceptions: [String] { Array(adBlockDisabled ?? []).sorted() }
 
     /// Unblocking also clears a block set on a parent domain, so the site really runs JavaScript again.
     public mutating func setJavaScriptBlocked(_ blocked: Bool, host: String) {

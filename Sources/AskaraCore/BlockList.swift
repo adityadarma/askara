@@ -42,14 +42,20 @@ public enum BlockList {
     }
 
     /// JSON rule list ready to be compiled by WKContentRuleListStore.
-    public static func contentRuleListJSON(domains: [String] = domains) -> String {
+    public static func contentRuleListJSON(domains: [String] = domains, excludingSites: [String] = []) -> String {
+        let exclusions = excludingSites.map { domain in
+            let escaped = NSRegularExpression.escapedPattern(for: domain)
+            return "^https?://([^/]*\\.)?\(escaped)(?::[0-9]+)?/"
+        }
         let rules: [[String: Any]] = domains.map { domain in
             let escaped = NSRegularExpression.escapedPattern(for: domain)
+            var trigger: [String: Any] = [
+                "url-filter": "^https?://([^/]*\\.)?\(escaped)[/:]",
+                "load-type": ["third-party"],
+            ]
+            if !exclusions.isEmpty { trigger["unless-top-url"] = exclusions }
             return [
-                "trigger": [
-                    "url-filter": "^https?://([^/]*\\.)?\(escaped)[/:]",
-                    "load-type": ["third-party"],
-                ],
+                "trigger": trigger,
                 "action": ["type": "block"],
             ]
         }

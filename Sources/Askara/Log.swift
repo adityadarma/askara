@@ -8,10 +8,17 @@ enum Log {
 
     static func error(_ message: String) {
         logger.error("\(message, privacy: .public)")
+        Task { @MainActor in CrashReporter.shared.record("error: \(redacted(message))") }
     }
 
     /// Why tabs slept or reloaded. Not persisted by default; visible in `log stream`.
     static func notice(_ message: String) {
         logger.notice("\(message, privacy: .public)")
+        Task { @MainActor in CrashReporter.shared.record("notice: \(redacted(message))") }
+    }
+
+    private static func redacted(_ message: String) -> String {
+        String(message.prefix(500)).replacingOccurrences(of: #"https?://[^\s]+"#,
+                                                          with: "<url>", options: .regularExpression)
     }
 }

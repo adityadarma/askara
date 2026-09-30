@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 import WebKit
 import AskaraCore
 
@@ -11,22 +12,57 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
             case failed(String)
         }
 
+        enum ScanState: Equatable {
+            case waiting, scanning, complete, failed(String)
+        }
+
         let id = UUID()
         var filename = String(localized: "Waiting…")
         var destination: URL?
         var sourceURL: URL?
         var fraction: Double = 0
         var state: State = .running
+        var scanState: ScanState = .waiting
+        var sha256: String?
+        var risks: [DownloadRisk] = []
+        var fileSize: Int64?
         weak var download: WKDownload?
         var observation: NSKeyValueObservation?
 
         var statusText: String {
             switch state {
             case .running: return fraction > 0 ? "\(Int(fraction * 100))%" : String(localized: "Downloading…")
-            case .finished: return String(localized: "Finished")
+            case .finished:
+                switch scanState {
+                case .waiting, .scanning: return String(localized: "Scanning download…")
+                case .complete:
+                    return risks.isEmpty ? String(localized: "Scanned · no local warning")
+                        : String(localized: "Warning: \(riskText)")
+                case .failed(let message): return String(localized: "Scan failed: \(message)")
+                }
             case .cancelled: return String(localized: "Cancelled")
             case .failed(let message): return String(localized: "Failed: \(message)")
             }
+        }
+
+
+        var requiresOpenConfirmation: Bool {
+            guard state == .finished else { return false }
+            if case .complete = scanState { return risks.contains(where: \.isHighRisk) }
+            return true
+        }
+
+        var riskText: String {
+            risks.map {
+                switch $0 {
+                case .executable: String(localized: "executable file")
+                case .script: String(localized: "script file")
+                case .installer: String(localized: "installer package")
+                case .diskImage: String(localized: "disk image")
+                case .archive: String(localized: "archive")
+                case .disguisedExecutable: String(localized: "executable content with a misleading extension")
+                }
+            }.joined(separator: ", ")
         }
     }
 
@@ -122,6 +158,48 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
         }
         announce(String(localized: "Download finished: \(item.filename)"))
         changed()
+        scan(item)
+    }
+
+    private func scan(_ item: Item) {
+        guard let url = item.destination else { return }
+        item.scanState = .scanning
+        changed()
+        let id = item.id
+        Task.detached(priority: .utility) {
+            do {
+                let handle = try FileHandle(forReadingFrom: url)
+                defer { try? handle.close() }
+                var hash = SHA256()
+                var prefix = Data()
+                var size: Int64 = 0
+                while let chunk = try handle.read(upToCount: 1_048_576), !chunk.isEmpty {
+                    if prefix.isEmpty { prefix = Data(chunk.prefix(4)) }
+                    hash.update(data: chunk)
+                    size += Int64(chunk.count)
+                }
+                let digest = hash.finalize().map { String(format: "%02x", $0) }.joined()
+                let risks = DownloadRiskClassifier.risks(filename: url.lastPathComponent, prefix: prefix)
+                let fileSize = size
+                await MainActor.run { [weak self] in
+                    guard let self, let item = self.items.first(where: { $0.id == id }) else { return }
+                    item.sha256 = digest
+                    item.fileSize = fileSize
+                    item.risks = risks
+                    item.scanState = .complete
+                    self.changed()
+                    if risks.contains(where: \.isHighRisk) {
+                        self.announce(String(localized: "Download warning: \(item.riskText)"))
+                    }
+                }
+            } catch {
+                await MainActor.run { [weak self] in
+                    guard let self, let item = self.items.first(where: { $0.id == id }) else { return }
+                    item.scanState = .failed(error.localizedDescription)
+                    self.changed()
+                }
+            }
+        }
     }
 
     func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {

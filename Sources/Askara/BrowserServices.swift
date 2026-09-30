@@ -72,6 +72,13 @@ final class BrowserServices {
         saveSiteSettings()
     }
 
+    func setAdBlockDisabled(_ disabled: Bool, host: String) {
+        siteSettings.setAdBlockDisabled(disabled, host: host)
+        saveSiteSettings()
+        blockListUpdater.recompile()
+        windows.forEach { $0.reloadTabs(relatedTo: host) }
+    }
+
     func setCustomization(_ customization: SiteCustomization, host: String) {
         siteSettings.setCustomization(customization, host: host)
         saveSiteSettings()

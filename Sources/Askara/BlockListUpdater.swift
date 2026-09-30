@@ -46,6 +46,9 @@ final class BlockListUpdater {
         if metadata.needsCheck() { update(force: false, completion: nil) }
     }
 
+    /// Rebuilds the current list after a per-site exception changes.
+    func recompile() { compile(downloaded: domainsFile.load() ?? []) }
+
     /// `force` ignores ETag/Last-Modified and the daily schedule (for the "Update Now" menu).
     func update(force: Bool, completion: ((String) -> Void)?) {
         guard !isUpdating else {
@@ -116,7 +119,10 @@ final class BlockListUpdater {
 
     private func compile(downloaded: [String]) {
         let domains = BlockList.merged(with: downloaded)
-        let json = BlockList.contentRuleListJSON(domains: domains)
+        let json = BlockList.contentRuleListJSON(
+            domains: domains,
+            excludingSites: BrowserServices.shared.siteSettings.adBlockExceptions
+        )
         // The same identifier overwrites the old version; WebKit stores the compiled result on disk.
         WKContentRuleListStore.default().compileContentRuleList(
             forIdentifier: Self.ruleListID, encodedContentRuleList: json

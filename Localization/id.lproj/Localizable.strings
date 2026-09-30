@@ -427,3 +427,30 @@
 "Choose Sync Folder" = "Pilih Folder Sinkronisasi";
 "No sync folder selected" = "Belum ada folder sinkronisasi";
 "Sync encrypted browser data through a folder" = "Sinkronkan data browser terenkripsi melalui folder";
+
+/* Protection, media, extensions, diagnostics */
+"Block ads and trackers on this site" = "Blokir iklan dan pelacak di situs ini";
+"Copy SHA-256" = "Salin SHA-256";
+"Delete Previous Session Report" = "Hapus Laporan Sesi Sebelumnya";
+"Download warning: %@" = "Peringatan unduhan: %@";
+"Enable or disable these Safari Web Extensions from the Extensions menu. Password vaults remain managed by their own apps." = "Aktifkan atau nonaktifkan Safari Web Extension ini dari menu Ekstensi. Brankas password tetap dikelola aplikasinya sendiri.";
+"Export Previous Session Report…" = "Ekspor Laporan Sesi Sebelumnya…";
+"Local scan result: %@. This scan cannot determine whether a file is malware. Only open files you trust." = "Hasil pemindaian lokal: %@. Pemindaian ini tidak dapat memastikan apakah file mengandung malware. Buka hanya file yang Anda percaya.";
+"No Safari Web Extension password manager was found. Install one such as Bitwarden, then enable it from the Extensions menu. Askara cannot read passwords from Apple Passwords directly." = "Safari Web Extension pengelola password tidak ditemukan. Instal aplikasi seperti Bitwarden, lalu aktifkan dari menu Ekstensi. Askara tidak dapat membaca password langsung dari Apple Passwords.";
+"Open Anyway" = "Tetap Buka";
+"Open this download?" = "Buka unduhan ini?";
+"Password Managers" = "Pengelola Password";
+"Password Managers…" = "Pengelola Password…";
+"Picture in Picture" = "Gambar dalam Gambar";
+"Picture in Picture isn't available for this video" = "Gambar dalam Gambar tidak tersedia untuk video ini";
+"Scan failed: %@" = "Pemindaian gagal: %@";
+"Scanned · no local warning" = "Dipindai · tidak ada peringatan lokal";
+"Scanning download…" = "Memindai unduhan…";
+"Warning: %@" = "Peringatan: %@";
+"WebKit does not expose an exact blocked-request count." = "WebKit tidak menyediakan jumlah pasti permintaan yang diblokir.";
+"archive" = "arsip";
+"disk image" = "citra disk";
+"executable content with a misleading extension" = "konten executable dengan ekstensi yang menyesatkan";
+"executable file" = "file executable";
+"installer package" = "paket penginstal";
+"script file" = "file skrip";

@@ -40,6 +40,9 @@ final class Tab: NSObject {
     var httpFallbackURL: URL?
     /// Frames on this page with unsubmitted form input (reported by FormGuard).
     var dirtyFrames: Set<String> = []
+    var pictureInPictureEligible = false
+    var isPictureInPicture = false
+    var pictureInPictureFrame: WKFrameInfo?
     var hasUnsavedInput: Bool { !dirtyFrames.isEmpty }
     var webView: WKWebView? {
         didSet {
@@ -113,6 +116,11 @@ private final class WeakScriptHandler: NSObject, WKScriptMessageHandler {
                 }
                 web.contextTarget = ContextTarget(link: url("link"), image: url("image"),
                                                   selection: body["selection"] as? String ?? "")
+            case PictureInPictureScript.handlerName:
+                guard let body = message.body as? [String: Any] else { return }
+                target?.pictureInPictureState(in: message.webView, frame: message.frameInfo,
+                                              eligible: body["eligible"] as? Bool ?? false,
+                                              active: body["active"] as? Bool ?? false)
             default:
                 target?.passkeyFailed(in: message.webView)
             }
@@ -154,6 +162,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     private let reloadButton = NSButton()
     private let bookmarkButton = NSButton()
     private let privacyButton = NSButton()
+    private let pictureInPictureButton = NSButton()
     private var privacyPopover: NSPopover?
     /// Profile avatar at the right end of the toolbar, like Chrome.
     private let profileButton = FirstClickButton()
@@ -242,6 +251,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
                   action: #selector(toggleBookmarkAction(_:)))
         configure(privacyButton, symbol: "shield.lefthalf.filled", label: String(localized: "Privacy Dashboard"),
                   action: #selector(showPrivacyDashboard(_:)))
+        configure(pictureInPictureButton, symbol: "pip", label: String(localized: "Picture in Picture"),
+                  action: #selector(togglePictureInPicture(_:)))
 
         tabStrip.delegate = self
         tabStrip.isPrivate = isPrivate
@@ -260,7 +271,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
 
         configureProfileButton()
         let toolbarStack = NSStackView(views: [backButton, forwardButton, reloadButton, privacyButton,
-                                               addressField, bookmarkButton, profileButton])
+                                               addressField, pictureInPictureButton, bookmarkButton, profileButton])
         toolbarStack.orientation = .horizontal
         toolbarStack.spacing = 6
         toolbarStack.edgeInsets = NSEdgeInsets(top: 5, left: 10, bottom: 6, right: 10)
@@ -380,6 +391,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         reloadButton.image = NSImage(systemSymbolName: loading ? "xmark" : "arrow.clockwise",
                                      accessibilityDescription: loading ? String(localized: "Stop") : String(localized: "Reload"))?
             .withSymbolConfiguration(.init(pointSize: 14, weight: .medium))
+        pictureInPictureButton.isEnabled = tab?.pictureInPictureEligible == true
+        pictureInPictureButton.contentTintColor = tab?.isPictureInPicture == true ? .controlAccentColor : .secondaryLabelColor
         updateBookmarkButton()
     }
 
@@ -901,6 +914,9 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         config.userContentController.add(WeakScriptHandler(self), name: ContextMenuProbe.handlerName)
         config.userContentController.addUserScript(WKUserScript(
             source: ContextMenuProbe.script, injectionTime: .atDocumentStart, forMainFrameOnly: false))
+        config.userContentController.add(WeakScriptHandler(self), name: PictureInPictureScript.handlerName)
+        config.userContentController.addUserScript(WKUserScript(
+            source: PictureInPictureScript.source, injectionTime: .atDocumentEnd, forMainFrameOnly: false))
         // "Inspect Element" in the context menu.
         DevTools.enable(on: config)
         if !Passkey.isAvailable {
@@ -940,7 +956,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
 
     /// Pinned tabs and Memory Saver exception sites never sleep.
     private func keepsAwake(_ tab: Tab) -> Bool {
-        if tab.isPinned { return true }
+        if tab.isPinned || tab.isPictureInPicture { return true }
         guard let host = (tab.webView?.url ?? tab.url)?.host else { return false }
         return services.preferences.keepsAwake(host: host)
     }
@@ -1301,6 +1317,31 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         popover.contentViewController = PrivacyDashboardController(profile: profile, host: host, secure: secure)
         privacyPopover = popover
         popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .maxY)
+    }
+
+    func pictureInPictureState(in webView: WKWebView?, frame: WKFrameInfo, eligible: Bool, active: Bool) {
+        guard let webView, let tab = tabs.first(where: { $0.webView === webView }) else { return }
+        if active || (eligible && !tab.pictureInPictureEligible) { tab.pictureInPictureFrame = frame }
+        tab.pictureInPictureEligible = eligible || active
+        tab.isPictureInPicture = active
+        if tab === activeTab {
+            pictureInPictureButton.isEnabled = tab.pictureInPictureEligible
+            pictureInPictureButton.contentTintColor = active ? .controlAccentColor : .secondaryLabelColor
+        }
+    }
+
+    @objc func togglePictureInPicture(_ sender: Any?) {
+        guard let tab = activeTab, let web = tab.webView, tab.pictureInPictureEligible else { return NSSound.beep() }
+        Task { @MainActor [weak self, weak web] in
+            guard let self, let web else { return }
+            do {
+                let result = try await web.callAsyncJavaScript("return await window.__askaraTogglePiP();", arguments: [:],
+                                                               in: tab.pictureInPictureFrame, contentWorld: .page)
+                if (result as? Bool) != true { self.showToast(String(localized: "Picture in Picture isn't available for this video"), duration: 3) }
+            } catch {
+                self.showToast(String(localized: "Picture in Picture isn't available for this video"), duration: 3)
+            }
+        }
     }
 
     /// Host of the active page, for per-site settings. nil on non-web pages.
@@ -1758,6 +1799,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         guard let index = tabs.firstIndex(where: { $0.webView === webView }) else { return }
         // Killed by macOS (usually out of memory) or crashed: the page has to load again.
         Log.notice("Askara: page process ended, tab will reload: \(webView.url?.host ?? "?")")
+        CrashReporter.shared.record("WebContent process ended")
         if index == activeIndex {
             webView.reload()
         } else {

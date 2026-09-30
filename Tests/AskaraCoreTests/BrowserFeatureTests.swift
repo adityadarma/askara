@@ -132,4 +132,12 @@ import Testing
         #expect(DownloadNaming.uniqueURL(in: dir, suggested: "README", exists: exists).lastPathComponent == "README (1)")
         #expect(DownloadNaming.uniqueURL(in: dir, suggested: "b.zip", exists: exists).lastPathComponent == "b.zip")
     }
+
+    @Test func downloadRiskClassification() {
+        #expect(DownloadRiskClassifier.risks(filename: "photo.jpg").isEmpty)
+        #expect(DownloadRiskClassifier.risks(filename: "run.command") == [.executable])
+        #expect(DownloadRiskClassifier.risks(filename: "setup.pkg") == [.installer])
+        let machO = Data([0xcf, 0xfa, 0xed, 0xfe])
+        #expect(DownloadRiskClassifier.risks(filename: "document.pdf", prefix: machO) == [.disguisedExecutable])
+    }
 }

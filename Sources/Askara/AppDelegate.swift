@@ -38,7 +38,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return .terminateLater
     }
 
-    func applicationWillTerminate(_ notification: Notification) { services.saveAll() }
+    func applicationWillTerminate(_ notification: Notification) {
+        services.saveAll()
+        CrashReporter.shared.finishCleanly()
+    }
 
     /// Dock icon clicked while no windows are open.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -119,6 +122,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func showDownloadsAction(_ sender: Any?) { LibraryWindowController.shared.show(.downloads) }
     @objc func showTaskManagerAction(_ sender: Any?) { TaskManagerWindowController.shared.show() }
 
+    @objc func showPasswordManagersAction(_ sender: Any?) {
+        let manager = services.currentProfile.extensions
+        let alert = NSAlert()
+        alert.messageText = String(localized: "Password Managers")
+        if manager.installed.isEmpty {
+            alert.informativeText = String(localized: "No Safari Web Extension password manager was found. Install one such as Bitwarden, then enable it from the Extensions menu. Askara cannot read passwords from Apple Passwords directly.")
+        } else {
+            let rows = manager.installed.map { item in
+                "\(manager.isEnabled(item) ? "✓" : "○") \(item.name)"
+            }.joined(separator: "\n")
+            alert.informativeText = rows + "\n\n" + String(localized: "Enable or disable these Safari Web Extensions from the Extensions menu. Password vaults remain managed by their own apps.")
+        }
+        alert.addButton(withTitle: String(localized: "OK"))
+        alert.runModal()
+    }
+
+    @objc func exportCrashReportAction(_ sender: Any?) {
+        CrashReporter.shared.exportReport(relativeTo: NSApp.keyWindow)
+    }
+
+    @objc func deleteCrashReportAction(_ sender: Any?) { CrashReporter.shared.deleteReport() }
+
     @objc func openAllMenuURLs(_ sender: NSMenuItem) {
         guard let urls = sender.representedObject as? [URL] else { return }
         urls.forEach { services.open($0, newTab: true) }
@@ -136,6 +161,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return services.profileList.canRemove(services.currentProfile.id)
         }
         if item.action == #selector(updateBlockListAction(_:)) { return !services.blockListUpdater.isUpdating }
+        if item.action == #selector(exportCrashReportAction(_:)), !CrashReporter.shared.hasReport { return false }
+        if item.action == #selector(deleteCrashReportAction(_:)), !CrashReporter.shared.hasReport { return false }
         return true
     }
 
@@ -437,6 +464,9 @@ enum MainMenu {
             .separator(),
             blockStatus,
             item(String(localized: "Update Ad Block List"), #selector(A.updateBlockListAction(_:))),
+            item(String(localized: "Password Managers…"), #selector(A.showPasswordManagersAction(_:))),
+            item(String(localized: "Export Previous Session Report…"), #selector(A.exportCrashReportAction(_:))),
+            item(String(localized: "Delete Previous Session Report"), #selector(A.deleteCrashReportAction(_:))),
             .separator(),
             item(String(localized: "Hide Askara"), #selector(NSApplication.hide(_:)), "h"),
             item(String(localized: "Hide Others"), #selector(NSApplication.hideOtherApplications(_:)), "h", [.command, .option]),

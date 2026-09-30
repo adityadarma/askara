@@ -154,3 +154,44 @@ enum Passkey {
     })();
     """
 }
+
+enum PictureInPictureScript {
+    static let handlerName = "askaraPiP"
+
+    static let source = """
+    (() => {
+      const handler = window.webkit && window.webkit.messageHandlers.askaraPiP;
+      if (!handler) return;
+      const videos = () => Array.from(document.querySelectorAll('video'));
+      const candidate = () => videos().filter((v) => v.readyState >= 2 && v.videoWidth > 0 && v.videoHeight > 0)
+        .sort((a, b) => ((b.paused ? 0 : 1) - (a.paused ? 0 : 1)) ||
+                        (b.getBoundingClientRect().width * b.getBoundingClientRect().height -
+                         a.getBoundingClientRect().width * a.getBoundingClientRect().height))[0];
+      const report = () => handler.postMessage({
+        eligible: !!candidate(),
+        active: !!document.pictureInPictureElement || videos().some((v) => v.webkitPresentationMode === 'picture-in-picture')
+      });
+      window.__askaraTogglePiP = async () => {
+        const active = document.pictureInPictureElement || videos().find((v) => v.webkitPresentationMode === 'picture-in-picture');
+        if (active) {
+          if (document.pictureInPictureElement && document.exitPictureInPicture) await document.exitPictureInPicture();
+          else if (active.webkitSetPresentationMode) active.webkitSetPresentationMode('inline');
+          report();
+          return true;
+        }
+        const video = candidate();
+        if (!video) return false;
+        if (video.requestPictureInPicture) await video.requestPictureInPicture();
+        else if (video.webkitSupportsPresentationMode && video.webkitSupportsPresentationMode('picture-in-picture'))
+          video.webkitSetPresentationMode('picture-in-picture');
+        else return false;
+        report();
+        return true;
+      };
+      for (const event of ['play', 'pause', 'loadedmetadata', 'enterpictureinpicture', 'leavepictureinpicture',
+                           'webkitpresentationmodechanged']) document.addEventListener(event, report, true);
+      new MutationObserver(report).observe(document.documentElement, { childList: true, subtree: true });
+      report();
+    })();
+    """
+}

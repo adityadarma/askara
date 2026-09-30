@@ -2,6 +2,7 @@ import AppKit
 
 // App entry point. No storyboard/XIB, to stay lightweight.
 MainActor.assumeIsolated {
+    CrashReporter.shared.start()
     let app = NSApplication.shared
     let delegate = AppDelegate()
     app.delegate = delegate

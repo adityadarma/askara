@@ -10,6 +10,8 @@ final class PrivacyDashboardController: NSViewController {
     private let status = NSTextField(wrappingLabelWithString: String(localized: "Checking site data…"))
     private let permissions = NSTextField(wrappingLabelWithString: "")
     private let clearButton = NSButton(title: String(localized: "Clear Site Data"), target: nil, action: nil)
+    private let blockerBox = NSButton(checkboxWithTitle: String(localized: "Block ads and trackers on this site"),
+                                      target: nil, action: nil)
 
     init(profile: ProfileData, host: String, secure: Bool) {
         self.profile = profile
@@ -27,13 +29,16 @@ final class PrivacyDashboardController: NSViewController {
         let connection = NSTextField(labelWithString: secure ? String(localized: "Secure HTTPS connection")
                                                                 : String(localized: "Connection is not secure"))
         connection.textColor = secure ? .systemGreen : .systemOrange
-        let protection = NSTextField(wrappingLabelWithString: String(localized: "Ad and tracker protection is active. WebKit does not expose an exact blocked-request count."))
+        let protection = NSTextField(wrappingLabelWithString: String(localized: "WebKit does not expose an exact blocked-request count."))
         protection.textColor = .secondaryLabelColor
         status.textColor = .secondaryLabelColor
         permissions.textColor = .secondaryLabelColor
         clearButton.target = self
         clearButton.action = #selector(clearSiteData(_:))
-        let stack = NSStackView(views: [title, connection, protection, status, permissions, clearButton])
+        blockerBox.target = self
+        blockerBox.action = #selector(toggleBlocker(_:))
+        blockerBox.state = BrowserServices.shared.siteSettings.isAdBlockDisabled(host: host) ? .off : .on
+        let stack = NSStackView(views: [title, connection, blockerBox, protection, status, permissions, clearButton])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 9
@@ -42,6 +47,10 @@ final class PrivacyDashboardController: NSViewController {
         [protection, status, permissions].forEach { $0.preferredMaxLayoutWidth = 328 }
         view = stack
         refresh()
+    }
+
+    @objc private func toggleBlocker(_ sender: NSButton) {
+        BrowserServices.shared.setAdBlockDisabled(sender.state != .on, host: host)
     }
 
     private func refresh() {
