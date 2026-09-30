@@ -17,6 +17,8 @@ final class TaskManagerWindowController: NSWindowController, NSWindowDelegate, N
         let status: String
         /// Memory of its page process, only on the first tab using that process (0 on the others).
         let bytes: UInt64
+        /// % CPU of its page process (one core = 100%), only on the first tab using that process.
+        let cpuPercent: Double
         let isSleeping: Bool
         let isActive: Bool
     }
@@ -27,6 +29,7 @@ final class TaskManagerWindowController: NSWindowController, NSWindowDelegate, N
     private let sleepButton = NSButton()
     private let closeButton = NSButton()
     private var timer: Timer?
+    private let cpuTracker = CPUUsageTracker()
     private var services: BrowserServices { .shared }
 
     private init() {
@@ -54,12 +57,13 @@ final class TaskManagerWindowController: NSWindowController, NSWindowDelegate, N
 
     private func buildUI() {
         guard let root = window?.contentView else { return }
-        for (id, title, width) in [("tab", String(localized: "Tab"), 330.0), ("status", String(localized: "Status"), 170.0),
-                                   ("memory", String(localized: "Memory"), 110.0)] {
+        for (id, title, width) in [("tab", String(localized: "Tab"), 300.0), ("status", String(localized: "Status"), 170.0),
+                                   ("cpu", String(localized: "CPU"), 70.0), ("memory", String(localized: "Memory"), 100.0)] {
             let column = NSTableColumn(identifier: .init(id))
             column.title = title
             column.width = width
             if id == "memory" { column.sortDescriptorPrototype = NSSortDescriptor(key: "memory", ascending: false) }
+            if id == "cpu" { column.sortDescriptorPrototype = NSSortDescriptor(key: "cpu", ascending: false) }
             table.addTableColumn(column)
         }
         table.dataSource = self
@@ -123,6 +127,7 @@ final class TaskManagerWindowController: NSWindowController, NSWindowDelegate, N
     private func reload() {
         let selectedIDs = Set(table.selectedRowIndexes.compactMap { rows.indices.contains($0) ? rows[$0].tab.id : nil })
         var counted = Set<pid_t>()
+        var cpuCounted = Set<pid_t>()
         var sharing: [pid_t: Int] = [:]
         let windows = services.windows
         for window in windows { for web in window.loadedWebViews { if let pid = web.askaraProcessID { sharing[pid, default: 0] += 1 } } }
@@ -135,6 +140,8 @@ final class TaskManagerWindowController: NSWindowController, NSWindowDelegate, N
                 let pid = web?.askaraProcessID
                 var bytes: UInt64 = 0
                 if let pid, counted.insert(pid).inserted { bytes = ProcessMemory.footprint(pid: pid) ?? 0 }
+                var cpuPercent: Double = 0
+                if let pid, cpuCounted.insert(pid).inserted { cpuPercent = cpuTracker.usage(pid: pid) }
                 var status: String
                 if web == nil {
                     status = String(localized: "Sleeping")
@@ -154,11 +161,13 @@ final class TaskManagerWindowController: NSWindowController, NSWindowDelegate, N
                 if window.isPrivate { detail = String(localized: "Private") + " · " + detail }
                 else if showProfile { detail = window.profile.profile.name + " · " + detail }
                 result.append(Row(tab: tab, window: window, title: tab.title, detail: detail, status: status,
-                                  bytes: bytes, isSleeping: web == nil, isActive: window.isActive(tab)))
+                                  bytes: bytes, cpuPercent: cpuPercent, isSleeping: web == nil, isActive: window.isActive(tab)))
             }
         }
-        if let sort = table.sortDescriptors.first, sort.key == "memory" {
-            result.sort { sort.ascending ? $0.bytes < $1.bytes : $0.bytes > $1.bytes }
+        cpuTracker.prune(keeping: Set(result.compactMap { $0.tab.webView?.askaraProcessID }))
+        if let sort = table.sortDescriptors.first {
+            if sort.key == "memory" { result.sort { sort.ascending ? $0.bytes < $1.bytes : $0.bytes > $1.bytes } }
+            else if sort.key == "cpu" { result.sort { sort.ascending ? $0.cpuPercent < $1.cpuPercent : $0.cpuPercent > $1.cpuPercent } }
         }
         rows = result
 
@@ -234,6 +243,9 @@ final class TaskManagerWindowController: NSWindowController, NSWindowDelegate, N
         case "status":
             cell.textField?.stringValue = item.status
             cell.textField?.textColor = item.isSleeping ? .secondaryLabelColor : .labelColor
+        case "cpu":
+            cell.textField?.stringValue = item.isSleeping ? "–" : String(format: "%.0f%%", item.cpuPercent)
+            cell.textField?.alignment = .right
         default:
             cell.textField?.stringValue = item.bytes > 0 ? ProcessMemory.format(item.bytes)
                 : (item.isSleeping ? "0 MB" : "–")

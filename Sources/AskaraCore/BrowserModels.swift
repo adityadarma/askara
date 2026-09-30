@@ -9,11 +9,16 @@ public struct SessionState: Codable, Equatable {
         public var title: String
         public var isPinned: Bool?
         public var isMuted: Bool?
-        public init(url: URL, title: String, isPinned: Bool = false, isMuted: Bool = false) {
+        /// WKWebView's opaque `interactionState` blob (back/forward history + scroll position).
+        /// Lets a restored tab feel like it was never closed, instead of reloading from `url`.
+        public var interactionData: Data?
+        public init(url: URL, title: String, isPinned: Bool = false, isMuted: Bool = false,
+                    interactionData: Data? = nil) {
             self.url = url
             self.title = title
             self.isPinned = isPinned ? true : nil
             self.isMuted = isMuted ? true : nil
+            self.interactionData = interactionData
         }
     }
 

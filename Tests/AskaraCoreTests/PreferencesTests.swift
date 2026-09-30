@@ -95,6 +95,17 @@ import Testing
         let state = try JSONDecoder().decode(SessionState.self, from: Data(old.utf8))
         #expect(state.windows[0].tabs[0].isPinned == nil)
     }
+
+    @Test func interactionDataRoundTripsAndOldFilesLoadWithoutIt() throws {
+        let blob = Data([0x62, 0x70, 0x6C, 0x69, 0x73, 0x74]) // stand-in for WKWebView's opaque state blob
+        let tab = SessionState.SavedTab(url: URL(string: "https://a.com")!, title: "A", interactionData: blob)
+        let decoded = try JSONDecoder().decode(SessionState.SavedTab.self, from: JSONEncoder().encode(tab))
+        #expect(decoded.interactionData == blob)
+        // Sessions saved before this field existed still load, with no interaction data to restore.
+        let old = #"{"url":"https://a.com","title":"A"}"#
+        let legacy = try JSONDecoder().decode(SessionState.SavedTab.self, from: Data(old.utf8))
+        #expect(legacy.interactionData == nil)
+    }
 }
 
 @Suite struct KeepAwakeHibernationTests {

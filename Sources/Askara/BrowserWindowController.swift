@@ -862,6 +862,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
             tab.owner = self
             tab.isPinned = saved.isPinned ?? false
             tab.isMuted = saved.isMuted ?? false
+            tab.interactionState = saved.interactionData
             return tab
         }
         tabs.forEach { extensionController?.didOpenTab($0) }
@@ -880,7 +881,10 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
             // Temporary extension pages (e.g. passkey confirmation) are not restored.
             guard let url = tab.webView?.url ?? tab.url, url.scheme != "webkit-extension" else { continue }
             if index == activeIndex { active = saved.count }
-            saved.append(.init(url: url, title: tab.title, isPinned: tab.isPinned, isMuted: tab.isMuted))
+            // A live tab's state must be read from its WebView; a sleeping tab already has it cached.
+            let interactionData = (tab.webView?.interactionState ?? tab.interactionState) as? Data
+            saved.append(.init(url: url, title: tab.title, isPinned: tab.isPinned, isMuted: tab.isMuted,
+                               interactionData: interactionData))
         }
         let frame = window?.frame
         let savedFrame = frame.map { SessionState.SavedFrame(x: $0.minX, y: $0.minY, width: $0.width, height: $0.height) }
