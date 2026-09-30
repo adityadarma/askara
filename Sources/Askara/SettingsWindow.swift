@@ -11,6 +11,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     // General
     private let enginePopup = NSPopUpButton()
     private let homeField = NSTextField()
+    private let defaultStatus = NSTextField(labelWithString: "")
+    private let defaultButton = NSButton()
+    private let barBox = NSButton(checkboxWithTitle: String(localized: "Show bookmarks bar"), target: nil, action: nil)
     // Memory Saver
     private let sleepPopup = NSPopUpButton()
     private let maxTabsStepper = NSStepper()
@@ -117,10 +120,21 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         let useCurrent = NSButton(title: String(localized: "Use Current Page"), target: self,
                                   action: #selector(useCurrentPage(_:)))
 
+        defaultButton.title = String(localized: "Make Default")
+        defaultButton.bezelStyle = .rounded
+        defaultButton.target = self
+        defaultButton.action = #selector(makeDefault(_:))
+        let defaultRow = NSStackView(views: [defaultStatus, defaultButton])
+        defaultRow.spacing = 8
+        barBox.target = self
+        barBox.action = #selector(barChanged(_:))
+
         let grid = NSGridView(views: [
+            [label(String(localized: "Default browser:")), defaultRow],
             [label(String(localized: "Search engine:")), enginePopup],
             [label(String(localized: "Home page:")), homeField],
             [NSGridCell.emptyContentView, useCurrent],
+            [NSGridCell.emptyContentView, barBox],
         ])
         grid.rowSpacing = 10
         grid.column(at: 0).xPlacement = .trailing
@@ -222,8 +236,56 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
 
     // MARK: - State
 
+    // MARK: - Default browser
+
+    private var isDefaultBrowser: Bool {
+        guard let probe = URL(string: "https://example.com"),
+              let handler = NSWorkspace.shared.urlForApplication(toOpen: probe) else { return false }
+        return Bundle(url: handler)?.bundleIdentifier == Bundle.main.bundleIdentifier
+    }
+
+    private func updateDefaultStatus() {
+        let isDefault = isDefaultBrowser
+        defaultStatus.stringValue = isDefault ? String(localized: "Askara is your default browser")
+                                              : String(localized: "Askara isn't your default browser")
+        defaultButton.isHidden = isDefault
+    }
+
+    /// macOS shows its own confirmation ("Use Askara or keep Safari?").
+    @objc private func makeDefault(_ sender: Any?) {
+        let app = Bundle.main.bundleURL
+        guard Bundle.main.bundleIdentifier != nil, app.pathExtension == "app" else {
+            defaultStatus.stringValue = String(localized: "Open Askara from Askara.app to set it as default.")
+            return
+        }
+        let group = DispatchGroup()
+        var failure: Error?
+        for scheme in ["http", "https"] {
+            group.enter()
+            NSWorkspace.shared.setDefaultApplication(at: app, toOpenURLsWithScheme: scheme) { error in
+                if let error { failure = error }
+                group.leave()
+            }
+        }
+        group.notify(queue: .main) { [weak self] in
+            MainActor.assumeIsolated {
+                if let failure { Log.error("Askara: set default browser failed: \(failure)") }
+                self?.updateDefaultStatus()
+            }
+        }
+    }
+
+    @objc private func barChanged(_ sender: NSButton) {
+        services.updatePreferences { $0.showsBookmarksBar = sender.state == .on }
+    }
+
+    /// The choice can change in System Settings while this window is open.
+    func windowDidBecomeKey(_ notification: Notification) { updateDefaultStatus() }
+
     @objc private func reload() {
         let prefs = services.preferences
+        updateDefaultStatus()
+        barBox.state = prefs.showsBookmarksBar ? .on : .off
         enginePopup.selectItem(at: SearchEngine.all.firstIndex { $0.id == prefs.searchEngine.id } ?? 0)
         if homeField.currentEditor() == nil { homeField.stringValue = prefs.homePage }
         homeField.placeholderString = prefs.searchEngine.homeURL.absoluteString

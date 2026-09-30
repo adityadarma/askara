@@ -99,6 +99,8 @@ private final class WeakScriptHandler: NSObject, WKScriptMessageHandler {
 
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
         MainActor.assumeIsolated {
+            // A tab dragged to another window keeps its web view; messages go to the window it's in now.
+            let target = (message.webView as? AskaraWebView)?.browser ?? self.target
             switch message.name {
             case FormGuard.handlerName:
                 guard let body = message.body as? [String: Any], let frame = body["frame"] as? String else { return }
@@ -153,6 +155,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     private let bookmarkButton = NSButton()
     /// Profile avatar at the right end of the toolbar, like Chrome.
     private let profileButton = FirstClickButton()
+    private let bookmarkBar = BookmarkBarView()
     private let findBar = NSStackView()
     private let findField = NSSearchField()
     private let findStatus = NSTextField(labelWithString: "")
@@ -161,6 +164,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     private let loadingBar = LoadingBar()
 
     private var activeTab: Tab? { tabs.indices.contains(activeIndex) ? tabs[activeIndex] : nil }
+    /// Loaded web view of the active tab (screenshot).
+    var activeWebViewForCapture: WKWebView? { activeTab?.webView }
 
     init(profile: ProfileData, isPrivate: Bool) {
         self.profile = profile
@@ -183,6 +188,9 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         if isPrivate { window.appearance = NSAppearance(named: .darkAqua) }
         super.init(window: window)
         window.delegate = self
+        let root = BrowserRootView()
+        root.tabStrip = tabStrip
+        window.contentView = root
         buildUI()
 
         let center = NotificationCenter.default
@@ -275,10 +283,15 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
 
         // Toolbar + find bar in one block, colored the same as the active tab.
         toolbar.color = isPrivate ? AskaraColors.privateToolbar : AskaraColors.toolbar
-        let toolbarContent = NSStackView(views: [toolbarStack, findBar])
+        toolbar.zoomsOnDoubleClick = true
+        bookmarkBar.delegate = self
+        bookmarkBar.heightAnchor.constraint(equalToConstant: BookmarkBarView.height).isActive = true
+        bookmarkBar.reload()
+        updateBookmarkBarVisibility()
+        let toolbarContent = NSStackView(views: [toolbarStack, bookmarkBar, findBar])
         toolbarContent.orientation = .vertical
         toolbarContent.spacing = 0
-        for v in [toolbarStack, findBar] { v.widthAnchor.constraint(equalTo: toolbarContent.widthAnchor).isActive = true }
+        for v in [toolbarStack, bookmarkBar, findBar] { v.widthAnchor.constraint(equalTo: toolbarContent.widthAnchor).isActive = true }
 
         for v in [tabStrip, toolbar, contentView, loadingBar, toast] as [NSView] {
             v.translatesAutoresizingMaskIntoConstraints = false
@@ -329,7 +342,21 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     }
 
     /// Settings changed (e.g. Memory Saver exceptions): redraw tab tooltips/state.
-    @objc private func preferencesChanged() { refreshTabStrip() }
+    @objc private func preferencesChanged() {
+        refreshTabStrip()
+        updateBookmarkBarVisibility()
+    }
+
+    /// Shown only when turned on and there's something on it. Private windows never show it
+    /// (bookmarks still work from the menu).
+    private func updateBookmarkBarVisibility() {
+        bookmarkBar.isHidden = isPrivate || !services.preferences.showsBookmarksBar || profile.bookmarks.bar.isEmpty
+    }
+
+    /// View > Show/Hide Bookmarks Bar (⇧⌘B). Applies to all windows.
+    @objc func toggleBookmarksBarAction(_ sender: Any?) {
+        services.updatePreferences { $0.showsBookmarksBar.toggle() }
+    }
 
     private func updateToolbar() {
         let tab = activeTab
@@ -365,7 +392,11 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
 
     func showToast(_ text: String, duration: TimeInterval? = 3) { toast.show(text, duration: duration) }
 
-    @objc private func bookmarksChanged() { updateBookmarkButton() }
+    @objc private func bookmarksChanged() {
+        updateBookmarkButton()
+        bookmarkBar.reload()
+        updateBookmarkBarVisibility()
+    }
 
     // MARK: - Profile button
 
@@ -446,6 +477,113 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     func tabStrip(_ strip: TabStripView, toggleMuteAt index: Int) {
         guard tabs.indices.contains(index) else { return }
         setMuted(!tabs[index].isMuted, tab: tabs[index])
+    }
+
+    // MARK: - Dragging tabs
+
+    func tabStrip(_ strip: TabStripView, moveTabFrom from: Int, to: Int) {
+        guard tabs.indices.contains(from), tabs.indices.contains(to), from != to else { return }
+        var order = tabs
+        order.insert(order.remove(at: from), at: to)
+        reorder(order)
+        tabsChanged()
+    }
+
+    func tabStrip(_ strip: TabStripView, dragIDForTabAt index: Int) -> String? {
+        // Private windows each have their own temporary data store, so their tabs stay put.
+        guard tabs.indices.contains(index), !isPrivate else { return nil }
+        return tabs[index].id.uuidString
+    }
+
+    /// The window currently holding a dragged tab.
+    private func draggedTab(_ id: String) -> (window: BrowserWindowController, tab: Tab)? {
+        guard let uuid = UUID(uuidString: id) else { return nil }
+        for window in services.windows {
+            if let tab = window.tabs.first(where: { $0.id == uuid }) { return (window, tab) }
+        }
+        return nil
+    }
+
+    func tabStrip(_ strip: TabStripView, canAcceptTab id: String) -> Bool {
+        // Only between windows of the same profile: the page keeps that profile's logins.
+        guard let source = draggedTab(id)?.window else { return false }
+        return !isPrivate && !source.isPrivate && source.profile === profile
+    }
+
+    func tabStrip(_ strip: TabStripView, acceptTab id: String, at index: Int) -> Bool {
+        guard tabStrip(strip, canAcceptTab: id), let (source, tab) = draggedTab(id),
+              let oldIndex = source.tabs.firstIndex(where: { $0 === tab }) else { return false }
+        if source === self {
+            // Dropped back on its own strip.
+            let target = index > oldIndex ? index - 1 : index
+            tabStrip(strip, moveTabFrom: oldIndex, to: clampedIndex(target, pinned: tab.isPinned, excluding: tab))
+            return true
+        }
+        source.removeTabForMove(tab)
+        adopt(tab, at: index, from: source, oldIndex: oldIndex)
+        return true
+    }
+
+    func tabStrip(_ strip: TabStripView, detachTab id: String, to screenPoint: NSPoint) {
+        guard !isPrivate, let (source, tab) = draggedTab(id),
+              let oldIndex = source.tabs.firstIndex(where: { $0 === tab }) else { return }
+        let topLeft = NSPoint(x: screenPoint.x - 60, y: screenPoint.y + 20)
+        if source.tabs.count == 1 {
+            // The window's only tab: just move the window there.
+            source.window?.setFrameTopLeftPoint(topLeft)
+            return
+        }
+        let target = services.makeWindow(profile: profile)
+        if let window = target.window, let source = source.window {
+            window.setContentSize(source.contentLayoutRect.size)
+            window.setFrameTopLeftPoint(topLeft)
+        }
+        source.removeTabForMove(tab)
+        target.adopt(tab, at: 0, from: source, oldIndex: oldIndex)
+    }
+
+    /// Position among pinned tabs for a pinned tab, after them otherwise.
+    private func clampedIndex(_ index: Int, pinned: Bool, excluding tab: Tab? = nil) -> Int {
+        let others = tabs.filter { $0 !== tab }
+        let pinnedCount = others.filter(\.isPinned).count
+        return pinned ? min(max(0, index), pinnedCount) : min(max(pinnedCount, index), others.count)
+    }
+
+    /// Takes a tab out of this window without closing its page (it's moving to another window).
+    fileprivate func removeTabForMove(_ tab: Tab) {
+        guard let index = tabs.firstIndex(where: { $0 === tab }) else { return }
+        tab.webView?.removeFromSuperview()
+        tabs.remove(at: index)
+        if tabs.isEmpty {
+            activeIndex = -1
+            window?.close()
+            return
+        }
+        if index < activeIndex {
+            activeIndex -= 1
+            refreshTabStrip()
+        } else if index == activeIndex {
+            activeIndex = -1
+            activate(index: min(index, tabs.count - 1))
+        } else {
+            refreshTabStrip()
+        }
+        sessionChanged()
+    }
+
+    /// Takes over a tab (with its live page, history, and scroll position) from another window.
+    fileprivate func adopt(_ tab: Tab, at index: Int, from source: BrowserWindowController, oldIndex: Int) {
+        tab.owner = self
+        // Re-point delegates and observers at this window.
+        if let web = tab.webView { attach(web, to: tab) }
+        let position = clampedIndex(index, pinned: tab.isPinned)
+        tabs.insert(tab, at: position)
+        if position <= activeIndex { activeIndex += 1 }
+        extensionController?.didMoveTab(tab, from: oldIndex, in: source)
+        activate(index: position)
+        showWindow(nil)
+        window?.makeKeyAndOrderFront(nil)
+        sessionChanged()
     }
 
     // MARK: - Tab lifecycle
@@ -1063,10 +1201,18 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         }
     }
 
+    /// ⌘D / star: adds the page and shows a popover to rename or pick a folder, like Chrome.
+    /// Already bookmarked: the popover opens for editing (Remove is there).
     @objc func toggleBookmarkAction(_ sender: Any?) {
-        guard let tab = activeTab, let url = tab.url else { return }
-        let added = profile.toggleBookmark(url: url, title: tab.title)
-        showToast(added ? String(localized: "Bookmark added: \(tab.title)") : String(localized: "Bookmark removed"), duration: 2)
+        guard let tab = activeTab, let url = tab.webView?.url ?? tab.url else { return }
+        let existing = profile.bookmarks.node(for: url)
+        let id = existing?.id ?? profile.editBookmarks { $0.add(url: url, title: tab.title)?.id }
+        guard let id else { return }
+        if window?.isVisible == true, !bookmarkButton.isHiddenOrHasHiddenAncestor {
+            BookmarkPopover.show(profile: profile, id: id, relativeTo: bookmarkButton)
+        } else {
+            showToast(String(localized: "Bookmark added: \(tab.title)"), duration: 2)
+        }
     }
 
     @objc func openInSafariAction(_ sender: Any?) {
@@ -1396,6 +1542,12 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         switch item.action {
         case #selector(backAction(_:)): return web?.canGoBack ?? false
         case #selector(forwardAction(_:)): return web?.canGoForward ?? false
+        case #selector(toggleBookmarksBarAction(_:)):
+            item.title = services.preferences.showsBookmarksBar ? String(localized: "Hide Bookmarks Bar")
+                                                                : String(localized: "Show Bookmarks Bar")
+            return !isPrivate
+        case #selector(fullPageScreenshotAction(_:)):
+            return activeTab?.webView?.url != nil
         case #selector(toggleBookmarkAction(_:)):
             guard let url = activeTab?.url else { return false }
             item.title = profile.bookmarks.contains(url) ? String(localized: "Remove Bookmark") : String(localized: "Add Bookmark")
@@ -1790,6 +1942,19 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         extensionController?.didFocusWindow(self)
     }
 
+    // In full screen macOS moves the titlebar (with the empty toolbar that sizes it) into its own
+    // opaque strip at the top, which covers the tab strip. Hiding the toolbar there leaves only the
+    // thin titlebar that slides in when the pointer reaches the top, like Safari. Restored before
+    // leaving full screen so the red/yellow/green buttons line up with the tabs again.
+    func windowWillEnterFullScreen(_ notification: Notification) {
+        suggestions.hide()
+        window?.toolbar?.isVisible = false
+    }
+
+    func windowWillExitFullScreen(_ notification: Notification) {
+        window?.toolbar?.isVisible = true
+    }
+
     func windowDidResignKey(_ notification: Notification) { suggestions.hide() }
     func windowWillStartLiveResize(_ notification: Notification) { suggestions.hide() }
     func windowWillMove(_ notification: Notification) { suggestions.hide() }
@@ -1931,5 +2096,34 @@ extension BrowserWindowController: WKWebExtensionWindow {
     func close(for context: WKWebExtensionContext, completionHandler: @escaping ((any Error)?) -> Void) {
         window?.performClose(nil)
         completionHandler(nil)
+    }
+}
+
+
+// MARK: - Bookmarks bar
+
+extension BrowserWindowController: BookmarkBarDelegate {
+    var bookmarkBarProfile: ProfileData { profile }
+
+    func bookmarkBar(_ bar: BookmarkBarView, open url: URL, newTab: Bool) {
+        if newTab { self.newTab(url: url) } else { load(url) }
+    }
+
+    func bookmarkBar(_ bar: BookmarkBarView, openAll urls: [URL]) {
+        urls.forEach { newTab(url: $0) }
+    }
+}
+
+/// Window content view. With a full-size content view the tab strip sits under the titlebar, and
+/// the window server moves the window on any drag there before the app sees the events, so tabs
+/// couldn't be dragged. AppKit asks the content view which part of the titlebar area is "opaque"
+/// (not a window-drag area) through this private method, the same one Chromium implements.
+/// Empty space in the strip still moves the window: TabStripView.mouseDown calls performDrag.
+final class BrowserRootView: NSView {
+    weak var tabStrip: TabStripView?
+
+    @objc func _opaqueRectForWindowMoveWhenInTitlebar() -> NSRect {
+        guard let tabStrip, !tabStrip.isHidden else { return .zero }
+        return convert(tabStrip.bounds, from: tabStrip)
     }
 }

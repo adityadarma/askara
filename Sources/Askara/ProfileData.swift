@@ -136,6 +136,16 @@ final class ProfileData {
         do { try historyFile.save(history) } catch { Log.error("Askara: failed to save history: \(error)") }
     }
 
+    /// Visits from another browser. Saved right away. Returns the number of pages added or updated.
+    func importHistory(_ visits: [ImportedVisit]) -> Int {
+        let count = history.importVisits(visits)
+        NotificationCenter.default.post(name: .askaraHistoryChanged, object: self)
+        if !isDiscarded {
+            do { try historyFile.save(history) } catch { Log.error("Askara: failed to save history: \(error)") }
+        }
+        return count
+    }
+
     // MARK: - Bookmarks
 
     @discardableResult
@@ -143,6 +153,14 @@ final class ProfileData {
         let added = bookmarks.toggle(url: url, title: title)
         bookmarksChanged()
         return added
+    }
+
+    /// Any other bookmark change (folders, moving, editing, importing). Saved right away.
+    @discardableResult
+    func editBookmarks<T>(_ change: (inout BookmarkStore) -> T) -> T {
+        let result = change(&bookmarks)
+        bookmarksChanged()
+        return result
     }
 
     func removeBookmarks(ids: [UUID]) {

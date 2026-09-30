@@ -51,6 +51,8 @@ public struct HibernationPolicy: Equatable {
     /// Tabs used within this time are spared by the tab-count and memory limits, so switching
     /// away from a tab and straight back doesn't reload it. Ignored when macOS reports memory pressure.
     public var recentGrace: TimeInterval
+    /// At most this many background tabs are spared by `recentGrace`.
+    public static let maxGracedTabs = 2
 
     public init(idleTimeout: TimeInterval = 5 * 60, maxLoadedTabs: Int = 3, memoryBudget: UInt64? = nil,
                 recentGrace: TimeInterval = 0) {
@@ -95,8 +97,15 @@ public struct HibernationPolicy: Equatable {
             reasons[tab.id] = .idle
         }
 
+        // Only the few most recently used background tabs get the grace period. Without this cap,
+        // opening many tabs in a row kept all of them awake and ignored the limits.
+        let graced = Set(background
+            .filter { now.timeIntervalSince($0.lastActive) < recentGrace }
+            .sorted { $0.lastActive > $1.lastActive }
+            .prefix(Self.maxGracedTabs)
+            .map(\.id))
         func evictable(_ tab: TabSnapshot) -> Bool {
-            pressure == .warning || now.timeIntervalSince(tab.lastActive) >= recentGrace
+            pressure == .warning || !graced.contains(tab.id)
         }
 
         // If still over the count limit, discard the least recently used.

@@ -65,6 +65,11 @@ public struct HistoryStore: Codable, Equatable {
         return result
     }
 
+    /// Replaces all entries: sorted newest first and cut to the limit.
+    mutating func replaceEntries(_ list: [HistoryEntry]) {
+        entries = Array(list.sorted { $0.lastVisited > $1.lastVisited }.prefix(limit))
+    }
+
     public mutating func remove(url: URL) { entries.removeAll { $0.url == url } }
 
     public mutating func clear(since date: Date? = nil) {

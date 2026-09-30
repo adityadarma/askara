@@ -105,7 +105,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func showSettingsAction(_ sender: Any?) { services.settingsWindow.show() }
     @objc func showHistoryAction(_ sender: Any?) { LibraryWindowController.shared.show(.history) }
     @objc func showBookmarksAction(_ sender: Any?) { LibraryWindowController.shared.show(.bookmarks) }
+    @objc func importAction(_ sender: Any?) {
+        BrowserImporter.run(in: NSApp.keyWindow, profile: services.currentProfile)
+    }
     @objc func showDownloadsAction(_ sender: Any?) { LibraryWindowController.shared.show(.downloads) }
+    @objc func showTaskManagerAction(_ sender: Any?) { TaskManagerWindowController.shared.show() }
+
+    @objc func openAllMenuURLs(_ sender: NSMenuItem) {
+        guard let urls = sender.representedObject as? [URL] else { return }
+        urls.forEach { services.open($0, newTab: true) }
+    }
 
     @objc func openMenuURL(_ sender: NSMenuItem) {
         guard let url = sender.representedObject as? URL else { return }
@@ -281,9 +290,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let fixedCount = isHistory ? MainMenu.historyFixedItems : MainMenu.bookmarkFixedItems
         while menu.items.count > fixedCount { menu.removeItem(at: fixedCount) }
 
-        let entries: [(String, URL)] = isHistory
-            ? services.currentProfile.history.entries.prefix(15).map { ($0.title.isEmpty ? $0.url.absoluteString : $0.title, $0.url) }
-            : services.currentProfile.bookmarks.bookmarks.suffix(30).reversed().map { ($0.title, $0.url) }
+        if !isHistory {
+            // Bookmarks menu: bar and Other Bookmarks, folders as submenus.
+            let store = services.currentProfile.bookmarks
+            if store.bar.isEmpty && store.other.isEmpty {
+                let empty = NSMenuItem(title: String(localized: "No bookmarks yet"), action: nil, keyEquivalent: "")
+                empty.isEnabled = false
+                menu.addItem(empty)
+                return
+            }
+            for node in store.bar {
+                menu.addItem(BookmarkMenus.item(for: node, target: self, action: #selector(openMenuURL(_:)),
+                                                openAll: #selector(openAllMenuURLs(_:))))
+            }
+            if !store.other.isEmpty {
+                menu.addItem(.separator())
+                let other = BookmarkNode.folder(BookmarkMenus.otherTitle, children: store.other)
+                menu.addItem(BookmarkMenus.item(for: other, target: self, action: #selector(openMenuURL(_:)),
+                                                openAll: #selector(openAllMenuURLs(_:))))
+            }
+            return
+        }
+        let entries: [(String, URL)] = services.currentProfile.history.entries.prefix(15)
+            .map { ($0.title.isEmpty ? $0.url.absoluteString : $0.title, $0.url) }
 
         if entries.isEmpty {
             let empty = NSMenuItem(title: isHistory ? String(localized: "No history yet") : String(localized: "No bookmarks yet"),
@@ -357,7 +386,7 @@ enum MainMenu {
     static let developExtensionHeaderTag = 7002
     static let blockStatusTag = 7001
     static let historyFixedItems = 5
-    static let bookmarkFixedItems = 3
+    static let bookmarkFixedItems = 4
     static let memorySaverStatusTag = 7003
     static let viewMenuID = NSUserInterfaceItemIdentifier("view")
     static let profileMenuID = NSUserInterfaceItemIdentifier("profiles")
@@ -447,6 +476,9 @@ enum MainMenu {
         submenu(String(localized: "View"), [
             item(String(localized: "Reload Page"), #selector(B.reloadAction(_:)), "r"),
             .separator(),
+            item(String(localized: "Show Bookmarks Bar"), #selector(B.toggleBookmarksBarAction(_:)), "b", [.command, .shift]),
+            item(String(localized: "Take Full-Page Screenshot"), #selector(B.fullPageScreenshotAction(_:)), "s", [.command, .shift]),
+            .separator(),
             item(String(localized: "Zoom In"), #selector(B.zoomInAction(_:)), "+"),
             item(String(localized: "Zoom In"), #selector(B.zoomInAction(_:)), "="), // ⌘= without Shift
             item(String(localized: "Zoom Out"), #selector(B.zoomOutAction(_:)), "-"),
@@ -488,6 +520,7 @@ enum MainMenu {
         let bookmarks = submenu(String(localized: "Bookmarks"), [
             item(String(localized: "Add Bookmark"), #selector(B.toggleBookmarkAction(_:)), "d"),
             item(String(localized: "Show All Bookmarks"), #selector(A.showBookmarksAction(_:)), "b", [.command, .option]),
+            item(String(localized: "Import Bookmarks and History…"), #selector(A.importAction(_:))),
             .separator(),
         ])
         bookmarks.identifier = bookmarkMenuID
@@ -574,6 +607,7 @@ enum MainMenu {
             item(String(localized: "Zoom"), #selector(NSWindow.performZoom(_:))),
             .separator(),
             item(String(localized: "Downloads"), #selector(A.showDownloadsAction(_:)), "l", [.command, .option]),
+            item(String(localized: "Task Manager"), #selector(A.showTaskManagerAction(_:))),
             .separator(),
             item(String(localized: "Bring All to Front"), #selector(NSApplication.arrangeInFront(_:))),
         ])

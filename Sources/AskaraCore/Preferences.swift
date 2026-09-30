@@ -55,11 +55,13 @@ public struct BrowserPreferences: Codable, Equatable, Sendable {
     public var httpsOnly = false
     /// Memory Saver exceptions: tabs of these sites (and subdomains) never sleep.
     public private(set) var keepAwakeSites: [String] = []
+    /// Bookmarks bar under the toolbar (View > Show Bookmarks Bar, ⇧⌘B).
+    public var showsBookmarksBar = true
 
     public init() {}
 
     private enum CodingKeys: String, CodingKey {
-        case searchEngineID, homePage, sleepAfterMinutes, maxLoadedTabs, httpsOnly, keepAwakeSites
+        case searchEngineID, homePage, sleepAfterMinutes, maxLoadedTabs, httpsOnly, keepAwakeSites, showsBookmarksBar
     }
 
     public init(from decoder: Decoder) throws {
@@ -71,6 +73,7 @@ public struct BrowserPreferences: Codable, Equatable, Sendable {
         maxLoadedTabs = try c.decodeIfPresent(Int.self, forKey: .maxLoadedTabs) ?? d.maxLoadedTabs
         httpsOnly = try c.decodeIfPresent(Bool.self, forKey: .httpsOnly) ?? d.httpsOnly
         keepAwakeSites = try c.decodeIfPresent([String].self, forKey: .keepAwakeSites) ?? d.keepAwakeSites
+        showsBookmarksBar = try c.decodeIfPresent(Bool.self, forKey: .showsBookmarksBar) ?? d.showsBookmarksBar
     }
 
     public var searchEngine: SearchEngine { SearchEngine.engine(id: searchEngineID) }

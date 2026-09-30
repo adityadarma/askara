@@ -123,6 +123,14 @@ import Testing
         #expect(policy.tabsToHibernate([tab(0, active: true), tab(10), tab(20)], now: now).isEmpty)
     }
 
+    @Test func graceCoversOnlyTheMostRecentTabs() {
+        // Opening many tabs in a row must not keep all of them awake.
+        let policy = HibernationPolicy(idleTimeout: 3_600, maxLoadedTabs: 2, recentGrace: 300)
+        let t1 = tab(10), t2 = tab(20), t3 = tab(30), t4 = tab(40)
+        let slept = policy.tabsToHibernate([tab(0, active: true), t1, t2, t3, t4], now: now)
+        #expect(Set(slept) == [t3.id, t4.id])
+    }
+
     @Test func warningPressureIgnoresGraceButNotLimits() {
         let policy = HibernationPolicy(idleTimeout: 3_600, maxLoadedTabs: 2, recentGrace: 300)
         let a = tab(10), b = tab(20)

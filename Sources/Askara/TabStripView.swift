@@ -20,6 +20,13 @@ enum AskaraColors {
 final class FillView: NSView {
     var color: NSColor = AskaraColors.toolbar { didSet { needsDisplay = true } }
     var drawsBottomBorder = true
+    /// Double-click on empty space zooms/minimizes the window, like the titlebar (toolbar row).
+    var zoomsOnDoubleClick = false
+
+    override func mouseUp(with event: NSEvent) {
+        if zoomsOnDoubleClick, event.clickCount == 2 { TabStripView.titlebarDoubleClick(window) }
+        else { super.mouseUp(with: event) }
+    }
 
     override func draw(_ dirtyRect: NSRect) {
         color.setFill()
@@ -42,6 +49,15 @@ protocol TabStripDelegate: AnyObject {
     func tabStrip(_ strip: TabStripView, menuFor index: Int) -> NSMenu?
     /// Click on the speaker icon.
     func tabStrip(_ strip: TabStripView, toggleMuteAt index: Int)
+    /// Drag within the strip: move a tab (pinned tabs stay among pinned tabs).
+    func tabStrip(_ strip: TabStripView, moveTabFrom from: Int, to: Int)
+    /// Identifier put on the pasteboard when a tab is dragged out of the strip. nil = can't leave.
+    func tabStrip(_ strip: TabStripView, dragIDForTabAt index: Int) -> String?
+    /// Whether a tab dragged from any window may be dropped on this strip.
+    func tabStrip(_ strip: TabStripView, canAcceptTab id: String) -> Bool
+    func tabStrip(_ strip: TabStripView, acceptTab id: String, at index: Int) -> Bool
+    /// Dropped outside every tab strip: open it in a new window near `screenPoint` (top-left).
+    func tabStrip(_ strip: TabStripView, detachTab id: String, to screenPoint: NSPoint)
 }
 
 struct TabStripItem: Equatable {
@@ -137,8 +153,9 @@ final class LoadingBar: NSView {
 
 /// Tab strip in the titlebar area, next to the window buttons (red/yellow/green).
 /// Pinned tabs (icon only) come first, then normal tabs.
-final class TabStripView: NSView {
+final class TabStripView: NSView, NSDraggingSource {
     static let height: CGFloat = 40
+    static let tabType = NSPasteboard.PasteboardType("local.askara.tab")
     private static let topGap: CGFloat = 6
     static let pinnedWidth: CGFloat = 42
 
@@ -173,6 +190,7 @@ final class TabStripView: NSView {
 
         setAccessibilityRole(.tabGroup)
         setAccessibilityLabel(String(localized: "Tabs"))
+        registerForDraggedTypes([Self.tabType])
     }
 
     @available(*, unavailable)
@@ -237,22 +255,115 @@ final class TabStripView: NSView {
     var activeTabColor: NSColor { isPrivate ? AskaraColors.privateToolbar : AskaraColors.toolbar }
 
     // Empty tab strip area acts like a titlebar: drag to move, double-click to zoom.
+    // The second click is handled on mouse-up: after the first click's performDrag the window
+    // server may swallow the second mouse-down's follow-up events.
     override func mouseDown(with event: NSEvent) {
+        guard let window, event.clickCount == 1 else { return }
+        window.performDrag(with: event)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        if event.clickCount == 2 { Self.titlebarDoubleClick(window) }
+    }
+
+    /// Follows System Settings > Desktop & Dock > "Double-click a window's title bar to".
+    static func titlebarDoubleClick(_ window: NSWindow?) {
         guard let window else { return }
-        if event.clickCount == 2 {
-            switch UserDefaults.standard.string(forKey: "AppleActionOnDoubleClick") {
-            case "Minimize": window.miniaturize(nil)
-            case "None": break
-            default: window.zoom(nil)
-            }
-        } else {
-            window.performDrag(with: event)
+        switch UserDefaults.standard.string(forKey: "AppleActionOnDoubleClick") {
+        case "Minimize": window.miniaturize(nil)
+        case "None": break
+        default: window.zoom(nil) // "Maximize"/"Fill": toggles between full size and the previous size
         }
     }
 
     override var mouseDownCanMoveWindow: Bool { false }
 
+    /// The strip lies in the titlebar area. Without this, the window server treats it as titlebar
+    /// and moves the window on any drag, so tabs could never be dragged. AppKit asks titlebar views
+    /// for this rect (the same override Chromium uses); moving the window from empty space is done
+    /// in `mouseDown` instead.
+    @objc func _opaqueRectForWindowMoveWhenInTitlebar() -> NSRect { bounds }
+
     @objc private func newTabClicked(_ sender: Any?) { delegate?.tabStripNewTab(self) }
+
+    // MARK: - Dragging tabs
+
+    /// Index a tab would take if dropped at `x` (among all tabs; the delegate keeps pinned tabs first).
+    private func dropIndex(atX x: CGFloat, excluding skipped: Int? = nil) -> Int {
+        itemViews.enumerated().filter { $0.offset != skipped && $0.element.frame.midX < x }.count
+    }
+
+    /// Follows the mouse after a click on a tab: reorders live while the pointer stays near the strip,
+    /// and turns into a drag session (to another window, or out to a new one) once it leaves.
+    fileprivate func trackDrag(from startIndex: Int, event: NSEvent) {
+        guard let window else { return }
+        let start = event.locationInWindow
+        var current = startIndex
+        var moved = false
+        while let next = window.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
+            if next.type == .leftMouseUp { return }
+            let point = next.locationInWindow
+            if !moved, abs(point.x - start.x) < 5, abs(point.y - start.y) < 5 { continue }
+            if !moved { Log.notice("tab drag started (tab \(startIndex))") }
+            moved = true
+            let local = convert(point, from: nil)
+            if local.y < -30 || local.y > bounds.height + 30 || !bounds.insetBy(dx: -30, dy: 0).contains(NSPoint(x: local.x, y: bounds.midY)) {
+                beginDragSession(index: current, event: next)
+                return
+            }
+            let pinned = items[current].isPinned
+            let pinnedCount = items.filter(\.isPinned).count
+            let range = pinned ? 0...max(0, pinnedCount - 1) : pinnedCount...max(pinnedCount, items.count - 1)
+            let target = min(max(dropIndex(atX: local.x, excluding: current), range.lowerBound), range.upperBound)
+            guard target != current else { continue }
+            delegate?.tabStrip(self, moveTabFrom: current, to: target)
+            current = target
+            layoutSubtreeIfNeeded()
+        }
+    }
+
+    private func beginDragSession(index: Int, event: NSEvent) {
+        guard itemViews.indices.contains(index), let id = delegate?.tabStrip(self, dragIDForTabAt: index) else { return }
+        let view = itemViews[index]
+        let item = NSPasteboardItem()
+        item.setString(id, forType: Self.tabType)
+        let dragItem = NSDraggingItem(pasteboardWriter: item)
+        let image = NSImage(size: view.bounds.size)
+        if let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+            view.cacheDisplay(in: view.bounds, to: rep)
+            image.addRepresentation(rep)
+        }
+        dragItem.setDraggingFrame(view.frame, contents: image)
+        let session = beginDraggingSession(with: [dragItem], event: event, source: self)
+        session.animatesToStartingPositionsOnCancelOrFail = false
+    }
+
+    func draggingSession(_ session: NSDraggingSession,
+                         sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
+        context == .withinApplication ? .move : []
+    }
+
+    func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
+        // No tab strip took it: it becomes its own window where it was dropped.
+        guard operation.isEmpty,
+              let id = session.draggingPasteboard.string(forType: Self.tabType) else { return }
+        delegate?.tabStrip(self, detachTab: id, to: screenPoint)
+    }
+
+    private func dropOperation(_ info: NSDraggingInfo) -> NSDragOperation {
+        guard let id = info.draggingPasteboard.string(forType: Self.tabType),
+              delegate?.tabStrip(self, canAcceptTab: id) == true else { return [] }
+        return .move
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { dropOperation(sender) }
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation { dropOperation(sender) }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        guard let id = sender.draggingPasteboard.string(forType: Self.tabType) else { return false }
+        let x = convert(sender.draggingLocation, from: nil).x
+        return delegate?.tabStrip(self, acceptTab: id, at: dropIndex(atX: x)) ?? false
+    }
 
     fileprivate func select(_ index: Int) { delegate?.tabStrip(self, didSelect: index) }
     fileprivate func close(_ index: Int) { delegate?.tabStrip(self, didClose: index) }
@@ -422,9 +533,13 @@ final class TabItemView: NSView, NSViewToolTipOwner {
             return
         }
         strip?.select(index)
+        // Drag to reorder, or out of the strip to move the tab to another window.
+        strip?.trackDrag(from: index, event: event)
     }
 
     override var mouseDownCanMoveWindow: Bool { false }
+
+    @objc func _opaqueRectForWindowMoveWhenInTitlebar() -> NSRect { bounds }
 
     override func menu(for event: NSEvent) -> NSMenu? { strip?.menu(index) }
 
