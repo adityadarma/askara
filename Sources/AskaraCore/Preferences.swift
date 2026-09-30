@@ -43,6 +43,8 @@ public struct BrowserPreferences: Codable, Equatable, Sendable {
     /// Minutes before a background tab sleeps. 0 = never by time (count and memory limits still apply).
     public static let sleepChoices = [0, 1, 5, 15, 30, 60]
     public static let maxLoadedTabRange = 2...20
+    /// Background tabs used within this time are spared by the tab-count and memory limits.
+    public static let recentGrace: TimeInterval = 5 * 60
 
     public var searchEngineID = "google"
     /// Empty = the search engine's home page.
@@ -85,7 +87,9 @@ public struct BrowserPreferences: Codable, Equatable, Sendable {
         return HibernationPolicy(idleTimeout: minutes == 0 ? .infinity : TimeInterval(minutes * 60),
                                  maxLoadedTabs: min(max(maxLoadedTabs, Self.maxLoadedTabRange.lowerBound),
                                                     Self.maxLoadedTabRange.upperBound),
-                                 memoryBudget: memoryBudget)
+                                 memoryBudget: memoryBudget,
+                                 // A tab you just left stays loaded, so going straight back doesn't reload it.
+                                 recentGrace: Self.recentGrace)
     }
 
     // MARK: Memory Saver exceptions

@@ -57,11 +57,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         urls.forEach { services.open($0, newTab: true) }
     }
 
-    /// When macOS is low on RAM, put all background tabs in all windows to sleep.
+    /// macOS memory pressure. Warning: apply the tab limits strictly (recently used tabs are no longer
+    /// spared). Critical: put every background tab in all windows to sleep.
+    /// Warnings are common on 8 GB Macs, so they no longer sleep everything; that made tabs you'd
+    /// just left reload when you came back.
     private func watchMemoryPressure() {
         let source = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical], queue: .main)
-        source.setEventHandler { [weak self] in
-            MainActor.assumeIsolated { self?.services.enforceHibernation(underMemoryPressure: true) }
+        source.setEventHandler { [weak self, weak source] in
+            MainActor.assumeIsolated {
+                guard let event = source?.data else { return }
+                let pressure: MemoryPressure = event.contains(.critical) ? .critical
+                    : event.contains(.warning) ? .warning : .normal
+                guard pressure != .normal else { return }
+                Log.notice("Askara: macOS memory pressure \(pressure.rawValue)")
+                self?.services.enforceHibernation(pressure: pressure)
+            }
         }
         source.resume()
         memoryPressureSource = source

@@ -96,6 +96,36 @@ import Testing
         #expect(policy.tabsToHibernate([active, bg], now: now) == [bg.id])
     }
 
+    @Test func recentlyUsedTabSparedByMemoryBudget() {
+        // Leaving a big tab (Gmail) and switching straight back must not reload it.
+        let policy = HibernationPolicy(idleTimeout: 3_600, maxLoadedTabs: 10,
+                                       memoryBudget: 500 * 1_048_576, recentGrace: 300)
+        let active = memTab(0, mb: 200, active: true)
+        let gmail = memTab(5, mb: 600)
+        let old = memTab(900, mb: 100)
+        #expect(policy.tabsToHibernate([active, gmail, old], now: now) == [old.id])
+    }
+
+    @Test func recentlyUsedTabSparedByTabLimit() {
+        let policy = HibernationPolicy(idleTimeout: 3_600, maxLoadedTabs: 2, recentGrace: 300)
+        let recent = tab(10), old = tab(900)
+        #expect(policy.tabsToHibernate([tab(0, active: true), recent, old], now: now) == [old.id])
+        // Only recent tabs over the limit: nothing sleeps until they age past the grace period.
+        #expect(policy.tabsToHibernate([tab(0, active: true), tab(10), tab(20)], now: now).isEmpty)
+    }
+
+    @Test func warningPressureIgnoresGraceButNotLimits() {
+        let policy = HibernationPolicy(idleTimeout: 3_600, maxLoadedTabs: 2, recentGrace: 300)
+        let a = tab(10), b = tab(20)
+        // Warning: limits apply to recent tabs too, but tabs within the limit stay loaded.
+        let slept = policy.decisions([tab(0, active: true), a, b], now: now, pressure: .warning).map(\.id)
+        #expect(slept == [b.id])
+        // Critical: every background tab.
+        let all = policy.decisions([tab(0, active: true), a, b], now: now, pressure: .critical)
+        #expect(all.map(\.id) == [a.id, b.id])
+        #expect(all.allSatisfy { $0.reason == .memoryCritical })
+    }
+
     @Test func audioTabKeptExceptUnderPressure() {
         let policy = HibernationPolicy(idleTimeout: 60, maxLoadedTabs: 1)
         let music = TabSnapshot(id: UUID(), lastActive: now.addingTimeInterval(-999), isLoaded: true,

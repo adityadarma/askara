@@ -181,12 +181,13 @@ final class BrowserServices {
         hibernationTimer = timer
     }
 
-    func enforceHibernation(underMemoryPressure: Bool = false) {
+    func enforceHibernation(pressure: MemoryPressure = .normal) {
         var seen = Set<pid_t>()
         let snapshots = windows.flatMap { $0.hibernationSnapshots(seenProcesses: &seen) }
-        let ids = Set(hibernationPolicy.tabsToHibernate(snapshots, underMemoryPressure: underMemoryPressure))
-        guard !ids.isEmpty else { return }
-        windows.forEach { $0.hibernate(tabIDs: ids) }
+        let decisions = hibernationPolicy.decisions(snapshots, pressure: pressure)
+        guard !decisions.isEmpty else { return }
+        let reasons = Dictionary(decisions.map { ($0.id, $0.reason) }, uniquingKeysWith: { a, _ in a })
+        windows.forEach { $0.hibernate(tabIDs: Set(reasons.keys), reasons: reasons) }
     }
 
     /// Memory that closing this WebView actually frees: its process footprint, or 0 when the

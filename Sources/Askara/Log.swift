@@ -9,4 +9,9 @@ enum Log {
     static func error(_ message: String) {
         logger.error("\(message, privacy: .public)")
     }
+
+    /// Why tabs slept or reloaded. Not persisted by default; visible in `log stream`.
+    static func notice(_ message: String) {
+        logger.notice("\(message, privacy: .public)")
+    }
 }

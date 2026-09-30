@@ -702,11 +702,16 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     }
 
     /// `force`: the user asked (Sleep Background Tabs), so exceptions and pinned tabs aren't spared.
-    func hibernate(tabIDs: Set<UUID>, force: Bool = false) {
+    /// `reasons`: why each tab sleeps, for the log.
+    func hibernate(tabIDs: Set<UUID>, force: Bool = false, reasons: [UUID: HibernationReason] = [:]) {
         var changed = false
         for (index, tab) in tabs.enumerated()
-        where index != activeIndex && tabIDs.contains(tab.id) && !tab.hasUnsavedInput && (force || !keepsAwake(tab)) {
+        where index != activeIndex && tabIDs.contains(tab.id) && !tab.hasUnsavedInput && (force || !keepsAwake(tab))
+            && tab.webView != nil {
             tab.freedBytes = services.exclusiveFootprint(of: tab.webView)
+            let reason = force ? "manual" : (reasons[tab.id]?.rawValue ?? "collapsed")
+            Log.notice("Askara: tab slept (\(reason), idle \(Int(Date().timeIntervalSince(tab.lastActive)))s, "
+                       + "\(ProcessMemory.format(tab.freedBytes))): \(tab.webView?.url?.host ?? tab.url?.host ?? "?")")
             services.recordFreed(tab.freedBytes)
             dropWebView(of: tab)
             changed = true
@@ -1475,6 +1480,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     /// If the page process crashes or is killed by the system, treat the tab as sleeping.
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         guard let index = tabs.firstIndex(where: { $0.webView === webView }) else { return }
+        // Killed by macOS (usually out of memory) or crashed: the page has to load again.
+        Log.notice("Askara: page process ended, tab will reload: \(webView.url?.host ?? "?")")
         if index == activeIndex {
             webView.reload()
         } else {
