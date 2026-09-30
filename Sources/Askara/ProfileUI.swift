@@ -45,6 +45,7 @@ enum ProfileMenu {
     static func fill(_ menu: NSMenu, current: UUID, target: AppDelegate) {
         let services = BrowserServices.shared
         let header = NSMenuItem(title: String(localized: "Profiles"), action: nil, keyEquivalent: "")
+        header.image = NSImage(systemSymbolName: "person.crop.circle", accessibilityDescription: nil)
         header.isEnabled = false
         menu.addItem(header)
         for profile in services.profileList.profiles {
@@ -63,15 +64,18 @@ enum ProfileMenu {
         let add = NSMenuItem(title: String(localized: "Add Profile…"), action: #selector(AppDelegate.addProfileAction(_:)),
                              keyEquivalent: "")
         add.target = target
+        add.image = NSImage(systemSymbolName: "person.crop.circle.badge.plus", accessibilityDescription: nil)
         menu.addItem(add)
         let name = services.profileList.profile(current)?.name ?? ""
         let edit = NSMenuItem(title: String(localized: "Edit “\(name)”…"), action: #selector(AppDelegate.editProfileAction(_:)),
                               keyEquivalent: "")
         edit.target = target
+        edit.image = NSImage(systemSymbolName: "pencil", accessibilityDescription: nil)
         menu.addItem(edit)
         let delete = NSMenuItem(title: String(localized: "Delete “\(name)”…"), action: #selector(AppDelegate.deleteProfileAction(_:)),
                                 keyEquivalent: "")
         delete.target = target
+        delete.image = NSImage(systemSymbolName: "trash", accessibilityDescription: nil)
         menu.addItem(delete)
     }
 }

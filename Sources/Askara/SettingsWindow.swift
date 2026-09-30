@@ -29,6 +29,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     // Permissions
     private let permissionTable = NSTableView()
     private var permissionRows: [(host: String, kind: PermissionKind, choice: PermissionChoice)] = []
+    // Extensions
+    private let extensionTable = NSTableView()
+    private let extensionToggleButton = NSButton()
+    private let extensionPinButton = NSButton()
 
     init() {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 620, height: 460),
@@ -42,6 +46,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
                                                name: .askaraPreferencesChanged, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(reload),
                                                name: .askaraSyncChanged, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(reload),
+                                               name: .askaraExtensionsChanged, object: nil)
     }
 
     @available(*, unavailable)
@@ -52,6 +58,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         if window?.isVisible != true { window?.center() }
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
+    }
+
+    func showExtensions() {
+        show()
+        if let item = tabView.tabViewItems.first(where: { $0.identifier as? String == "extensions" }) {
+            tabView.selectTabViewItem(item)
+        }
     }
 
     // MARK: - Layout
@@ -70,11 +83,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         addPage(String(localized: "Memory Saver"), memoryPage())
         addPage(String(localized: "Privacy & Security"), privacyPage())
         addPage(String(localized: "Site Permissions"), permissionsPage())
+        addPage(String(localized: "Extensions"), extensionsPage(), identifier: "extensions")
     }
 
-    private func addPage(_ title: String, _ content: NSView) {
+    private func addPage(_ title: String, _ content: NSView, identifier: String? = nil) {
         let item = NSTabViewItem()
         item.label = title
+        item.identifier = identifier
         let holder = NSView()
         content.translatesAutoresizingMaskIntoConstraints = false
         holder.addSubview(content)
@@ -237,6 +252,34 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         ])
     }
 
+    private func extensionsPage() -> NSView {
+        for (id, title, width) in [("name", String(localized: "Extension"), 280.0),
+                                   ("status", String(localized: "Status"), 110.0),
+                                   ("pinned", String(localized: "Toolbar"), 110.0)] {
+            let column = NSTableColumn(identifier: .init(id))
+            column.title = title
+            column.width = width
+            extensionTable.addTableColumn(column)
+        }
+        extensionTable.dataSource = self
+        extensionTable.delegate = self
+        extensionTable.usesAlternatingRowBackgroundColors = true
+        extensionTable.allowsEmptySelection = true
+        extensionTable.setAccessibilityLabel(String(localized: "Installed Safari Web Extensions"))
+        extensionToggleButton.title = String(localized: "Enable")
+        extensionToggleButton.target = self
+        extensionToggleButton.action = #selector(toggleSelectedExtension(_:))
+        extensionPinButton.title = String(localized: "Pin to Toolbar")
+        extensionPinButton.target = self
+        extensionPinButton.action = #selector(pinSelectedExtension(_:))
+        let actions = NSStackView(views: [extensionToggleButton, extensionPinButton])
+        actions.spacing = 8
+        return stack([
+            note(String(localized: "Safari Web Extensions are managed per profile. Enabled extensions can access pages according to the permissions you approve.")),
+            tableScroll(extensionTable, height: 250), actions,
+        ])
+    }
+
     private func tableScroll(_ table: NSTableView, height: CGFloat) -> NSScrollView {
         let scroll = NSScrollView()
         scroll.documentView = table
@@ -344,6 +387,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         }
         awakeTable.reloadData()
         permissionTable.reloadData()
+        extensionTable.reloadData()
+        updateExtensionButtons()
     }
 
     @objc private func engineChanged(_ sender: NSPopUpButton) {
@@ -403,16 +448,59 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         rows.forEach { profile.setPermission(nil, for: $0.kind, host: $0.host) }
     }
 
+    @objc private func toggleSelectedExtension(_ sender: Any?) {
+        let manager = services.currentProfile.extensions
+        guard manager.installed.indices.contains(extensionTable.selectedRow) else { return NSSound.beep() }
+        let item = manager.installed[extensionTable.selectedRow]
+        let menuItem = NSMenuItem()
+        menuItem.representedObject = InstalledExtensionBox(item)
+        (NSApp.delegate as? AppDelegate)?.toggleExtensionAction(menuItem)
+    }
+
+    @objc private func pinSelectedExtension(_ sender: Any?) {
+        let manager = services.currentProfile.extensions
+        guard manager.installed.indices.contains(extensionTable.selectedRow) else { return NSSound.beep() }
+        let item = manager.installed[extensionTable.selectedRow]
+        guard manager.isEnabled(item) else { return NSSound.beep() }
+        manager.setPinned(!manager.isPinned(item), item: item)
+    }
+
+    private func updateExtensionButtons() {
+        let manager = services.currentProfile.extensions
+        guard manager.installed.indices.contains(extensionTable.selectedRow) else {
+            extensionToggleButton.isEnabled = false
+            extensionPinButton.isEnabled = false
+            return
+        }
+        let item = manager.installed[extensionTable.selectedRow]
+        let enabled = manager.isEnabled(item)
+        extensionToggleButton.isEnabled = true
+        extensionToggleButton.title = enabled ? String(localized: "Disable") : String(localized: "Enable")
+        extensionPinButton.isEnabled = enabled
+        extensionPinButton.title = manager.isPinned(item) ? String(localized: "Unpin from Toolbar")
+                                                        : String(localized: "Pin to Toolbar")
+    }
+
     // MARK: - Tables
 
     func numberOfRows(in tableView: NSTableView) -> Int {
-        tableView === awakeTable ? services.preferences.keepAwakeSites.count : permissionRows.count
+        if tableView === awakeTable { return services.preferences.keepAwakeSites.count }
+        if tableView === extensionTable { return services.currentProfile.extensions.installed.count }
+        return permissionRows.count
     }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let text: String
         if tableView === awakeTable {
             text = services.preferences.keepAwakeSites[row]
+        } else if tableView === extensionTable {
+            let manager = services.currentProfile.extensions
+            let item = manager.installed[row]
+            switch tableColumn?.identifier.rawValue {
+            case "status": text = manager.isEnabled(item) ? String(localized: "Enabled") : String(localized: "Disabled")
+            case "pinned": text = manager.isPinned(item) ? String(localized: "Pinned") : "—"
+            default: text = item.name
+            }
         } else {
             let entry = permissionRows[row]
             switch tableColumn?.identifier.rawValue {
@@ -429,6 +517,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         let cell = NSTextField(labelWithString: text)
         cell.lineBreakMode = .byTruncatingMiddle
         return cell
+    }
+
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        if notification.object as? NSTableView === extensionTable { updateExtensionButtons() }
     }
 }
 

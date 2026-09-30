@@ -95,6 +95,17 @@ final class AddressField: NSTextField {
     }
 }
 
+final class AddressBarView: NSView {
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor.controlBackgroundColor.setFill()
+        NSBezierPath(roundedRect: bounds, xRadius: 8, yRadius: 8).fill()
+        NSColor.separatorColor.withAlphaComponent(0.45).setStroke()
+        let border = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 8, yRadius: 8)
+        border.lineWidth = 1
+        border.stroke()
+    }
+}
+
 /// Forwards JS messages without a retain cycle (WKUserContentController holds handlers strongly).
 private final class WeakScriptHandler: NSObject, WKScriptMessageHandler {
     weak var target: BrowserWindowController?
@@ -149,6 +160,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     private let tabStrip = TabStripView()
     private let toolbar = FillView()
     private let addressField = AddressField()
+    private let addressBar = AddressBarView()
     /// Created on first keystroke in the address bar.
     private lazy var suggestions: AddressSuggestionsController = {
         let controller = AddressSuggestionsController()
@@ -160,12 +172,16 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     private let backButton = NSButton()
     private let forwardButton = NSButton()
     private let reloadButton = NSButton()
+    private let homeButton = NSButton()
     private let bookmarkButton = NSButton()
     private let privacyButton = NSButton()
     private let pictureInPictureButton = NSButton()
+    private let pinnedExtensionStack = NSStackView()
+    private let extensionsButton = FirstClickButton()
     private var privacyPopover: NSPopover?
     /// Profile avatar at the right end of the toolbar, like Chrome.
     private let profileButton = FirstClickButton()
+    private let moreButton = FirstClickButton()
     private let bookmarkBar = BookmarkBarView()
     private let findBar = NSStackView()
     private let findField = NSSearchField()
@@ -247,12 +263,23 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         configure(backButton, symbol: "arrow.left", label: String(localized: "Back (⌘[)"), action: #selector(backAction(_:)))
         configure(forwardButton, symbol: "arrow.right", label: String(localized: "Forward (⌘])"), action: #selector(forwardAction(_:)))
         configure(reloadButton, symbol: "arrow.clockwise", label: String(localized: "Reload (⌘R)"), action: #selector(reloadAction(_:)))
+        configure(homeButton, symbol: "house.fill", label: String(localized: "Home"), action: #selector(homeAction(_:)))
         configure(bookmarkButton, symbol: "star", label: String(localized: "Add bookmark (⌘D)"),
                   action: #selector(toggleBookmarkAction(_:)))
         configure(privacyButton, symbol: "shield.lefthalf.filled", label: String(localized: "Privacy Dashboard"),
                   action: #selector(showPrivacyDashboard(_:)))
         configure(pictureInPictureButton, symbol: "pip", label: String(localized: "Picture in Picture"),
                   action: #selector(togglePictureInPicture(_:)))
+        configure(moreButton, symbol: "ellipsis.vertical", label: String(localized: "Main menu"),
+                  action: #selector(showMoreMenu(_:)))
+        // `ellipsis.vertical` exists in some SDKs but renders blank on older macOS versions.
+        moreButton.image = nil
+        moreButton.title = "⋮"
+        moreButton.imagePosition = .noImage
+        moreButton.font = .systemFont(ofSize: 22, weight: .semibold)
+        moreButton.contentTintColor = .labelColor
+        configure(extensionsButton, symbol: "puzzlepiece.extension", label: String(localized: "Extensions"),
+                  action: #selector(showExtensionsMenu(_:)))
 
         tabStrip.delegate = self
         tabStrip.isPrivate = isPrivate
@@ -262,16 +289,59 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         addressField.target = self
         addressField.action = #selector(addressSubmitted(_:))
         addressField.delegate = self
-        addressField.bezelStyle = .roundedBezel
+        addressField.isBezeled = false
+        addressField.drawsBackground = false
+        addressField.focusRingType = .none
         addressField.controlSize = .large
         addressField.font = .systemFont(ofSize: 14)
         addressField.cell?.sendsActionOnEndEditing = false
         addressField.lineBreakMode = .byTruncatingTail
         addressField.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
+        addressBar.translatesAutoresizingMaskIntoConstraints = false
+        addressField.translatesAutoresizingMaskIntoConstraints = false
+        addressBar.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        addressBar.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        privacyButton.translatesAutoresizingMaskIntoConstraints = false
+        let privacySeparator = NSBox()
+        privacySeparator.boxType = .separator
+        privacySeparator.translatesAutoresizingMaskIntoConstraints = false
+        let addressActions = NSStackView(views: [pictureInPictureButton, bookmarkButton])
+        addressActions.orientation = .horizontal
+        addressActions.spacing = 2
+        addressActions.translatesAutoresizingMaskIntoConstraints = false
+        addressBar.addSubview(privacyButton)
+        addressBar.addSubview(privacySeparator)
+        addressBar.addSubview(addressField)
+        addressBar.addSubview(addressActions)
+        pictureInPictureButton.isHidden = true
+        NSLayoutConstraint.activate([
+            addressBar.heightAnchor.constraint(equalToConstant: 30),
+            addressBar.widthAnchor.constraint(greaterThanOrEqualToConstant: 200),
+            privacyButton.leadingAnchor.constraint(equalTo: addressBar.leadingAnchor, constant: 3),
+            privacyButton.centerYAnchor.constraint(equalTo: addressBar.centerYAnchor),
+            privacySeparator.leadingAnchor.constraint(equalTo: privacyButton.trailingAnchor, constant: -2),
+            privacySeparator.centerYAnchor.constraint(equalTo: addressBar.centerYAnchor),
+            privacySeparator.widthAnchor.constraint(equalToConstant: 1),
+            privacySeparator.heightAnchor.constraint(equalToConstant: 18),
+            addressField.leadingAnchor.constraint(equalTo: privacySeparator.trailingAnchor, constant: 7),
+            addressField.centerYAnchor.constraint(equalTo: addressBar.centerYAnchor),
+            addressField.trailingAnchor.constraint(equalTo: addressActions.leadingAnchor, constant: -2),
+            addressActions.trailingAnchor.constraint(equalTo: addressBar.trailingAnchor, constant: -3),
+            addressActions.centerYAnchor.constraint(equalTo: addressBar.centerYAnchor),
+        ])
+
         configureProfileButton()
-        let toolbarStack = NSStackView(views: [backButton, forwardButton, reloadButton, privacyButton,
-                                               addressField, pictureInPictureButton, bookmarkButton, profileButton])
+        pinnedExtensionStack.orientation = .horizontal
+        pinnedExtensionStack.spacing = 2
+        let separator = NSBox()
+        separator.boxType = .separator
+        separator.translatesAutoresizingMaskIntoConstraints = false
+        separator.heightAnchor.constraint(equalToConstant: 24).isActive = true
+        separator.widthAnchor.constraint(equalToConstant: 1).isActive = true
+        let toolbarStack = NSStackView(views: [backButton, forwardButton, reloadButton, homeButton,
+                                               addressBar, pinnedExtensionStack, extensionsButton, separator,
+                                               profileButton, moreButton])
         toolbarStack.orientation = .horizontal
         toolbarStack.spacing = 6
         toolbarStack.edgeInsets = NSEdgeInsets(top: 5, left: 10, bottom: 6, right: 10)
@@ -391,7 +461,21 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         reloadButton.image = NSImage(systemSymbolName: loading ? "xmark" : "arrow.clockwise",
                                      accessibilityDescription: loading ? String(localized: "Stop") : String(localized: "Reload"))?
             .withSymbolConfiguration(.init(pointSize: 14, weight: .medium))
+        let scheme = (web?.url ?? tab?.url)?.scheme?.lowercased()
+        let isWeb = scheme == "https" || scheme == "http"
+        let privacyLabel = scheme == "https" ? String(localized: "Secure connection and privacy controls")
+            : scheme == "http" ? String(localized: "Not secure and privacy controls")
+            : String(localized: "Privacy Dashboard")
+        privacyButton.image = NSImage(systemSymbolName: scheme == "http" ? "exclamationmark.triangle.fill" : "shield.fill",
+                                      accessibilityDescription: privacyLabel)?
+            .withSymbolConfiguration(.init(pointSize: 13, weight: .medium))
+        privacyButton.contentTintColor = scheme == "https" ? .systemGreen
+            : scheme == "http" ? .systemRed : .secondaryLabelColor
+        privacyButton.toolTip = privacyLabel
+        privacyButton.setAccessibilityLabel(privacyLabel)
+        privacyButton.isEnabled = isWeb
         pictureInPictureButton.isEnabled = tab?.pictureInPictureEligible == true
+        pictureInPictureButton.isHidden = tab?.pictureInPictureEligible != true
         pictureInPictureButton.contentTintColor = tab?.isPictureInPicture == true ? .controlAccentColor : .secondaryLabelColor
         updateBookmarkButton()
     }
@@ -439,6 +523,49 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         profileButton.setAccessibilityLabel(label)
     }
 
+    @objc private func showMoreMenu(_ sender: NSButton) {
+        let menu = NSMenu()
+        menu.minimumWidth = 260
+        let app = NSApp.delegate as? AppDelegate
+        func add(_ title: String, _ symbol: String, _ action: Selector,
+                 target: AnyObject? = nil, key: String = "") {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
+            item.target = target ?? self
+            item.image = menuIcon(symbol)
+            menu.addItem(item)
+        }
+        add(String(localized: "New Tab"), "plus.square", #selector(newTabAction(_:)), key: "t")
+        add(String(localized: "New Window"), "macwindow", #selector(AppDelegate.newWindowAction(_:)), target: app, key: "n")
+        add(String(localized: "New Private Window"), "eye.slash", #selector(AppDelegate.newPrivateWindowAction(_:)), target: app)
+        menu.addItem(.separator())
+        add(String(localized: "History"), "clock.arrow.circlepath", #selector(AppDelegate.showHistoryAction(_:)), target: app)
+        add(String(localized: "Bookmarks"), "star", #selector(AppDelegate.showBookmarksAction(_:)), target: app)
+        add(String(localized: "Downloads"), "arrow.down.circle", #selector(AppDelegate.showDownloadsAction(_:)), target: app)
+        menu.addItem(.separator())
+        add(String(localized: "Find…"), "magnifyingglass", #selector(showFindBar(_:)), key: "f")
+        add(String(localized: "Zoom In"), "plus.magnifyingglass", #selector(zoomInAction(_:)))
+        add(String(localized: "Zoom Out"), "minus.magnifyingglass", #selector(zoomOutAction(_:)))
+        add(String(localized: "Actual Size"), "1.magnifyingglass", #selector(zoomResetAction(_:)))
+        add(String(localized: "Print…"), "printer", #selector(printPageAction(_:)), key: "p")
+        menu.addItem(.separator())
+        add(String(localized: "Password Managers…"), "key", #selector(AppDelegate.showPasswordManagersAction(_:)), target: app)
+        add(String(localized: "Task Manager"), "gauge.with.dots.needle.67percent", #selector(AppDelegate.showTaskManagerAction(_:)), target: app)
+        add(String(localized: "Settings…"), "gearshape", #selector(AppDelegate.showSettingsAction(_:)), target: app, key: ",")
+        showToolbarMenu(menu, below: sender)
+    }
+
+    private func menuIcon(_ symbol: String) -> NSImage? {
+        NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 13, weight: .regular))
+    }
+
+    private func showToolbarMenu(_ menu: NSMenu, below sender: NSButton) {
+        let width = max(menu.minimumWidth, menu.size.width)
+        menu.popUp(positioning: nil,
+                   at: NSPoint(x: sender.bounds.maxX - width, y: sender.bounds.maxY + 6),
+                   in: sender)
+    }
+
     @objc private func profilesChanged() {
         // This window's profile was deleted: it's being closed.
         guard services.profileList.profile(profile.id) != nil else { return }
@@ -449,9 +576,10 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     @objc private func profileButtonClicked(_ sender: NSButton) {
         guard let delegate = NSApp.delegate as? AppDelegate else { return }
         let menu = NSMenu()
+        menu.minimumWidth = 240
         ProfileMenu.fill(menu, current: profile.id, target: delegate)
         // Actions act on the profile in use, which is this window's (it's key when clicked).
-        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 4), in: sender)
+        showToolbarMenu(menu, below: sender)
     }
 
     @objc private func downloadEvent(_ note: Notification) {
@@ -1165,6 +1293,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     @objc func closeTabAction(_ sender: Any?) { closeTab(at: activeIndex) }
     @objc func backAction(_ sender: Any?) { activeTab?.webView?.goBack() }
     @objc func forwardAction(_ sender: Any?) { activeTab?.webView?.goForward() }
+    @objc private func homeAction(_ sender: Any?) { load(services.homeURL) }
 
     /// Data for the Tab menu: open tabs only.
     var tabMenuEntries: [(title: String, isActive: Bool, isSleeping: Bool)] {
@@ -1316,7 +1445,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         popover.contentSize = NSSize(width: 360, height: 220)
         popover.contentViewController = PrivacyDashboardController(profile: profile, host: host, secure: secure)
         privacyPopover = popover
-        popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .maxY)
+        popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
     }
 
     func pictureInPictureState(in webView: WKWebView?, frame: WKFrameInfo, eligible: Bool, active: Bool) {
@@ -1326,6 +1455,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         tab.isPictureInPicture = active
         if tab === activeTab {
             pictureInPictureButton.isEnabled = tab.pictureInPictureEligible
+            pictureInPictureButton.isHidden = !tab.pictureInPictureEligible
             pictureInPictureButton.contentTintColor = active ? .controlAccentColor : .secondaryLabelColor
         }
     }
@@ -2043,19 +2173,22 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
 
     // MARK: - Extension buttons
 
-    private var extensionButtons: [NSButton] = []
+    private var pinnedExtensionButtons: [String: NSButton] = [:]
     private var extensionPopover: NSPopover?
 
-    /// One button per active extension, right of the address bar. Icon and badge come from the extension.
+    /// Chrome-style puzzle button represents all extensions without crowding the toolbar.
     @objc func refreshExtensionButtons() {
-        guard let stack = bookmarkButton.superview as? NSStackView else { return }
-        extensionButtons.forEach { $0.removeFromSuperview() }
-        extensionButtons.removeAll()
+        pinnedExtensionStack.arrangedSubviews.forEach { view in
+            pinnedExtensionStack.removeArrangedSubview(view)
+            view.removeFromSuperview()
+        }
+        pinnedExtensionButtons.removeAll()
+        extensionsButton.isHidden = isPrivate
         guard !isPrivate else { return }
-
-        for (index, entry) in (profile.loadedExtensions?.loaded ?? []).enumerated() {
+        let manager = profile.extensions
+        for (index, entry) in manager.loaded.enumerated() where manager.isPinned(entry.item) {
             let action = entry.context.action(for: activeTab)
-            let label = action?.label.isEmpty == false ? action!.label : (entry.context.webExtension.displayName ?? entry.item.name)
+            let label = action?.label.isEmpty == false ? action!.label : entry.item.name
             let button = FirstClickButton()
             button.isBordered = false
             button.imagePosition = .imageOnly
@@ -2071,14 +2204,16 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
             button.isEnabled = action?.isEnabled ?? true
             button.widthAnchor.constraint(equalToConstant: 28).isActive = true
             button.heightAnchor.constraint(equalToConstant: 28).isActive = true
-            if !badge.isEmpty { addBadge(badge, to: button) }
-            // Extension buttons sit between the bookmark star and the profile avatar.
-            stack.insertArrangedSubview(button, at: stack.arrangedSubviews.firstIndex(of: profileButton) ?? stack.arrangedSubviews.count)
-            extensionButtons.append(button)
+            if !badge.isEmpty { addExtensionBadge(badge, to: button) }
+            pinnedExtensionStack.addArrangedSubview(button)
+            pinnedExtensionButtons[entry.item.bundleID] = button
         }
+        let count = profile.loadedExtensions?.loaded.count ?? 0
+        extensionsButton.toolTip = count == 0 ? String(localized: "Extensions")
+            : String(localized: "Extensions (\(count) active)")
     }
 
-    private func addBadge(_ text: String, to button: NSButton) {
+    private func addExtensionBadge(_ text: String, to button: NSButton) {
         let badge = NSTextField(labelWithString: text)
         badge.font = .boldSystemFont(ofSize: 8)
         badge.textColor = .white
@@ -2105,6 +2240,99 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         loaded[sender.tag].context.performAction(for: activeTab)
     }
 
+    @objc private func extensionMenuItemClicked(_ sender: NSMenuItem) {
+        let loaded = profile.loadedExtensions?.loaded ?? []
+        guard loaded.indices.contains(sender.tag) else { return }
+        loaded[sender.tag].context.performAction(for: activeTab)
+    }
+
+    @objc private func extensionMenuButtonClicked(_ sender: NSButton) {
+        sender.enclosingMenuItem?.menu?.cancelTracking()
+        let loaded = profile.loadedExtensions?.loaded ?? []
+        guard loaded.indices.contains(sender.tag) else { return }
+        loaded[sender.tag].context.performAction(for: activeTab)
+    }
+
+    @objc private func togglePinnedExtension(_ sender: NSMenuItem) {
+        let loaded = profile.loadedExtensions?.loaded ?? []
+        guard loaded.indices.contains(sender.tag) else { return }
+        let item = loaded[sender.tag].item
+        profile.extensions.setPinned(!profile.extensions.isPinned(item), item: item)
+    }
+
+    @objc private func togglePinnedExtensionButton(_ sender: NSButton) {
+        sender.enclosingMenuItem?.menu?.cancelTracking()
+        let loaded = profile.loadedExtensions?.loaded ?? []
+        guard loaded.indices.contains(sender.tag) else { return }
+        let item = loaded[sender.tag].item
+        profile.extensions.setPinned(!profile.extensions.isPinned(item), item: item)
+    }
+
+    @objc private func showExtensionsMenu(_ sender: NSButton) {
+        let manager = profile.extensions
+        let menu = NSMenu()
+        menu.minimumWidth = 260
+        let header = NSMenuItem(title: String(localized: "Extensions"), action: nil, keyEquivalent: "")
+        header.image = menuIcon("puzzlepiece.extension")
+        header.isEnabled = false
+        menu.addItem(header)
+        menu.addItem(.separator())
+        for (index, entry) in manager.loaded.enumerated() {
+            let row = NSView(frame: NSRect(x: 0, y: 0, width: 240, height: 38))
+            let open = NSButton(title: entry.item.name, target: self,
+                                action: #selector(extensionMenuButtonClicked(_:)))
+            open.tag = index
+            open.image = entry.context.action(for: activeTab)?.icon(for: NSSize(width: 18, height: 18))
+            open.imagePosition = .imageLeading
+            open.alignment = .left
+            open.isBordered = false
+            open.font = .systemFont(ofSize: 14)
+            open.lineBreakMode = .byTruncatingTail
+            open.translatesAutoresizingMaskIntoConstraints = false
+
+            let pinned = manager.isPinned(entry.item)
+            let pin = NSButton(image: menuIcon(pinned ? "pin.fill" : "pin") ?? NSImage(),
+                               target: self, action: #selector(togglePinnedExtensionButton(_:)))
+            pin.tag = index
+            pin.isBordered = false
+            pin.imagePosition = .imageOnly
+            pin.contentTintColor = pinned ? .labelColor : .secondaryLabelColor
+            pin.toolTip = pinned ? String(localized: "Unpin from Toolbar") : String(localized: "Pin to Toolbar")
+            pin.translatesAutoresizingMaskIntoConstraints = false
+            row.addSubview(open)
+            row.addSubview(pin)
+            NSLayoutConstraint.activate([
+                open.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 8),
+                open.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+                open.trailingAnchor.constraint(equalTo: pin.leadingAnchor, constant: -6),
+                pin.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -8),
+                pin.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+                pin.widthAnchor.constraint(equalToConstant: 26),
+                pin.heightAnchor.constraint(equalToConstant: 26),
+            ])
+            let item = NSMenuItem()
+            item.view = row
+            menu.addItem(item)
+        }
+        if manager.loaded.isEmpty {
+            let empty = NSMenuItem(title: String(localized: "No enabled extensions"), action: nil,
+                                   keyEquivalent: "")
+            empty.isEnabled = false
+            menu.addItem(empty)
+        }
+        menu.addItem(.separator())
+        let manage = NSMenuItem(title: String(localized: "Manage Extensions"),
+                                action: #selector(showExtensionSettings(_:)), keyEquivalent: "")
+        manage.target = self
+        manage.image = menuIcon("gearshape")
+        menu.addItem(manage)
+        showToolbarMenu(menu, below: sender)
+    }
+
+    @objc private func showExtensionSettings(_ sender: Any?) {
+        services.settingsWindow.showExtensions()
+    }
+
     private var popoverAppearanceObservation: NSKeyValueObservation?
 
     /// WebKit forces the popover to light (Aqua) when the popup page declares no `color-scheme`,
@@ -2122,9 +2350,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     /// Shows the extension popup below its button. WebKit has already prepared the NSPopover.
     func presentExtensionPopup(_ action: WKWebExtension.Action) -> Bool {
         guard let popover = action.popupPopover else { return false }
-        let index = profile.loadedExtensions?.loaded.firstIndex { $0.context === action.webExtensionContext }
-        let anchor: NSView = index.flatMap { extensionButtons.indices.contains($0) ? extensionButtons[$0] : nil }
-            ?? addressField
+        let bundleID = profile.loadedExtensions?.loaded.first { $0.context === action.webExtensionContext }?.item.bundleID
+        let anchor: NSView = bundleID.flatMap { pinnedExtensionButtons[$0] } ?? extensionsButton
         showWindow(nil)
         extensionPopover?.close()
         popover.behavior = .transient
@@ -2196,4 +2423,5 @@ final class BrowserRootView: NSView {
         guard let tabStrip, !tabStrip.isHidden else { return .zero }
         return convert(tabStrip.bounds, from: tabStrip)
     }
+
 }

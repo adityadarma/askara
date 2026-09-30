@@ -5,4 +5,5 @@ import AppKit
 /// popup would need a second click.
 final class FirstClickButton: NSButton {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override var mouseDownCanMoveWindow: Bool { false }
 }

@@ -348,6 +348,9 @@ final class BookmarkBarView: NSView, NSDraggingSource {
     override func draw(_ dirtyRect: NSRect) {
         NSColor.separatorColor.setFill()
         NSRect(x: 0, y: 0, width: bounds.width, height: 1).fill()
+        for button in buttons where !button.isHidden {
+            NSRect(x: button.frame.maxX + 1, y: 6, width: 1, height: bounds.height - 12).fill()
+        }
         if let x = dropIndicator {
             NSColor.controlAccentColor.setFill()
             NSRect(x: x - 1, y: 4, width: 2, height: bounds.height - 8).fill()

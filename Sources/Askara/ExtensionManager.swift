@@ -23,11 +23,13 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     private struct Keys {
         let enabled: String
         let identifiers: String
+        let pinned: String
         init(profile: UUID) {
             // The first profile keeps the keys from before profiles existed.
             let suffix = profile == Profile.defaultID ? "" : ".\(profile.uuidString)"
             enabled = "AskaraEnabledExtensions" + suffix
             identifiers = "AskaraExtensionIdentifiers" + suffix
+            pinned = "AskaraPinnedExtensions" + suffix
         }
     }
 
@@ -36,6 +38,7 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// Stable order (matching the installed list) so toolbar buttons don't move around.
     private(set) var loaded: [(item: InstalledExtension, context: WKWebExtensionContext)] = []
     private var enabledIDs: Set<String>
+    private var pinnedIDs: Set<String>
     private let keys: Keys
     private unowned let profile: ProfileData
     private var errorObservers: [NSObjectProtocol] = []
@@ -57,6 +60,7 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         configuration.webViewConfiguration = webConfig
         controller = WKWebExtensionController(configuration: configuration)
         enabledIDs = Set(UserDefaults.standard.stringArray(forKey: keys.enabled) ?? [])
+        pinnedIDs = Set(UserDefaults.standard.stringArray(forKey: keys.pinned) ?? [])
         super.init()
         controller.delegate = self
     }
@@ -122,6 +126,14 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     }
 
     func isEnabled(_ item: InstalledExtension) -> Bool { enabledIDs.contains(item.bundleID) }
+
+    func isPinned(_ item: InstalledExtension) -> Bool { pinnedIDs.contains(item.bundleID) }
+
+    func setPinned(_ pinned: Bool, item: InstalledExtension) {
+        if pinned { pinnedIDs.insert(item.bundleID) } else { pinnedIDs.remove(item.bundleID) }
+        UserDefaults.standard.set(pinnedIDs.sorted(), forKey: keys.pinned)
+        changed()
+    }
 
     func context(for item: InstalledExtension) -> WKWebExtensionContext? {
         loaded.first { $0.item.bundleID == item.bundleID }?.context

@@ -205,50 +205,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         services.currentProfile.extensions.openOptions(context)
     }
 
-    fileprivate func updateExtensionMenu(_ menu: NSMenu) {
-        menu.removeAllItems()
-        let manager = services.currentProfile.extensions
-        guard !manager.installed.isEmpty else {
-            let empty = NSMenuItem(title: String(localized: "No Safari extensions installed"), action: nil, keyEquivalent: "")
-            empty.isEnabled = false
-            menu.addItem(empty)
-            let hint = NSMenuItem(title: String(localized: "Install an app with a Safari extension (e.g. Bitwarden) from the App Store"),
-                                  action: nil, keyEquivalent: "")
-            hint.isEnabled = false
-            menu.addItem(hint)
-            return
-        }
-        for installed in manager.installed {
-            let box = InstalledExtensionBox(installed)
-            let enabled = manager.isEnabled(installed)
-            let toggle = NSMenuItem(title: installed.name, action: #selector(toggleExtensionAction(_:)),
-                                    keyEquivalent: "")
-            toggle.target = self
-            toggle.state = enabled ? .on : .off
-            toggle.representedObject = box
-            toggle.toolTip = enabled ? String(localized: "Click to disable") : String(localized: "Click to enable")
-            menu.addItem(toggle)
-            if enabled, manager.context(for: installed)?.optionsPageURL != nil {
-                let options = NSMenuItem(title: String(localized: "Settings for \(installed.name)…"),
-                                         action: #selector(extensionOptionsAction(_:)), keyEquivalent: "")
-                options.target = self
-                options.representedObject = box
-                options.indentationLevel = 1
-                menu.addItem(options)
-            }
-        }
-        menu.addItem(.separator())
-        let note = NSMenuItem(title: String(localized: "Extensions use extra RAM while enabled"), action: nil, keyEquivalent: "")
-        note.isEnabled = false
-        menu.addItem(note)
-        if services.profileList.profiles.count > 1 {
-            let scope = NSMenuItem(title: String(localized: "Applies to profile: \(services.currentProfile.profile.name)"),
-                                   action: nil, keyEquivalent: "")
-            scope.isEnabled = false
-            menu.addItem(scope)
-        }
-    }
-
     // MARK: - Develop
 
     @objc func emptyCachesAction(_ sender: Any?) {
@@ -304,7 +260,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Populated when the menu opens, so there is no cost while it is closed.
     func menuNeedsUpdate(_ menu: NSMenu) {
         if menu.identifier == MainMenu.tabMenuID { return updateTabMenu(menu) }
-        if menu.identifier == MainMenu.extensionMenuID { return updateExtensionMenu(menu) }
         if menu.identifier == MainMenu.developMenuID { return updateDevelopMenu(menu) }
         if menu.identifier == MainMenu.profileMenuID {
             menu.removeAllItems()
@@ -417,7 +372,6 @@ enum MainMenu {
     static let bookmarkMenuID = NSUserInterfaceItemIdentifier("bookmarks")
     static let tabMenuID = NSUserInterfaceItemIdentifier("tabs")
     static let appMenuID = NSUserInterfaceItemIdentifier("app")
-    static let extensionMenuID = NSUserInterfaceItemIdentifier("extensions")
     static let developMenuID = NSUserInterfaceItemIdentifier("develop")
     static let developExtensionHeaderTag = 7002
     static let blockStatusTag = 7001
@@ -587,10 +541,6 @@ enum MainMenu {
         let tabs = submenu(String(localized: "Tab"), tabItems)
         tabs.identifier = tabMenuID
         tabs.delegate = delegate
-
-        let extensions = submenu(String(localized: "Extensions"), [])
-        extensions.identifier = extensionMenuID
-        extensions.delegate = delegate
 
         // Same shortcuts as Safari.
         let develop = submenu(String(localized: "Develop"), [
