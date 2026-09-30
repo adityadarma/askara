@@ -66,6 +66,15 @@ import Testing
     }
 }
 
+@Suite struct SiteDataDomainTests {
+    @Test func matchesOnlyDomainBoundaries() {
+        #expect(SiteDataDomain.matches(".example.com", site: "example.com"))
+        #expect(SiteDataDomain.matches("cdn.example.com", site: "example.com"))
+        #expect(SiteDataDomain.matches("example.com", site: "www.example.com"))
+        #expect(!SiteDataDomain.matches("notexample.com", site: "example.com"))
+    }
+}
+
 @Suite struct SiteCodeScriptTests {
     /// Minimal `document` so the generated scripts can run in JavaScriptCore.
     func context(readyState: String) -> JSContext {

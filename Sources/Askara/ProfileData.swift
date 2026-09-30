@@ -60,10 +60,12 @@ final class ProfileData {
         sessionCookies.restore(completion: completion)
     }
 
-    /// Opens a window with only the tab that was active last time. Returns false if there is none.
-    func openStartupWindow() -> Bool {
-        guard let tab = sessionFile.load()?.startupTab else { return false }
-        services.makeWindow(profile: self).restore(SessionState.SavedWindow(tabs: [tab], activeIndex: 0))
+    /// Restores every normal window. Background tabs remain asleep, so this does not cause a load storm.
+    func restoreSession() -> Bool {
+        guard let session = sessionFile.load(), !session.isEmpty else { return false }
+        for saved in session.windows {
+            services.makeWindow(profile: self, restoring: true).restore(saved)
+        }
         return true
     }
 
@@ -129,6 +131,7 @@ final class ProfileData {
     private func historyChanged() {
         NotificationCenter.default.post(name: .askaraHistoryChanged, object: self)
         scheduleSave("history") { $0.saveHistory() }
+        services.sync.localDataChanged()
     }
 
     private func saveHistory() {
@@ -178,6 +181,7 @@ final class ProfileData {
         // Bookmarks change rarely and matter: save immediately.
         guard !isDiscarded else { return }
         do { try bookmarksFile.save(bookmarks) } catch { Log.error("Askara: failed to save bookmarks: \(error)") }
+        services.sync.localDataChanged()
     }
 
     // MARK: - Session
@@ -192,6 +196,9 @@ final class ProfileData {
     func scheduleSessionSave() {
         scheduleSave("session") { $0.saveSession($0.currentSession()) }
     }
+
+    /// Structural tab/window changes are checkpointed immediately for app-crash recovery.
+    func checkpointSession() { saveSession(currentSession()) }
 
     func currentSession() -> SessionState {
         SessionState(windows: sessionWindows.map { $0.savedState() })
@@ -210,6 +217,20 @@ final class ProfileData {
         saveHistory()
         if hasNormalWindows { saveSession(currentSession()) }
     }
+
+
+    func replaceSyncedData(history: HistoryStore, bookmarks: BookmarkStore) {
+        self.history = history
+        self.bookmarks = bookmarks
+        saveHistory()
+        if !isDiscarded {
+            do { try bookmarksFile.save(bookmarks) } catch { Log.error("Askara: failed to save synced bookmarks: \(error)") }
+        }
+        NotificationCenter.default.post(name: .askaraHistoryChanged, object: self)
+        NotificationCenter.default.post(name: .askaraBookmarksChanged, object: self)
+    }
+
+    func syncedSession() -> SessionState { hasNormalWindows ? currentSession() : (sessionFile.load() ?? SessionState(windows: [])) }
 
     /// The profile was deleted: stop writing files and unload extensions.
     func discard() {

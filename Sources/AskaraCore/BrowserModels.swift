@@ -20,9 +20,29 @@ public struct SessionState: Codable, Equatable {
     public struct SavedWindow: Codable, Equatable {
         public var tabs: [SavedTab]
         public var activeIndex: Int
-        public init(tabs: [SavedTab], activeIndex: Int) {
+        public var frame: SavedFrame?
+        public var isFullScreen: Bool?
+
+        public init(tabs: [SavedTab], activeIndex: Int, frame: SavedFrame? = nil, isFullScreen: Bool = false) {
             self.tabs = tabs
             self.activeIndex = tabs.isEmpty ? 0 : min(max(0, activeIndex), tabs.count - 1)
+            self.frame = frame
+            self.isFullScreen = isFullScreen ? true : nil
+        }
+    }
+
+    /// Platform-neutral window geometry so AskaraCore stays independent of AppKit.
+    public struct SavedFrame: Codable, Equatable {
+        public var x: Double
+        public var y: Double
+        public var width: Double
+        public var height: Double
+
+        public init(x: Double, y: Double, width: Double, height: Double) {
+            self.x = x
+            self.y = y
+            self.width = width
+            self.height = height
         }
     }
 

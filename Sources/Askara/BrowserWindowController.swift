@@ -153,6 +153,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     private let forwardButton = NSButton()
     private let reloadButton = NSButton()
     private let bookmarkButton = NSButton()
+    private let privacyButton = NSButton()
+    private var privacyPopover: NSPopover?
     /// Profile avatar at the right end of the toolbar, like Chrome.
     private let profileButton = FirstClickButton()
     private let bookmarkBar = BookmarkBarView()
@@ -238,6 +240,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         configure(reloadButton, symbol: "arrow.clockwise", label: String(localized: "Reload (⌘R)"), action: #selector(reloadAction(_:)))
         configure(bookmarkButton, symbol: "star", label: String(localized: "Add bookmark (⌘D)"),
                   action: #selector(toggleBookmarkAction(_:)))
+        configure(privacyButton, symbol: "shield.lefthalf.filled", label: String(localized: "Privacy Dashboard"),
+                  action: #selector(showPrivacyDashboard(_:)))
 
         tabStrip.delegate = self
         tabStrip.isPrivate = isPrivate
@@ -255,7 +259,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         addressField.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
         configureProfileButton()
-        let toolbarStack = NSStackView(views: [backButton, forwardButton, reloadButton, addressField, bookmarkButton, profileButton])
+        let toolbarStack = NSStackView(views: [backButton, forwardButton, reloadButton, privacyButton,
+                                               addressField, bookmarkButton, profileButton])
         toolbarStack.orientation = .horizontal
         toolbarStack.spacing = 6
         toolbarStack.edgeInsets = NSEdgeInsets(top: 5, left: 10, bottom: 6, right: 10)
@@ -706,6 +711,11 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     }
 
     func restore(_ saved: SessionState.SavedWindow) {
+        if let frame = saved.frame, let window {
+            let rect = NSRect(x: frame.x, y: frame.y, width: frame.width, height: frame.height)
+            let visible = NSScreen.screens.contains { $0.visibleFrame.intersects(rect) }
+            if visible { window.setFrame(rect, display: false) }
+        }
         tabs = saved.tabs.map { saved in
             let tab = Tab(url: saved.url, title: saved.title)
             tab.owner = self
@@ -719,6 +729,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         activate(index: active.flatMap { a in tabs.firstIndex { $0 === a } } ?? 0)
         // Pinned tabs are loaded at launch, like Chrome, so mail/chat apps are ready.
         for tab in tabs where tab.isPinned && tab.webView == nil { wake(tab) }
+        if saved.isFullScreen == true { window?.toggleFullScreen(nil) }
     }
 
     func savedState() -> SessionState.SavedWindow {
@@ -730,11 +741,17 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
             if index == activeIndex { active = saved.count }
             saved.append(.init(url: url, title: tab.title, isPinned: tab.isPinned, isMuted: tab.isMuted))
         }
-        return .init(tabs: saved, activeIndex: active)
+        let frame = window?.frame
+        let savedFrame = frame.map { SessionState.SavedFrame(x: $0.minX, y: $0.minY, width: $0.width, height: $0.height) }
+        return .init(tabs: saved, activeIndex: active, frame: savedFrame,
+                     isFullScreen: window?.styleMask.contains(.fullScreen) == true)
     }
 
     private func sessionChanged() {
-        if !isPrivate { profile.scheduleSessionSave() }
+        if !isPrivate {
+            profile.checkpointSession()
+            services.sync.localDataChanged()
+        }
     }
 
     private func activate(index: Int) {
@@ -1274,6 +1291,17 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     }
 
     @objc func reloadIgnoringCacheAction(_ sender: Any?) { activeTab?.webView?.reloadFromOrigin() }
+
+    @objc private func showPrivacyDashboard(_ sender: NSButton) {
+        guard let host = activeSiteHost else { return NSSound.beep() }
+        let secure = (activeTab?.webView?.url ?? activeTab?.url)?.scheme?.lowercased() == "https"
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.contentSize = NSSize(width: 360, height: 220)
+        popover.contentViewController = PrivacyDashboardController(profile: profile, host: host, secure: secure)
+        privacyPopover = popover
+        popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .maxY)
+    }
 
     /// Host of the active page, for per-site settings. nil on non-web pages.
     var activeSiteHost: String? {

@@ -402,3 +402,28 @@
 "The folder and the %lld bookmarks in it will be deleted." = "Folder ini dan %lld bookmark di dalamnya akan dihapus.";
 "macOS protects Safari's folder. Either give Askara Full Disk Access (then quit and reopen Askara), or in Safari choose File > Export > Bookmarks and import that HTML file here." = "macOS melindungi folder Safari. Beri Askara Full Disk Access (lalu tutup dan buka ulang Askara), atau di Safari pilih File > Ekspor > Bookmark, lalu impor file HTML itu di sini.";
 "shares memory with %lld tabs" = "berbagi memori dengan %lld tab";
+
+/* Session recovery, encrypted sync, and privacy dashboard */
+"Ad and tracker protection is active. WebKit does not expose an exact blocked-request count." = "Perlindungan iklan dan pelacak aktif. WebKit tidak menyediakan jumlah pasti permintaan yang diblokir.";
+"Ask" = "Tanya";
+"Checking site data…" = "Memeriksa data situs…";
+"Clear Site Data" = "Hapus Data Situs";
+"Connecting to iCloud…" = "Menghubungkan ke iCloud…";
+"Connection is not secure" = "Koneksi tidak aman";
+"Couldn't decrypt synced data" = "Data sinkronisasi tidak dapat didekripsi";
+"Open Synced Tabs" = "Buka Tab Tersinkron";
+"Privacy Dashboard" = "Dasbor Privasi";
+"Secure HTTPS connection" = "Koneksi HTTPS aman";
+"Sync encrypted browser data with iCloud" = "Sinkronkan data browser terenkripsi dengan iCloud";
+"Sync is off" = "Sinkronisasi nonaktif";
+"Sync unavailable: %@" = "Sinkronisasi tidak tersedia: %@";
+"Synced from %@" = "Disinkronkan dari %@";
+"Synced with end-to-end encryption" = "Disinkronkan dengan enkripsi end-to-end";
+"Waiting for encrypted sync key from iCloud Keychain" = "Menunggu kunci sinkronisasi terenkripsi dari iCloud Keychain";
+"Change Folder…" = "Ganti Folder…";
+"Choose" = "Pilih";
+"Choose a sync folder first" = "Pilih folder sinkronisasi terlebih dahulu";
+"Choose Folder…" = "Pilih Folder…";
+"Choose Sync Folder" = "Pilih Folder Sinkronisasi";
+"No sync folder selected" = "Belum ada folder sinkronisasi";
+"Sync encrypted browser data through a folder" = "Sinkronkan data browser terenkripsi melalui folder";

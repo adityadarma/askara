@@ -10,6 +10,7 @@ extension Notification.Name {
     static let askaraDownloadEvent = Notification.Name("AskaraDownloadEvent")
     static let askaraPreferencesChanged = Notification.Name("AskaraPreferencesChanged")
     static let askaraProfilesChanged = Notification.Name("AskaraProfilesChanged")
+    static let askaraSyncChanged = Notification.Name("AskaraSyncChanged")
 }
 
 struct ClosedTab {
@@ -26,6 +27,7 @@ final class BrowserServices {
     private(set) var ruleList: WKContentRuleList?
     private(set) var windows: [BrowserWindowController] = []
     let downloads = DownloadManager()
+    lazy var sync = SyncCoordinator(services: self)
 
     private let siteSettingsFile = JSONFile<SiteSettings>.inAppSupport("site-settings.json")
     private let preferencesFile = JSONFile<BrowserPreferences>.inAppSupport("preferences.json")
@@ -52,6 +54,7 @@ final class BrowserServices {
         guard preferences != before else { return }
         do { try preferencesFile.save(preferences) } catch { Log.error("Askara: failed to save preferences: \(error)") }
         NotificationCenter.default.post(name: .askaraPreferencesChanged, object: nil)
+        sync.localDataChanged()
         // Stricter limits apply right away.
         enforceHibernation()
     }
@@ -156,7 +159,7 @@ final class BrowserServices {
             return
         }
         profile.prepare {
-            if !profile.openStartupWindow() {
+            if !profile.restoreSession() {
                 self.makeWindow(profile: profile).newTab(url: self.homeURL)
             }
             NSApp.activate()
@@ -173,9 +176,10 @@ final class BrowserServices {
     }
 
     @discardableResult
-    func makeWindow(profile: ProfileData? = nil, isPrivate: Bool = false) -> BrowserWindowController {
+    func makeWindow(profile: ProfileData? = nil, isPrivate: Bool = false,
+                    restoring: Bool = false) -> BrowserWindowController {
         let controller = BrowserWindowController(profile: profile ?? currentProfile, isPrivate: isPrivate)
-        if let last = windows.last?.window, let window = controller.window {
+        if !restoring, let last = windows.last?.window, let window = controller.window {
             let topLeft = NSPoint(x: last.frame.minX, y: last.frame.maxY)
             window.setFrameTopLeftPoint(window.cascadeTopLeft(from: topLeft))
         } else {
@@ -201,6 +205,7 @@ final class BrowserServices {
             }
         }
         windows.removeAll { $0 === controller }
+        if !controller.isPrivate, profile.hasNormalWindows { profile.checkpointSession() }
         // No window left for this profile: free its extension background pages.
         if !profile.windows.contains(where: { !$0.isPrivate }) {
             DispatchQueue.main.async {
@@ -299,6 +304,14 @@ final class BrowserServices {
     /// Called when the app quits: write everything pending.
     func saveAll() {
         profileData.values.forEach { $0.saveAll() }
+        sync.pushNow()
+    }
+
+
+    func applySyncedPreferences(_ synced: BrowserPreferences) {
+        preferences = synced
+        do { try preferencesFile.save(preferences) } catch { Log.error("Askara: failed to save synced preferences: \(error)") }
+        NotificationCenter.default.post(name: .askaraPreferencesChanged, object: nil)
     }
 
     /// Session cookies of every opened profile. `completion` runs once all are written.

@@ -92,6 +92,14 @@ import Testing
         #expect(s.windows[0].activeIndex == 0)
     }
 
+    @Test func sessionWindowGeometryRoundTrips() throws {
+        let tab = SessionState.SavedTab(url: URL(string: "https://a.com")!, title: "A")
+        let frame = SessionState.SavedFrame(x: 10, y: 20, width: 900, height: 700)
+        let state = SessionState(windows: [.init(tabs: [tab], activeIndex: 0, frame: frame, isFullScreen: true)])
+        let decoded = try JSONDecoder().decode(SessionState.self, from: JSONEncoder().encode(state))
+        #expect(decoded == state)
+    }
+
     @Test func recentlyClosedIsBoundedLIFO() {
         var r = RecentlyClosed<Int>(capacity: 2)
         [1, 2, 3].forEach { r.push($0) }

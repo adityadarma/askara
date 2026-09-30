@@ -87,6 +87,22 @@ public struct SiteSettings: Codable, Equatable, Sendable {
     }
 }
 
+public enum SiteDataDomain {
+    /// Matches the same DNS name or a real subdomain, never `notexample.com`.
+    public static func matches(_ candidate: String, site host: String) -> Bool {
+        let candidate = normalize(candidate)
+        let host = normalize(host)
+        return candidate == host || candidate.hasSuffix("." + host) || host.hasSuffix("." + candidate)
+    }
+
+    private static func normalize(_ value: String) -> String {
+        var value = value.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        while value.hasPrefix(".") { value.removeFirst() }
+        while value.hasSuffix(".") { value.removeLast() }
+        return value
+    }
+}
+
 /// Builds the scripts that apply custom site code. The app evaluates them in the page, so they
 /// aren't blocked by the site's Content Security Policy or by "Disable JavaScript on This Site".
 public enum SiteCodeScript {

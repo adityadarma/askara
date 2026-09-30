@@ -13,7 +13,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         services.compileBlockList()
         // Retry removing website data of deleted profiles that was still in use last time.
         services.removeDataStores()
-        // Only the last used profile opens, with just the tab that was active. Its extensions load
+        services.sync.start()
+        // The last used profile restores all its windows. Background tabs stay asleep.
         // with its first window, and session login cookies are restored before the tab loads.
         services.openProfile(services.profileList.lastUsedID)
         watchMemoryPressure()
@@ -96,6 +97,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc func reopenClosedTabAction(_ sender: Any?) { services.reopenClosedTab() }
 
+    @objc func openSyncedTabsAction(_ sender: Any?) {
+        let tabs = services.sync.syncedTabs
+        guard !tabs.isEmpty else { return }
+        let window = services.makeWindow(profile: services.currentProfile)
+        window.restore(.init(tabs: tabs, activeIndex: 0))
+    }
+
     @objc func updateBlockListAction(_ sender: Any?) {
         services.keyBrowserWindow?.showToast(String(localized: "Updating ad block list…"), duration: nil)
         services.blockListUpdater.update(force: true) { [weak self] message in
@@ -123,6 +131,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc func validateMenuItem(_ item: NSMenuItem) -> Bool {
         if item.action == #selector(reopenClosedTabAction(_:)) { return !services.currentProfile.recentlyClosed.isEmpty }
+        if item.action == #selector(openSyncedTabsAction(_:)) { return !services.sync.syncedTabs.isEmpty }
         if item.action == #selector(deleteProfileAction(_:)) {
             return services.profileList.canRemove(services.currentProfile.id)
         }
@@ -455,6 +464,7 @@ enum MainMenu {
             item(String(localized: "Close Tab"), #selector(B.closeTabAction(_:)), "w"),
             item(String(localized: "Close Window"), #selector(NSWindow.performClose(_:)), "w", [.command, .shift]),
             item(String(localized: "Reopen Closed Tab"), #selector(A.reopenClosedTabAction(_:)), "t", [.command, .shift]),
+            item(String(localized: "Open Synced Tabs"), #selector(A.openSyncedTabsAction(_:))),
             .separator(),
             item(String(localized: "Open This Page in Safari"), #selector(B.openInSafariAction(_:))),
             item(String(localized: "Print…"), #selector(B.printPageAction(_:)), "p"),

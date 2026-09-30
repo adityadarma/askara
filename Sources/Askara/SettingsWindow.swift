@@ -14,6 +14,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     private let defaultStatus = NSTextField(labelWithString: "")
     private let defaultButton = NSButton()
     private let barBox = NSButton(checkboxWithTitle: String(localized: "Show bookmarks bar"), target: nil, action: nil)
+    private let syncBox = NSButton(checkboxWithTitle: String(localized: "Sync encrypted browser data through a folder"), target: nil, action: nil)
+    private let syncFolderButton = NSButton(title: String(localized: "Choose Folder…"), target: nil, action: nil)
+    private let syncStatus = NSTextField(wrappingLabelWithString: "")
     // Memory Saver
     private let sleepPopup = NSPopUpButton()
     private let maxTabsStepper = NSStepper()
@@ -37,6 +40,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         buildUI()
         NotificationCenter.default.addObserver(self, selector: #selector(reload),
                                                name: .askaraPreferencesChanged, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(reload),
+                                               name: .askaraSyncChanged, object: nil)
     }
 
     @available(*, unavailable)
@@ -128,6 +133,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         defaultRow.spacing = 8
         barBox.target = self
         barBox.action = #selector(barChanged(_:))
+        syncBox.target = self
+        syncBox.action = #selector(syncChanged(_:))
+        syncFolderButton.target = self
+        syncFolderButton.action = #selector(chooseSyncFolder(_:))
+        syncStatus.textColor = .secondaryLabelColor
+        syncStatus.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
 
         let grid = NSGridView(views: [
             [label(String(localized: "Default browser:")), defaultRow],
@@ -135,6 +146,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
             [label(String(localized: "Home page:")), homeField],
             [NSGridCell.emptyContentView, useCurrent],
             [NSGridCell.emptyContentView, barBox],
+            [NSGridCell.emptyContentView, syncBox],
+            [NSGridCell.emptyContentView, syncFolderButton],
+            [NSGridCell.emptyContentView, syncStatus],
         ])
         grid.rowSpacing = 10
         grid.column(at: 0).xPlacement = .trailing
@@ -279,6 +293,30 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         services.updatePreferences { $0.showsBookmarksBar = sender.state == .on }
     }
 
+    @objc private func syncChanged(_ sender: NSButton) {
+        if sender.state == .on, services.sync.folderURL == nil {
+            chooseSyncFolder(sender)
+        } else {
+            services.sync.setEnabled(sender.state == .on)
+        }
+    }
+
+    @objc private func chooseSyncFolder(_ sender: Any?) {
+        let panel = NSOpenPanel()
+        panel.title = String(localized: "Choose Sync Folder")
+        panel.prompt = String(localized: "Choose")
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        if let folder = services.sync.folderURL { panel.directoryURL = folder }
+        guard panel.runModal() == .OK, let folder = panel.url else {
+            syncBox.state = services.preferences.syncEnabled ? .on : .off
+            return
+        }
+        services.sync.setFolder(folder)
+    }
+
     /// The choice can change in System Settings while this window is open.
     func windowDidBecomeKey(_ notification: Notification) { updateDefaultStatus() }
 
@@ -286,6 +324,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         let prefs = services.preferences
         updateDefaultStatus()
         barBox.state = prefs.showsBookmarksBar ? .on : .off
+        syncBox.state = prefs.syncEnabled ? .on : .off
+        syncStatus.stringValue = services.sync.status
+        syncFolderButton.title = prefs.syncFolderPath.isEmpty ? String(localized: "Choose Folder…")
+                                                               : String(localized: "Change Folder…")
+        syncFolderButton.toolTip = services.sync.folderDisplayName
         enginePopup.selectItem(at: SearchEngine.all.firstIndex { $0.id == prefs.searchEngine.id } ?? 0)
         if homeField.currentEditor() == nil { homeField.stringValue = prefs.homePage }
         homeField.placeholderString = prefs.searchEngine.homeURL.absoluteString

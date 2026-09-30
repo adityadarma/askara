@@ -1,7 +1,17 @@
 #!/bin/zsh
-# Builds Askara.app (release) in the build/ folder.
+# Builds Askara.app (release) in the build/ folder. Pass --install to copy it to /Applications.
 set -euo pipefail
 cd "${0:A:h}/.."
+
+INSTALL=false
+if [[ "${1:-}" == "--install" ]]; then
+    INSTALL=true
+    shift
+fi
+if (( $# > 0 )); then
+    print -u2 "Usage: $0 [--install]"
+    exit 2
+fi
 
 swift build -c release
 BIN="$(swift build -c release --show-bin-path)/Askara"
@@ -75,4 +85,11 @@ else
     codesign --force --sign - "$APP"
     echo "Ad-hoc signing: passkeys unavailable."
 fi
-echo "Done: $APP"
+if $INSTALL; then
+    DEST="/Applications/Askara.app"
+    rm -rf "$DEST"
+    ditto "$APP" "$DEST"
+    echo "Installed: $DEST"
+else
+    echo "Done: $APP"
+fi
