@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "Askara",
-    // 15.4: minimum for WKWebExtension (Safari extension support such as Bitwarden).
+    // 15.4: minimum for WKWebExtension (Safari extension support).
     platforms: [.macOS("15.4")],
     targets: [
         // Pure logic (no AppKit) so it can be tested.

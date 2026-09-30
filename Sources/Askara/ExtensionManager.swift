@@ -410,6 +410,22 @@ extension Tab: WKWebExtensionTab {
 
     func isPlayingAudio(for context: WKWebExtensionContext) -> Bool { isPlayingAudio }
 
+    func isPinned(for context: WKWebExtensionContext) -> Bool { isPinned }
+
+    func setPinned(_ pinned: Bool, for context: WKWebExtensionContext,
+                   completionHandler: @escaping ((any Error)?) -> Void) {
+        owner?.setPinned(pinned, tab: self)
+        completionHandler(nil)
+    }
+
+    func isMuted(for context: WKWebExtensionContext) -> Bool { isMuted }
+
+    func setMuted(_ muted: Bool, for context: WKWebExtensionContext,
+                  completionHandler: @escaping ((any Error)?) -> Void) {
+        owner?.setMuted(muted, tab: self)
+        completionHandler(nil)
+    }
+
     func zoomFactor(for context: WKWebExtensionContext) -> Double { zoom }
 
     func size(for context: WKWebExtensionContext) -> CGSize { webView?.bounds.size ?? .zero }

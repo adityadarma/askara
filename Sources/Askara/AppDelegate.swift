@@ -6,7 +6,7 @@ import AskaraCore
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var memoryPressureSource: DispatchSourceMemoryPressure?
     private var services: BrowserServices { .shared }
-    private let homeURL = AddressParser.defaultHomeURL
+    private var homeURL: URL { services.homeURL }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.mainMenu = MainMenu.make(delegate: self)
@@ -88,6 +88,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self?.services.keyBrowserWindow?.showToast(message, duration: 4)
         }
     }
+    @objc func showSettingsAction(_ sender: Any?) { services.settingsWindow.show() }
     @objc func showHistoryAction(_ sender: Any?) { LibraryWindowController.shared.show(.history) }
     @objc func showBookmarksAction(_ sender: Any?) { LibraryWindowController.shared.show(.bookmarks) }
     @objc func showDownloadsAction(_ sender: Any?) { LibraryWindowController.shared.show(.downloads) }
@@ -241,6 +242,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.item(withTag: MainMenu.blockStatusTag)?.title = services.blockListUpdater.statusText
             return
         }
+        if menu.identifier == MainMenu.viewMenuID {
+            let freed = services.freedBytes
+            menu.item(withTag: MainMenu.memorySaverStatusTag)?.title = freed > 0
+                ? String(localized: "Memory Saver: freed about \(ProcessMemory.format(freed)) this session")
+                : String(localized: "Memory Saver: no tabs slept yet")
+            return
+        }
         let isHistory = menu.identifier == MainMenu.historyMenuID
         let fixedCount = isHistory ? MainMenu.historyFixedItems : MainMenu.bookmarkFixedItems
         while menu.items.count > fixedCount { menu.removeItem(at: fixedCount) }
@@ -301,8 +309,8 @@ extension AppDelegate {
     }
 }
 
-extension NSMenuItem {
-    func apply(_ body: (NSMenuItem) -> Void) { body(self) }
+extension NSMenu {
+    func apply(_ body: (NSMenu) -> Void) { body(self) }
 }
 
 /// `representedObject` needs an object; the struct is boxed.
@@ -322,8 +330,10 @@ enum MainMenu {
     static let blockStatusTag = 7001
     static let historyFixedItems = 5
     static let bookmarkFixedItems = 3
-    /// Next, Previous, 9 hidden shortcuts, separator.
-    static let tabFixedItems = 12
+    static let memorySaverStatusTag = 7003
+    static let viewMenuID = NSUserInterfaceItemIdentifier("view")
+    /// Next, Previous, separator, 3 tab actions, 9 hidden shortcuts, separator.
+    static let tabFixedItems = 16
 
     @MainActor
     static func make(delegate: AppDelegate) -> NSMenu {
@@ -355,6 +365,8 @@ enum MainMenu {
         blockStatus.tag = blockStatusTag
         let appMenu = submenu("Askara", [
             item(String(localized: "About Askara"), #selector(NSApplication.orderFrontStandardAboutPanel(_:))),
+            .separator(),
+            item(String(localized: "Settings…"), #selector(A.showSettingsAction(_:)), ","),
             .separator(),
             blockStatus,
             item(String(localized: "Update Ad Block List"), #selector(A.updateBlockListAction(_:))),
@@ -403,12 +415,22 @@ enum MainMenu {
             item(String(localized: "Actual Size"), #selector(B.zoomResetAction(_:)), "0"),
             .separator(),
             item(String(localized: "Sleep Background Tabs"), #selector(B.hibernateNowAction(_:)), "k", [.command, .shift]),
+            item(String(localized: "Keep This Site Awake"), #selector(B.toggleKeepAwakeAction(_:))),
+            {
+                // Memory Saver status, updated when the View menu opens.
+                let status = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+                status.isEnabled = false
+                status.tag = memorySaverStatusTag
+                return status
+            }(),
             .separator(),
             item(String(localized: "Enter Full Screen"), #selector(NSWindow.toggleFullScreen(_:)), "f", [.command, .control]),
-        ]).items[3].apply {
+        ]).apply { view in
+            view.identifier = viewMenuID
+            view.delegate = delegate
             // Duplicate ⌘= (without Shift) is only a shortcut; hidden from the menu.
-            $0.isHidden = true
-            $0.allowsKeyEquivalentWhenHidden = true
+            view.items[3].isHidden = true
+            view.items[3].allowsKeyEquivalentWhenHidden = true
         }
 
         let history = submenu(String(localized: "History"), [
@@ -438,6 +460,11 @@ enum MainMenu {
         var tabItems = [
             item(String(localized: "Show Next Tab"), #selector(B.nextTabAction(_:)), "]", [.command, .shift]),
             item(String(localized: "Show Previous Tab"), #selector(B.previousTabAction(_:)), "[", [.command, .shift]),
+            .separator(),
+            // Titles follow the active tab (validateMenuItem).
+            item(String(localized: "Pin Tab"), #selector(B.togglePinTabAction(_:))),
+            item(String(localized: "Mute Tab"), #selector(B.toggleMuteTabAction(_:)), "m", [.command, .control]),
+            item(String(localized: "Duplicate Tab"), #selector(B.duplicateTabAction(_:))),
         ]
         for n in 1...9 {
             let shortcut = item(String(localized: "Tab \(n)"), #selector(B.selectTabNumberAction(_:)), "\(n)", tag: n)

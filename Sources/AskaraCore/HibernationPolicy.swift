@@ -12,9 +12,12 @@ public struct TabSnapshot: Equatable {
     public let isPlayingAudio: Bool
     /// Has unsubmitted form input. This tab is never put to sleep so the input isn't lost.
     public let hasUnsavedInput: Bool
+    /// Pinned tab or a Memory Saver exception site: never put to sleep.
+    public let keepAwake: Bool
 
     public init(id: UUID, lastActive: Date, isLoaded: Bool, isActive: Bool,
-                memoryBytes: UInt64 = 0, isPlayingAudio: Bool = false, hasUnsavedInput: Bool = false) {
+                memoryBytes: UInt64 = 0, isPlayingAudio: Bool = false, hasUnsavedInput: Bool = false,
+                keepAwake: Bool = false) {
         self.id = id
         self.lastActive = lastActive
         self.isLoaded = isLoaded
@@ -22,6 +25,7 @@ public struct TabSnapshot: Equatable {
         self.memoryBytes = memoryBytes
         self.isPlayingAudio = isPlayingAudio
         self.hasUnsavedInput = hasUnsavedInput
+        self.keepAwake = keepAwake
     }
 }
 
@@ -54,7 +58,8 @@ public struct HibernationPolicy: Equatable {
                                 underMemoryPressure: Bool = false) -> [UUID] {
         // Candidates: loaded background tabs. Active tabs are never touched.
         // Tabs with unsubmitted form input are never touched, even when RAM is low.
-        let allBackground = tabs.filter { $0.isLoaded && !$0.isActive && !$0.hasUnsavedInput }
+        // Pinned tabs and exception sites are never touched either.
+        let allBackground = tabs.filter { $0.isLoaded && !$0.isActive && !$0.hasUnsavedInput && !$0.keepAwake }
 
         if underMemoryPressure {
             return allBackground.map(\.id)
@@ -67,7 +72,8 @@ public struct HibernationPolicy: Equatable {
 
         // If still over the count limit, discard the least recently used.
         // There can be more than one active tab with multiple windows.
-        let activeLoaded = tabs.filter { $0.isLoaded && $0.isActive }.count
+        // Tabs that always stay awake still count toward the limit.
+        let activeLoaded = tabs.filter { $0.isLoaded && ($0.isActive || $0.keepAwake) }.count
         let survivors = background
             .filter { !result.contains($0.id) }
             .sorted { $0.lastActive < $1.lastActive }

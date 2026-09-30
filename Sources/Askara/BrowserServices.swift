@@ -8,6 +8,7 @@ extension Notification.Name {
     static let askaraDownloadsChanged = Notification.Name("AskaraDownloadsChanged")
     static let askaraBlockListReady = Notification.Name("AskaraBlockListReady")
     static let askaraDownloadEvent = Notification.Name("AskaraDownloadEvent")
+    static let askaraPreferencesChanged = Notification.Name("AskaraPreferencesChanged")
 }
 
 struct ClosedTab {
@@ -31,14 +32,55 @@ final class BrowserServices {
     private let bookmarksFile = JSONFile<BookmarkStore>.inAppSupport("bookmarks.json")
     private let sessionFile = JSONFile<SessionState>.inAppSupport("session.json")
     private let siteSettingsFile = JSONFile<SiteSettings>.inAppSupport("site-settings.json")
+    private let preferencesFile = JSONFile<BrowserPreferences>.inAppSupport("preferences.json")
+    private let permissionsFile = JSONFile<SitePermissions>.inAppSupport("site-permissions.json")
     private var saveTasks: [String: Task<Void, Never>] = [:]
     /// Per-site JavaScript blocking and custom CSS/JavaScript. Kept when browsing data is cleared, like Chrome.
     private(set) var siteSettings: SiteSettings
+    /// Settings window (⌘,).
+    private(set) var preferences: BrowserPreferences
+    /// Remembered camera/microphone/location choices.
+    private(set) var permissions: SitePermissions
 
     private init() {
         history = historyFile.load() ?? HistoryStore()
         bookmarks = bookmarksFile.load() ?? BookmarkStore()
         siteSettings = siteSettingsFile.load() ?? SiteSettings()
+        preferences = preferencesFile.load() ?? BrowserPreferences()
+        permissions = permissionsFile.load() ?? SitePermissions()
+    }
+
+    // MARK: - Preferences & permissions
+
+    func updatePreferences(_ change: (inout BrowserPreferences) -> Void) {
+        let before = preferences
+        change(&preferences)
+        guard preferences != before else { return }
+        do { try preferencesFile.save(preferences) } catch { Log.error("Askara: failed to save preferences: \(error)") }
+        NotificationCenter.default.post(name: .askaraPreferencesChanged, object: nil)
+        // Stricter limits apply right away.
+        enforceHibernation()
+    }
+
+    /// Sites the user chose to open over HTTP despite HTTPS-Only Mode. Until quit only.
+    var httpAllowedHosts: Set<String> = []
+
+    var searchEngine: SearchEngine { preferences.searchEngine }
+    var homeURL: URL { preferences.homeURL }
+
+    func setPermission(_ choice: PermissionChoice?, for kind: PermissionKind, host: String) {
+        permissions.set(choice, for: kind, host: host)
+        savePermissions()
+    }
+
+    func removePermissions(host: String) {
+        permissions.removeAll(host: host)
+        savePermissions()
+    }
+
+    private func savePermissions() {
+        do { try permissionsFile.save(permissions) } catch { Log.error("Askara: failed to save permissions: \(error)") }
+        NotificationCenter.default.post(name: .askaraPreferencesChanged, object: nil)
     }
 
     // MARK: - Site settings
@@ -105,6 +147,9 @@ final class BrowserServices {
         if newTab { controller.newTab(url: url) } else { controller.load(url) }
     }
 
+    /// Settings window (⌘,).
+    lazy var settingsWindow = SettingsWindowController()
+
     func reopenClosedTab() {
         guard let closed = recentlyClosed.pop() else { return }
         open(closed.url, newTab: true, nonPrivate: true)
@@ -112,9 +157,13 @@ final class BrowserServices {
 
     // MARK: - Hibernation (global, across windows)
 
-    /// Max 5 tabs in memory, sleep after 5 minutes, and total tab memory ≤ 1/8 RAM (512 MB–1.5 GB).
-    let hibernationPolicy = HibernationPolicy(idleTimeout: 5 * 60, maxLoadedTabs: 5,
-                                              memoryBudget: HibernationPolicy.defaultMemoryBudget())
+    /// Sleep timeout and tab count come from Settings; total tab memory ≤ 1/8 RAM (512 MB–1.5 GB).
+    var hibernationPolicy: HibernationPolicy {
+        preferences.hibernationPolicy(memoryBudget: HibernationPolicy.defaultMemoryBudget())
+    }
+    /// RAM freed by putting tabs to sleep since launch (Memory Saver, shown in the View menu).
+    private(set) var freedBytes: UInt64 = 0
+    func recordFreed(_ bytes: UInt64) { freedBytes += bytes }
     private var hibernationTimer: Timer?
 
     func startHibernationTimer() {
@@ -138,6 +187,15 @@ final class BrowserServices {
         let ids = Set(hibernationPolicy.tabsToHibernate(snapshots, underMemoryPressure: underMemoryPressure))
         guard !ids.isEmpty else { return }
         windows.forEach { $0.hibernate(tabIDs: ids) }
+    }
+
+    /// Memory that closing this WebView actually frees: its process footprint, or 0 when the
+    /// process is shared with another loaded tab (then nothing is freed until all of them sleep).
+    func exclusiveFootprint(of webView: WKWebView?) -> UInt64 {
+        guard let webView, let pid = webView.askaraProcessID else { return 0 }
+        let sharers = windows.flatMap(\.loadedWebViews).filter { $0 !== webView && $0.askaraProcessID == pid }
+        guard sharers.isEmpty else { return 0 }
+        return ProcessMemory.footprint(pid: pid) ?? 0
     }
 
     // MARK: - Ad blocker

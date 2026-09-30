@@ -38,6 +38,10 @@ protocol TabStripDelegate: AnyObject {
     func tabStripNewTab(_ strip: TabStripView)
     /// Called when the cursor rests on a tab; computed on demand to avoid polling.
     func tabStrip(_ strip: TabStripView, tooltipFor index: Int) -> String
+    /// Right-click menu for a tab.
+    func tabStrip(_ strip: TabStripView, menuFor index: Int) -> NSMenu?
+    /// Click on the speaker icon.
+    func tabStrip(_ strip: TabStripView, toggleMuteAt index: Int)
 }
 
 struct TabStripItem: Equatable {
@@ -46,6 +50,8 @@ struct TabStripItem: Equatable {
     var isPlayingAudio: Bool
     var isLoading = false
     var favicon: NSImage? = nil
+    var isPinned = false
+    var isMuted = false
 }
 
 /// Thin progress line under the toolbar (like Safari). Advances with `estimatedProgress`,
@@ -130,9 +136,11 @@ final class LoadingBar: NSView {
 }
 
 /// Tab strip in the titlebar area, next to the window buttons (red/yellow/green).
+/// Pinned tabs (icon only) come first, then normal tabs.
 final class TabStripView: NSView {
     static let height: CGFloat = 40
     private static let topGap: CGFloat = 6
+    static let pinnedWidth: CGFloat = 42
 
     weak var delegate: TabStripDelegate?
     var isPrivate = false {
@@ -144,6 +152,7 @@ final class TabStripView: NSView {
     }
 
     private var itemViews: [TabItemView] = []
+    private var items: [TabStripItem] = []
     private let newTabButton = NSButton()
     private let privateBadge = NSTextField(labelWithString: String(localized: "Private"))
 
@@ -170,6 +179,7 @@ final class TabStripView: NSView {
     required init?(coder: NSCoder) { fatalError("not used") }
 
     func update(items: [TabStripItem], activeIndex: Int) {
+        self.items = items
         while itemViews.count > items.count { itemViews.removeLast().removeFromSuperview() }
         while itemViews.count < items.count {
             let view = TabItemView(strip: self)
@@ -200,15 +210,20 @@ final class TabStripView: NSView {
         let leading: CGFloat = fullScreen ? 8 : 78
         let badgeWidth: CGFloat = isPrivate ? privateBadge.intrinsicContentSize.width + 12 : 0
         let buttonSize: CGFloat = 28
-        let available = bounds.width - leading - badgeWidth - buttonSize - 16
-        let width = floor(min(240, available / CGFloat(max(itemViews.count, 1))))
         let tabHeight = bounds.height - Self.topGap
 
+        let pinnedCount = CGFloat(items.filter(\.isPinned).count)
+        let normalCount = items.count - Int(pinnedCount)
+        let available = bounds.width - leading - badgeWidth - buttonSize - 16 - pinnedCount * Self.pinnedWidth
+        let width = floor(max(28, min(240, available / CGFloat(max(normalCount, 1)))))
+
+        var x = leading
         for (index, view) in itemViews.enumerated() {
-            view.frame = NSRect(x: leading + CGFloat(index) * width, y: 0, width: width, height: tabHeight)
+            let w = items[index].isPinned ? Self.pinnedWidth : width
+            view.frame = NSRect(x: x, y: 0, width: w, height: tabHeight)
+            x += w
         }
-        newTabButton.frame = NSRect(x: leading + CGFloat(itemViews.count) * width + 6,
-                                    y: (tabHeight - buttonSize) / 2, width: buttonSize, height: buttonSize)
+        newTabButton.frame = NSRect(x: x + 6, y: (tabHeight - buttonSize) / 2, width: buttonSize, height: buttonSize)
         let badgeSize = privateBadge.intrinsicContentSize
         privateBadge.frame = NSRect(x: bounds.width - badgeSize.width - 10, y: (tabHeight - badgeSize.height) / 2,
                                     width: badgeSize.width, height: badgeSize.height)
@@ -242,13 +257,18 @@ final class TabStripView: NSView {
     fileprivate func select(_ index: Int) { delegate?.tabStrip(self, didSelect: index) }
     fileprivate func close(_ index: Int) { delegate?.tabStrip(self, didClose: index) }
     fileprivate func tooltip(_ index: Int) -> String { delegate?.tabStrip(self, tooltipFor: index) ?? "" }
+    fileprivate func menu(_ index: Int) -> NSMenu? { delegate?.tabStrip(self, menuFor: index) }
+    fileprivate func toggleMute(_ index: Int) { delegate?.tabStrip(self, toggleMuteAt: index) }
 }
 
 /// A single tab: icon, title, close button. Hovering shows a tooltip with memory usage.
+/// Pinned tabs show only the icon and have no close button (⌘W still closes them).
 final class TabItemView: NSView, NSViewToolTipOwner {
     private weak var strip: TabStripView?
     private var index = 0
     private var isActive = false
+    private var isPinned = false
+    private var hasAudioIcon = false
     private var isHovered = false { didSet { updateCloseVisibility(); needsDisplay = true } }
     private let icon = NSImageView()
     private let spinner = NSProgressIndicator()
@@ -286,11 +306,16 @@ final class TabItemView: NSView, NSViewToolTipOwner {
     func configure(index: Int, item: TabStripItem, isActive: Bool) {
         self.index = index
         self.isActive = isActive
+        self.isPinned = item.isPinned
         title = item.title
         label.stringValue = item.title
         label.textColor = item.isSleeping ? .secondaryLabelColor : .labelColor
-        if item.isPlayingAudio {
-            icon.image = NSImage(systemSymbolName: "speaker.wave.2.fill", accessibilityDescription: nil)
+        hasAudioIcon = item.isMuted || item.isPlayingAudio
+        if item.isMuted {
+            icon.image = NSImage(systemSymbolName: "speaker.slash.fill", accessibilityDescription: String(localized: "Muted"))
+            icon.alphaValue = 1
+        } else if item.isPlayingAudio {
+            icon.image = NSImage(systemSymbolName: "speaker.wave.2.fill", accessibilityDescription: String(localized: "Playing audio"))
             icon.alphaValue = 1
         } else if let favicon = item.favicon {
             // Site favicon; sleeping tabs are shown dimmed.
@@ -307,7 +332,9 @@ final class TabItemView: NSView, NSViewToolTipOwner {
         closeButton.setAccessibilityLabel(String(localized: "Close tab \(item.title)"))
         setAccessibilityElement(true)
         setAccessibilityRole(.radioButton)
-        let state = item.isLoading ? String(localized: ", loading") : (item.isSleeping ? String(localized: ", sleeping") : "")
+        var state = item.isLoading ? String(localized: ", loading") : (item.isSleeping ? String(localized: ", sleeping") : "")
+        if item.isPinned { state += String(localized: ", pinned") }
+        if item.isMuted { state += String(localized: ", muted") }
         setAccessibilityLabel(item.title + state)
         setAccessibilityValue(isActive)
         updateCloseVisibility()
@@ -317,22 +344,31 @@ final class TabItemView: NSView, NSViewToolTipOwner {
 
     private func updateCloseVisibility() {
         // Like Chrome: narrow tabs show the close button only on the active tab / on hover.
-        closeButton.isHidden = !(isActive || isHovered || bounds.width > 110)
+        closeButton.isHidden = isPinned || !(isActive || isHovered || bounds.width > 110)
     }
 
     override func layout() {
         super.layout()
         let h = bounds.height
-        let showIcon = bounds.width > 44 || !isActive
-        icon.isHidden = !showIcon || isLoading
-        spinner.isHidden = !showIcon || !isLoading
-        icon.frame = NSRect(x: 12, y: (h - 16) / 2, width: 16, height: 16)
-        spinner.frame = icon.frame
+        if isPinned {
+            icon.isHidden = isLoading
+            spinner.isHidden = !isLoading
+            icon.frame = NSRect(x: (bounds.width - 16) / 2, y: (h - 16) / 2, width: 16, height: 16)
+            spinner.frame = icon.frame
+            label.isHidden = true
+        } else {
+            label.isHidden = false
+            let showIcon = bounds.width > 44 || !isActive
+            icon.isHidden = !showIcon || isLoading
+            spinner.isHidden = !showIcon || !isLoading
+            icon.frame = NSRect(x: 12, y: (h - 16) / 2, width: 16, height: 16)
+            spinner.frame = icon.frame
+            let labelX: CGFloat = showIcon ? 34 : 10
+            let labelHeight = label.intrinsicContentSize.height
+            label.frame = NSRect(x: labelX, y: (h - labelHeight) / 2,
+                                 width: max(0, bounds.width - labelX - 30), height: labelHeight)
+        }
         closeButton.frame = NSRect(x: bounds.width - 26, y: (h - 18) / 2, width: 18, height: 18)
-        let labelX: CGFloat = showIcon ? 34 : 10
-        let labelHeight = label.intrinsicContentSize.height
-        label.frame = NSRect(x: labelX, y: (h - labelHeight) / 2,
-                             width: max(0, bounds.width - labelX - 30), height: labelHeight)
         updateCloseVisibility()
 
         removeAllToolTips()
@@ -377,8 +413,20 @@ final class TabItemView: NSView, NSViewToolTipOwner {
 
     override func mouseEntered(with event: NSEvent) { isHovered = true }
     override func mouseExited(with event: NSEvent) { isHovered = false }
-    override func mouseDown(with event: NSEvent) { strip?.select(index) }
+
+    override func mouseDown(with event: NSEvent) {
+        // Speaker icon toggles mute, like Chrome.
+        let point = convert(event.locationInWindow, from: nil)
+        if hasAudioIcon, !icon.isHidden, icon.frame.insetBy(dx: -4, dy: -4).contains(point) {
+            strip?.toggleMute(index)
+            return
+        }
+        strip?.select(index)
+    }
+
     override var mouseDownCanMoveWindow: Bool { false }
+
+    override func menu(for event: NSEvent) -> NSMenu? { strip?.menu(index) }
 
     /// Middle-click closes the tab.
     override func otherMouseUp(with event: NSEvent) {
@@ -390,11 +438,18 @@ final class TabItemView: NSView, NSViewToolTipOwner {
         return true
     }
 
+    override func accessibilityPerformShowMenu() -> Bool {
+        guard let menu = strip?.menu(index) else { return false }
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: bounds.height), in: self)
+        return true
+    }
+
     @objc private func closeClicked(_ sender: Any?) { strip?.close(index) }
 
     func view(_ view: NSView, stringForToolTip tag: NSView.ToolTipTag, point: NSPoint,
               userData data: UnsafeMutableRawPointer?) -> String {
-        strip?.tooltip(index) ?? title
+        let memory = strip?.tooltip(index) ?? ""
+        return memory.isEmpty ? title : "\(title)\n\(memory)"
     }
 }
 

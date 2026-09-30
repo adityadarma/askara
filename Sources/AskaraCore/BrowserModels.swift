@@ -3,10 +3,18 @@ import Foundation
 /// Session snapshot restored when the app is reopened.
 /// Tabs are restored asleep: only the active tab loads, the rest wait to be clicked.
 public struct SessionState: Codable, Equatable {
+    // New fields are optional so session files from older versions still load.
     public struct SavedTab: Codable, Equatable {
         public var url: URL
         public var title: String
-        public init(url: URL, title: String) { self.url = url; self.title = title }
+        public var isPinned: Bool?
+        public var isMuted: Bool?
+        public init(url: URL, title: String, isPinned: Bool = false, isMuted: Bool = false) {
+            self.url = url
+            self.title = title
+            self.isPinned = isPinned ? true : nil
+            self.isMuted = isMuted ? true : nil
+        }
     }
 
     public struct SavedWindow: Codable, Equatable {

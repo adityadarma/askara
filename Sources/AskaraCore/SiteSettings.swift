@@ -38,7 +38,7 @@ public struct SiteSettings: Codable, Equatable, Sendable {
 
     /// The host and its parent domains, most specific first. The bare top-level domain is skipped:
     /// "a.b.example.com" → ["a.b.example.com", "b.example.com", "example.com"].
-    static func candidates(for host: String) -> [String] {
+    public static func candidates(for host: String) -> [String] {
         let parts = key(for: host).split(separator: ".").map(String.init)
         guard parts.count > 1 else { return parts } // e.g. "localhost"
         return (0..<(parts.count - 1)).map { parts[$0...].joined(separator: ".") }

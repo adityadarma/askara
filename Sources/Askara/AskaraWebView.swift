@@ -87,7 +87,8 @@ final class AskaraWebView: WKWebView {
 
         if !target.selection.isEmpty {
             let short = target.selection.count > 30 ? String(target.selection.prefix(28)) + "…" : target.selection
-            let search = item(String(localized: "Search with Google for “\(short)”"),
+            let engine = BrowserServices.shared.searchEngine.name
+            let search = item(String(localized: "Search with \(engine) for “\(short)”"),
                               #selector(BrowserWindowController.searchSelection(_:)), target.selection)
             // Below "Copy" if present, to match Safari/Chrome.
             let copyIndex = find("WKMenuItemIdentifierCopy").map { $0 + 1 } ?? 0

@@ -40,6 +40,18 @@ extension WKWebView {
     var askaraIsCapturingMedia: Bool {
         cameraCaptureState != .none || microphoneCaptureState != .none
     }
+
+    /// Mutes page audio via the private `_setPageMuted:` (the same call Safari uses). Returns false
+    /// when unavailable. Only audio is muted; camera/microphone capture is unaffected.
+    @discardableResult
+    func askaraSetMuted(_ muted: Bool) -> Bool {
+        let selector = Selector(("_setPageMuted:"))
+        guard responds(to: selector) else { return false }
+        typealias SetMuted = @convention(c) (AnyObject, Selector, UInt) -> Void
+        let function = unsafeBitCast(method(for: selector), to: SetMuted.self)
+        function(self, selector, muted ? 1 : 0) // _WKMediaAudioMuted = 1 << 0
+        return true
+    }
 }
 
 /// Browser marker in the user agent. WKWebView's default omits "Version/… Safari/…", so
