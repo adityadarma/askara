@@ -32,7 +32,7 @@ the existing `Askara` and `AskaraCore` modules.
 ## Dependency Rules
 
 1. Feature UI talks to shared state through `BrowserServices` or its feature-owned service.
-2. Rendering runtimes implement `BrowserEngineAdapter`; browser UI must not select a concrete
+2. Rendering runtimes implement `BrowserEngineRuntime`; browser UI must not select a concrete
    runtime directly. Engine selection belongs to a profile; changing it recreates only that profile's
    windows and runtime while other profiles keep running.
 3. Put reusable business rules in `AskaraCore`. Keep framework-specific behavior in `Askara`.
@@ -41,7 +41,7 @@ the existing `Askara` and `AskaraCore` modules.
 5. Keep controller state private. Split a large controller only when the extracted component can
    expose a narrow interface without widening internal state.
 
-## Engine Roadmap
+## Engines
 
 WebKit is the built-in runtime. Each loaded profile owns one `BrowserEngineRuntime` and its
 `BrowserEngineCapabilities`. Feature UI checks capabilities before exposing engine-owned behavior.
@@ -82,10 +82,4 @@ The default `swift build` and `swift test` remain independent of the large vendo
 `scripts/smoke-cef.sh` runs the real tab stack on throwaway storage: a Blink profile, a normal and a
 private window, navigation, release of every browser when windows close, and orderly shutdown.
 
-Implementation order:
-
-1. Runtime and capability contract, then migrate existing WebKit behavior behind it.
-2. Bundle and boot CEF with an isolated request context per profile.
-3. Navigation, popup/OAuth, website data, downloads, permissions, and content blocking.
-4. Context menu, export/printing, DevTools, process management, media, and device emulation.
-5. WebAuthn and extensions after dedicated compatibility tests, including Bitwarden.
+Work status and remaining steps are tracked in `TASK.md`.

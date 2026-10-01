@@ -32,7 +32,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Save session cookies before quitting (cookie reads are asynchronous).
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if CEFHost.isSmokeTest {
-            CEFHost.stop()
             return .terminateNow
         }
         services.saveAll()
@@ -40,7 +39,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let finish = {
             guard !replied else { return }
             replied = true
-            CEFHost.stop()
             NSApp.reply(toApplicationShouldTerminate: true)
         }
         services.saveSessionCookies { finish() }

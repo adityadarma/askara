@@ -21,10 +21,12 @@ final class BlockListUpdater {
     private weak var services: BrowserServices?
     private(set) var metadata: BlockListMetadata
     private(set) var isUpdating = false
+    private(set) var currentDomains: [String]
     private var timer: Timer?
 
     /// Called each time a new list finishes compiling.
     var onCompiled: ((WKContentRuleList) -> Void)?
+    var onDomainsChanged: (([String]) -> Void)?
 
     init(storageDirectory: URL? = nil, services: BrowserServices) {
         self.services = services
@@ -36,6 +38,7 @@ final class BlockListUpdater {
             metadataFile = .inAppSupport("blocklist-meta.json")
         }
         metadata = metadataFile.load() ?? BlockListMetadata()
+        currentDomains = BlockList.merged(with: domainsFile.load() ?? [])
     }
 
     /// Compiles the saved (or built-in) list, then checks for updates in the background.
@@ -128,6 +131,8 @@ final class BlockListUpdater {
 
     private func compile(downloaded: [String]) {
         let domains = BlockList.merged(with: downloaded)
+        currentDomains = domains
+        onDomainsChanged?(domains)
         let json = BlockList.contentRuleListJSON(
             domains: domains,
             excludingSites: services?.siteSettings.adBlockExceptions ?? []

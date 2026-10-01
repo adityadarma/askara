@@ -14,6 +14,34 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)invalidate;
 @end
 
+typedef NS_ENUM(NSInteger, AskaraCEFDownloadState) {
+    AskaraCEFDownloadStateRunning,
+    AskaraCEFDownloadStateComplete,
+    AskaraCEFDownloadStateCancelled,
+    AskaraCEFDownloadStateFailed,
+};
+
+/// Download operation independent of the tab that initiated it.
+@interface AskaraCEFDownload : NSObject
+@property(nonatomic, readonly, copy) NSString *identifier;
+@property(nonatomic, readonly, nullable) NSURL *sourceURL;
+@property(nonatomic, readonly, copy) NSString *suggestedFilename;
+@property(nonatomic, readonly) int64_t receivedBytes;
+@property(nonatomic, readonly) int64_t totalBytes;
+/// 0...1 when known, or -1 for indeterminate progress.
+@property(nonatomic, readonly) double fractionCompleted;
+@property(nonatomic, readonly) AskaraCEFDownloadState state;
+@property(nonatomic, readonly, nullable, copy) NSString *failureMessage;
+@property(nonatomic, copy, nullable) dispatch_block_t onChanged;
+- (void)cancel;
+@end
+
+typedef NS_OPTIONS(NSUInteger, AskaraCEFPermissionKind) {
+    AskaraCEFPermissionKindCamera = 1 << 0,
+    AskaraCEFPermissionKindMicrophone = 1 << 1,
+    AskaraCEFPermissionKindLocation = 1 << 2,
+};
+
 /// Native windowed CEF browser content. Callbacks execute on AppKit's main thread.
 @interface AskaraCEFBrowserView : NSView
 @property(nonatomic, readonly, nullable) NSURL *URL;
@@ -24,11 +52,30 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic, readonly) BOOL canGoForward;
 @property(nonatomic, copy, nullable) dispatch_block_t onStateChanged;
 @property(nonatomic, copy, nullable) dispatch_block_t onBrowserCreated;
+/// Main-frame document committed. Used for site CSS/JavaScript injection.
+@property(nonatomic, copy, nullable) void (^onMainFrameLoadStarted)(NSURL *URL);
 @property(nonatomic, copy, nullable) dispatch_block_t onLoadCompleted;
-@property(nonatomic, copy, nullable) void (^onLoadFailed)(NSString *message);
+@property(nonatomic, copy, nullable) void (^onLoadFailed)(NSURL * _Nullable URL,
+                                                          NSInteger errorCode,
+                                                          NSString *message);
+/// HTTPS-Only could not load the secure URL, or it redirected back to HTTP.
+@property(nonatomic, copy, nullable) void (^onHTTPSFallbackRequired)(NSURL *insecureURL,
+                                                                     NSURL *secureURL,
+                                                                     NSInteger errorCode,
+                                                                     NSString *message);
 @property(nonatomic, copy, nullable) dispatch_block_t onClosed;
-/// target=_blank / window.open. The popup itself is cancelled; the host opens the URL in a tab.
+/// target=_blank / window.open fallback when a scriptable popup cannot be adopted.
 @property(nonatomic, copy, nullable) void (^onOpenURLInNewTab)(NSURL *URL);
+/// Called synchronously for a user-gesture popup. Return YES after adopting the supplied view into
+/// a visible tab; CEF then creates the popup browser in it and preserves window.opener.
+@property(nonatomic, copy, nullable) BOOL (^onPopupRequested)(AskaraCEFBrowserView *popupView,
+                                                              NSURL * _Nullable URL);
+/// Return a full file URL to accept the download, or nil to cancel it.
+@property(nonatomic, copy, nullable) NSURL * _Nullable (^onDownloadRequested)(AskaraCEFDownload *download);
+@property(nonatomic, copy, nullable) void (^onPermissionRequested)(
+    uint64_t requestID, NSURL *requestingOrigin, AskaraCEFPermissionKind kinds,
+    void (^decisionHandler)(BOOL allowed));
+@property(nonatomic, copy, nullable) void (^onPermissionRequestCancelled)(uint64_t requestID);
 
 - (instancetype)initWithFrame:(NSRect)frame
                 requestContext:(AskaraCEFRequestContext *)requestContext NS_DESIGNATED_INITIALIZER;
@@ -42,6 +89,15 @@ NS_ASSUME_NONNULL_BEGIN
 /// 1 = 100%. Applied once the browser exists if called earlier.
 - (void)setZoomFactor:(double)factor;
 - (void)setAudioMuted:(BOOL)muted;
+/// Replaces the native request-policy snapshot. Domain matching includes real subdomains only.
+- (void)setBlockedDomains:(NSArray<NSString *> *)domains
+            excludingSites:(NSArray<NSString *> *)excludingSites;
+- (void)setJavaScriptBlockedDomains:(NSArray<NSString *> *)domains;
+- (void)setHTTPSOnlyEnabled:(BOOL)enabled allowedHTTPHosts:(NSArray<NSString *> *)hosts;
+/// Executes in the current main frame. CEF reports errors in the page console, not via a callback.
+- (void)executeJavaScript:(NSString *)source sourceURL:(nullable NSURL *)sourceURL;
+/// Test/automation input in view coordinates.
+- (void)sendMouseClickAt:(NSPoint)point;
 /// Closes the browser. Safe before creation finished; onClosed fires exactly once either way.
 - (void)close;
 @end

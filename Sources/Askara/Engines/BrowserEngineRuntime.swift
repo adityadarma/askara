@@ -83,17 +83,17 @@ enum BlinkEngineCapabilities {
         func limited(_ note: String) -> BrowserEngineCapabilities.Capability { .init(.limited, note: note) }
         return BrowserEngineCapabilities([
             .extensions: unavailable("CEF does not run Chrome Web Store extensions"),
-            .downloads: unavailable("Blink downloads are not connected to the download manager yet"),
-            .contentBlocking: unavailable("The ad blocker and HTTPS-Only upgrades for in-page links apply to WebKit only"),
-            .permissions: unavailable("Camera, microphone, and location prompts are not connected for Blink yet"),
+            .downloads: .init(.supported),
+            .contentBlocking: .init(.supported),
+            .permissions: .init(.supported),
             .webAuthentication: unavailable("Passkeys and security keys are untested in CEF"),
             .pictureInPicture: unavailable("Picture in Picture is WebKit only"),
             .developerTools: unavailable("Chromium DevTools are not connected yet"),
             .documentExport: unavailable("Print, screenshots, and source view are WebKit only"),
-            .websiteData: limited("Clearing browsing data removes Blink cookies and cache, not other site storage"),
+            .websiteData: limited("Cookies and cache clear immediately; other site storage clears when the profile restarts"),
             .processManagement: unavailable("Blink tab memory is not measured or put to sleep by Memory Saver limits"),
             .contextMenu: limited("Uses Chromium's default context menu"),
-            .popupHandling: limited("Popups open as tabs; window.opener is not preserved"),
+            .popupHandling: .init(.supported),
             .deviceEmulation: unavailable("Device Mode is WebKit only"),
         ])
     }()
@@ -108,13 +108,15 @@ final class BlinkBrowserEngineRuntime: BrowserEngineRuntime {
     let availability = BrowserEngineAvailability.available
     let capabilities = BlinkEngineCapabilities.declared
     private let cacheDirectory: URL
+    private let profileID: UUID
     private var context: AskaraCEFRequestContext?
     private var privateContexts: [UUID: AskaraCEFRequestContext] = [:]
     private var isShutDown = false
 
     /// Cheap and side-effect free: the directory and context are created on first use.
-    init(cacheDirectory: URL) {
+    init(cacheDirectory: URL, profileID: UUID) {
         self.cacheDirectory = cacheDirectory
+        self.profileID = profileID
     }
 
     func makeContent(frame: NSRect, privateSession: UUID?,
@@ -137,8 +139,11 @@ final class BlinkBrowserEngineRuntime: BrowserEngineRuntime {
 
     private func persistentContext() throws -> AskaraCEFRequestContext {
         if let context { return context }
-        try FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
-        let created = try AskaraCEFBridge.createRequestContext(atCachePath: cacheDirectory.path)
+        guard let prepared = CEFHost.cacheDirectory(forProfile: profileID) else {
+            throw BrowserEngineRuntimeError.unavailable(.blink, "CEF cache root is unavailable")
+        }
+        try FileManager.default.createDirectory(at: prepared, withIntermediateDirectories: true)
+        let created = try AskaraCEFBridge.createRequestContext(atCachePath: prepared.path)
         context = created
         return created
     }
@@ -149,6 +154,7 @@ final class BlinkBrowserEngineRuntime: BrowserEngineRuntime {
 
     func clearWebsiteData(completion: @escaping @MainActor () -> Void) {
         guard !isShutDown, let context = try? persistentContext() else { return completion() }
+        CEFHost.scheduleWebsiteDataRemoval(forProfile: profileID)
         context.clearCookiesAndCache { MainActor.assumeIsolated { completion() } }
     }
 
@@ -198,7 +204,7 @@ struct BrowserEngineRegistry {
             .blink: { id in
 #if ASKARA_CEF
                 if CEFHost.isInitialized, let directory = CEFHost.cacheDirectory(forProfile: id) {
-                    return BlinkBrowserEngineRuntime(cacheDirectory: directory)
+                    return BlinkBrowserEngineRuntime(cacheDirectory: directory, profileID: id)
                 }
 #endif
                 return UnavailableBrowserEngineRuntime(engine: .blink, reason: CEFHost.unavailableReason)

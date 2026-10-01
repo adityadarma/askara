@@ -25,8 +25,15 @@ final class BrowserServices {
     static let shared = BrowserServices()
 
     private(set) var ruleList: WKContentRuleList?
+    var blockListDomains: [String] {
+        var domains = blockListUpdater.currentDomains
+        if let smoke = ProcessInfo.processInfo.environment["ASKARA_CEF_SMOKE_BLOCK_DOMAIN"] {
+            domains.append(smoke)
+        }
+        return domains
+    }
     private(set) var windows: [BrowserWindowController] = []
-    let downloads = DownloadManager()
+    let downloads: DownloadManager
     lazy var sync = SyncCoordinator(services: self)
 
     private let siteSettingsFile: JSONFile<SiteSettings>
@@ -46,7 +53,9 @@ final class BrowserServices {
     var isRestartingProfile: Bool { !restartingProfileIDs.isEmpty }
 
     init(storageDirectory: URL? = nil,
+         downloadDirectory: URL? = nil,
          dataStoreFactory: ((UUID) -> WKWebsiteDataStore)? = nil) {
+        downloads = DownloadManager(directory: downloadDirectory)
         self.storageDirectory = storageDirectory
         self.dataStoreFactory = dataStoreFactory ?? { id in
             id == Profile.defaultID ? .default() : WKWebsiteDataStore(forIdentifier: id)
@@ -89,11 +98,17 @@ final class BrowserServices {
     func setJavaScriptBlocked(_ blocked: Bool, host: String) {
         siteSettings.setJavaScriptBlocked(blocked, host: host)
         saveSiteSettings()
+        windows.forEach {
+            $0.applyBlinkBlockList(domains: blockListDomains, exceptions: siteSettings.adBlockExceptions)
+        }
     }
 
     func setAdBlockDisabled(_ disabled: Bool, host: String) {
         siteSettings.setAdBlockDisabled(disabled, host: host)
         saveSiteSettings()
+        windows.forEach {
+            $0.applyBlinkBlockList(domains: blockListDomains, exceptions: siteSettings.adBlockExceptions)
+        }
         blockListUpdater.recompile()
         windows.forEach { $0.reloadTabs(relatedTo: host) }
     }
@@ -189,6 +204,7 @@ final class BrowserServices {
         let data = profileData[id]
         data?.windows.forEach { $0.close() }
         data?.discard()
+        CEFHost.scheduleProfileDataRemoval(forProfile: id)
         profileData[id] = nil
         profileList.remove(id)
         saveProfiles()
@@ -367,6 +383,12 @@ final class BrowserServices {
 
     /// Loads the saved blocklist, then updates it automatically once a day.
     func compileBlockList() {
+        blockListUpdater.onDomainsChanged = { [weak self] domains in
+            guard let self else { return }
+            self.windows.forEach {
+                $0.applyBlinkBlockList(domains: domains, exceptions: self.siteSettings.adBlockExceptions)
+            }
+        }
         blockListUpdater.onCompiled = { [weak self] list in
             guard let self else { return }
             self.ruleList = list

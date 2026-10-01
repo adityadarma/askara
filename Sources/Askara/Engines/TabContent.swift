@@ -6,10 +6,13 @@ import WebKit
 enum TabContentEvent {
     /// Title, URL, loading state, progress, or back/forward availability changed.
     case stateChanged
+    case mainFrameLoadStarted(URL)
     case loadFinished
-    case loadFailed(String)
+    case loadFailed(url: URL?, code: Int?, message: String)
     /// The page asked for a popup (target=_blank, window.open). Opened as a new tab.
     case openInNewTab(URL)
+    /// A native popup browser that must be adopted synchronously to preserve window.opener.
+    case popup(any TabContent, URL?)
     /// The engine finished tearing the page down after `close()`.
     case closed
 }
@@ -35,6 +38,7 @@ protocol TabContent: AnyObject {
     /// 1 = 100%.
     func setZoom(_ zoom: Double)
     func setMuted(_ muted: Bool)
+    func executeJavaScript(_ source: String, completion: ((Error?) -> Void)?)
     /// Stops the page and releases the engine's resources. The content is not reused afterwards.
     func close()
 }
@@ -64,6 +68,9 @@ final class WebKitTabContent: TabContent {
     func stopLoading() { webView.stopLoading() }
     func setZoom(_ zoom: Double) { webView.pageZoom = zoom }
     func setMuted(_ muted: Bool) { webView.askaraSetMuted(muted) }
+    func executeJavaScript(_ source: String, completion: ((Error?) -> Void)?) {
+        webView.evaluateJavaScript(source) { _, error in completion?(error) }
+    }
 
     func close() {
         webView.stopLoading()

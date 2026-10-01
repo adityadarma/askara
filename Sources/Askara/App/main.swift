@@ -15,4 +15,7 @@ MainActor.assumeIsolated {
     app.delegate = delegate
     app.setActivationPolicy(.regular)
     withExtendedLifetime(delegate) { app.run() }
+    // CEF shutdown must happen after AppKit finishes session termination. Calling it from
+    // applicationShouldTerminate deadlocks Chromium's popup/session teardown watchdog.
+    CEFHost.stop()
 }

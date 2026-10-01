@@ -157,7 +157,14 @@ final class ProfileData {
         var remaining = 2
         let done: @MainActor () -> Void = {
             remaining -= 1
-            if remaining == 0 { completion() }
+            guard remaining == 0 else { return }
+            // Blink's API clears cookies/cache immediately. Restarting the profile releases its
+            // request context, consumes the wipe marker, and removes localStorage/IndexedDB too.
+            if self.browserEngine == .blink {
+                self.services.restartProfile(self.id, completion: completion)
+            } else {
+                completion()
+            }
         }
         dataStore.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast) {
             MainActor.assumeIsolated { done() }

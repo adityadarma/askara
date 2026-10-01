@@ -54,7 +54,7 @@ struct AskaraUITests {
         #expect(registry.makeRuntime(for: .gecko).engine == .webkit)
     }
 
-    @Test("Blink declares every feature it does not support yet")
+    @Test("Blink declares every engine capability")
     func blinkCapabilities() {
         let capabilities = BlinkEngineCapabilities.declared
         for feature in BrowserEngineFeature.allCases {
@@ -63,7 +63,10 @@ struct AskaraUITests {
         }
         #expect(!capabilities.supports(.extensions))
         #expect(!capabilities.supports(.pictureInPicture))
-        #expect(capabilities[.popupHandling].support == .limited)
+        #expect(capabilities.supports(.downloads))
+        #expect(capabilities.supports(.contentBlocking))
+        #expect(capabilities.supports(.permissions))
+        #expect(capabilities.supports(.popupHandling))
     }
 
     @Test("WebKit tab content forwards the engine-neutral contract")

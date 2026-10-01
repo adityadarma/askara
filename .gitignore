@@ -2,3 +2,6 @@
 build/
 .DS_Store
 Vendor/cef/
+.opencode
+graphify-out
+AGENTS.md

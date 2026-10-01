@@ -161,7 +161,7 @@ enum ProfileDialogs {
             let title: String
             switch availability {
             case .available: title = engine.name
-            case .unavailable: title = String(localized: "\(engine.name) - Runtime not installed")
+            case .unavailable(let reason): title = "\(engine.name) - \(reason)"
             }
             engines.addItem(withTitle: title)
             engines.lastItem?.representedObject = engine.id

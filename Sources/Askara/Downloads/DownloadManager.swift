@@ -2,8 +2,11 @@ import AppKit
 import CryptoKit
 import WebKit
 import AskaraCore
+#if ASKARA_CEF
+import CEFBridge
+#endif
 
-/// Manages WebKit downloads. Files are saved to ~/Downloads with unique names.
+/// Manages browser downloads. Files are saved with unique names.
 @MainActor
 final class DownloadManager: NSObject, WKDownloadDelegate {
     final class Item {
@@ -27,6 +30,9 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
         var risks: [DownloadRisk] = []
         var fileSize: Int64?
         weak var download: WKDownload?
+#if ASKARA_CEF
+        var cefDownload: AskaraCEFDownload?
+#endif
         var observation: NSKeyValueObservation?
 
         var statusText: String {
@@ -67,6 +73,12 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
     }
 
     private(set) var items: [Item] = []   // newest first
+    private let downloadDirectory: URL
+
+    init(directory: URL? = nil) {
+        downloadDirectory = directory
+            ?? FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
+    }
 
     var running: [Item] { items.filter { $0.state == .running } }
 
@@ -109,9 +121,10 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
     func cancel(_ item: Item) {
         guard item.state == .running else { return }
         item.download?.cancel { _ in }
-        item.state = .cancelled
-        item.observation = nil
-        changed()
+#if ASKARA_CEF
+        item.cefDownload?.cancel()
+#endif
+        markCancelled(item)
     }
 
     func removeFromList(_ ids: Set<UUID>) {
@@ -127,16 +140,105 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
         NotificationCenter.default.post(name: .askaraDownloadsChanged, object: nil)
     }
 
+    private func destination(for suggestedFilename: String) -> URL {
+        let reserved = Set(items.compactMap {
+            $0.state == .running ? $0.destination?.standardizedFileURL.path : nil
+        })
+        return DownloadNaming.uniqueURL(in: downloadDirectory, suggested: suggestedFilename) {
+            let path = $0.standardizedFileURL.path
+            return reserved.contains(path) || FileManager.default.fileExists(atPath: path)
+        }
+    }
+
+    private func finish(_ item: Item) {
+        guard item.state == .running else { return }
+        item.state = .finished
+        item.fraction = 1
+        item.observation = nil
+#if ASKARA_CEF
+        item.cefDownload?.onChanged = nil
+        item.cefDownload = nil
+#endif
+        if let path = item.destination?.path {
+            DistributedNotificationCenter.default()
+                .post(name: .init("com.apple.DownloadFileFinished"), object: path)
+        }
+        announce(String(localized: "Download finished: \(item.filename)"))
+        changed()
+        scan(item)
+    }
+
+    private func markCancelled(_ item: Item) {
+        guard item.state == .running else { return }
+        item.state = .cancelled
+        item.observation = nil
+#if ASKARA_CEF
+        item.cefDownload?.onChanged = nil
+        item.cefDownload = nil
+#endif
+        changed()
+    }
+
+    private func fail(_ item: Item, message: String) {
+        guard item.state == .running else { return }
+        item.state = .failed(message)
+        item.observation = nil
+#if ASKARA_CEF
+        item.cefDownload?.onChanged = nil
+        item.cefDownload = nil
+#endif
+        announce(String(localized: "Download failed: \(item.filename)"))
+        changed()
+    }
+
+#if ASKARA_CEF
+    func track(_ download: AskaraCEFDownload) -> URL? {
+        if let existing = items.first(where: { $0.cefDownload === download }) {
+            return existing.destination
+        }
+        let item = Item()
+        item.cefDownload = download
+        item.sourceURL = download.sourceURL
+        let destination = destination(for: download.suggestedFilename)
+        item.filename = destination.lastPathComponent
+        item.destination = destination
+        items.insert(item, at: 0)
+        download.onChanged = { [weak self, weak item, weak download] in
+            guard let self, let item, let download else { return }
+            self.update(item, from: download)
+        }
+        announce(String(localized: "Downloading \(destination.lastPathComponent). See Window › Downloads (⌥⌘L)."))
+        changed()
+        return destination
+    }
+
+    private func update(_ item: Item, from download: AskaraCEFDownload) {
+        guard item.cefDownload === download, item.state == .running else { return }
+        switch download.state {
+        case .running:
+            let fraction = download.fractionCompleted
+            guard fraction >= 0 else { return }
+            let clamped = min(max(fraction, item.fraction), 1)
+            if clamped - item.fraction >= 0.01 || clamped >= 1 {
+                item.fraction = clamped
+                changed()
+            }
+        case .complete: finish(item)
+        case .cancelled: markCancelled(item)
+        case .failed:
+            fail(item, message: download.failureMessage
+                 ?? String(localized: "Chromium interrupted the download"))
+        @unknown default:
+            fail(item, message: String(localized: "Unknown Chromium download state"))
+        }
+    }
+#endif
+
     // MARK: - WKDownloadDelegate
 
     func download(_ download: WKDownload, decideDestinationUsing response: URLResponse,
                   suggestedFilename: String, completionHandler: @escaping (URL?) -> Void) {
-        let directory = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
-        // Avoid clashing with existing files and other running downloads.
-        let reserved = Set(items.compactMap { $0.state == .running ? $0.destination?.path : nil })
-        let destination = DownloadNaming.uniqueURL(in: directory, suggested: suggestedFilename) {
-            reserved.contains($0.path) || FileManager.default.fileExists(atPath: $0.path)
-        }
+        let destination = destination(for: suggestedFilename)
         if let item = item(for: download) {
             item.filename = destination.lastPathComponent
             item.destination = destination
@@ -148,17 +250,7 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
 
     func downloadDidFinish(_ download: WKDownload) {
         guard let item = item(for: download) else { return }
-        item.state = .finished
-        item.fraction = 1
-        item.observation = nil
-        if let path = item.destination?.path {
-            // Makes the Downloads stack in the Dock bounce, like Safari.
-            DistributedNotificationCenter.default()
-                .post(name: .init("com.apple.DownloadFileFinished"), object: path)
-        }
-        announce(String(localized: "Download finished: \(item.filename)"))
-        changed()
-        scan(item)
+        finish(item)
     }
 
     private func scan(_ item: Item) {
@@ -203,10 +295,7 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
     }
 
     func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
-        guard let item = item(for: download), item.state == .running else { return }
-        item.state = .failed(error.localizedDescription)
-        item.observation = nil
-        announce(String(localized: "Download failed: \(item.filename)"))
-        changed()
+        guard let item = item(for: download) else { return }
+        fail(item, message: error.localizedDescription)
     }
 }
