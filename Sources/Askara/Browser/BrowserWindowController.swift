@@ -1140,7 +1140,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
 
     private func makeEngineWebView(frame: NSRect, configuration: WKWebViewConfiguration) -> AskaraWebView {
         do {
-            let content = try profile.engineAdapter.makeContentView(
+            let content = try profile.engineRuntime.makeContentView(
                 frame: frame, webKitConfiguration: configuration)
             switch content {
             case .webKit(let webView): return webView

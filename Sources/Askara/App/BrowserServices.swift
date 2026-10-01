@@ -159,7 +159,7 @@ final class BrowserServices {
         let session = SessionState(windows: normalWindows.map { $0.savedState() }).portableForEngineChange
         oldData.saveAll()
         oldData.saveSession(session)
-        oldData.unloadExtensions()
+        oldData.shutDownRuntime()
         restartingProfileIDs.insert(id)
 
         // Closing a window normally updates the session. During a runtime restart the snapshot above

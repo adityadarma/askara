@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var homeURL: URL { services.homeURL }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        CEFHost.start()
         NSApp.mainMenu = MainMenu.make(delegate: self)
         services.compileBlockList()
         // Retry removing website data of deleted profiles that was still in use last time.
@@ -28,15 +29,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Save session cookies before quitting (cookie reads are asynchronous).
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         services.saveAll()
+        if ProcessInfo.processInfo.environment["ASKARA_CEF_SMOKE_FILE"] != nil {
+            CEFHost.stop()
+            return .terminateNow
+        }
         var replied = false
         let finish = {
             guard !replied else { return }
             replied = true
+            CEFHost.stop()
             NSApp.reply(toApplicationShouldTerminate: true)
         }
         services.saveSessionCookies { finish() }
         // Ensure the app can still quit if WebKit never responds.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { MainActor.assumeIsolated { finish() } }
+        let timer = Timer(timeInterval: 2, repeats: false) { _ in MainActor.assumeIsolated { finish() } }
+        RunLoop.main.add(timer, forMode: .common)
         return .terminateLater
     }
 

@@ -91,3 +91,21 @@ import Testing
         #expect(decoded.profile(work.id)?.colorIndex == ProfileList.colorCount - 1)
     }
 }
+
+@Suite struct BrowserEngineCapabilityTests {
+    @Test func undeclaredFeaturesAreUnavailable() {
+        let capabilities = BrowserEngineCapabilities([:])
+        for feature in BrowserEngineFeature.allCases {
+            #expect(capabilities[feature].support == .unavailable)
+            #expect(!capabilities.supports(feature))
+        }
+    }
+
+    @Test func unavailableMatrixExplainsEveryFeature() {
+        let capabilities = BrowserEngineCapabilities.unavailable(reason: "Runtime missing")
+        for feature in BrowserEngineFeature.allCases {
+            #expect(capabilities[feature].support == .unavailable)
+            #expect(capabilities[feature].note == "Runtime missing")
+        }
+    }
+}

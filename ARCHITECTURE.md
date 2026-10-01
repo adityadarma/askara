@@ -43,5 +43,42 @@ the existing `Askara` and `AskaraCore` modules.
 
 ## Engine Roadmap
 
-WebKit is the built-in runtime. Blink will be added as a CEF-backed adapter under `Engines`.
-Gecko remains unavailable until a supported macOS embedding runtime is selected.
+WebKit is the built-in runtime. Each loaded profile owns one `BrowserEngineRuntime` and its
+`BrowserEngineCapabilities`. Feature UI checks capabilities before exposing engine-owned behavior.
+
+Blink will be installed in the next engine phase as a bundled Chromium Embedded Framework (CEF)
+runtime under `Engines/Blink`. That phase includes the CEF framework, helper app processes, profile
+request contexts, application startup/shutdown, code signing, and packaging. Blink must remain
+unavailable until those artifacts are present; falling back to WebKit must never be labelled Blink.
+
+CEF uses Chromium's renderer and network stack, but it is not Google Chrome. Compatibility is not
+guaranteed for Chrome Extension APIs, Google account services, Chrome Sync, Widevine/DRM, native
+messaging, Chrome-specific UI, or every WebAuthn flow. Each capability must be enabled only after an
+integration test proves the behavior in the bundled CEF version. Gecko remains deferred.
+
+### CEF Development Build
+
+Askara pins the official macOS arm64 minimal distribution to CEF
+`154.0.32+g682c378+chromium-154.0.8037.58` (Chromium `154.0.8037.58`). Install and verify it with:
+
+```sh
+scripts/install-cef.sh
+scripts/smoke-cef.sh
+```
+
+The vendor binary is stored under ignored `Vendor/cef/`. `scripts/bundle.sh --cef` enables the
+`CEFBridge` SwiftPM target and bundles the versioned framework plus the mandatory macOS helper app.
+The default `swift build` and `swift test` remain independent of the large vendor binary.
+
+The current milestone proves framework loading, `CefInitialize`, AppKit message-loop integration,
+one persistent `CefRequestContext` per profile path, helper packaging, signing, and orderly shutdown.
+Blink remains unavailable in profile UI until `BrowserWindowController` no longer assumes every tab
+owns a `WKWebView` and a native CEF child view can satisfy the shared tab-content contract.
+
+Implementation order:
+
+1. Runtime and capability contract, then migrate existing WebKit behavior behind it.
+2. Bundle and boot CEF with an isolated request context per profile.
+3. Navigation, popup/OAuth, website data, downloads, permissions, and content blocking.
+4. Context menu, export/printing, DevTools, process management, media, and device emulation.
+5. WebAuthn and extensions after dedicated compatibility tests, including Bitwarden.

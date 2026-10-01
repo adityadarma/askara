@@ -36,6 +36,9 @@
 "Bookmarks" = "Bookmark";
 "Browser engine" = "Engine browser";
 "Browser engine:" = "Engine browser:";
+"%@ - restart pending for %@" = "%@ - menunggu mulai ulang ke %@";
+"This feature isn't available with %@" = "Fitur ini tidak tersedia dengan %@";
+"The selected engine does not support this feature." = "Engine yang dipilih tidak mendukung fitur ini.";
 "Bring All to Front" = "Bawa Semua ke Depan";
 "Caches emptied" = "Cache dikosongkan";
 "Cancel" = "Batal";

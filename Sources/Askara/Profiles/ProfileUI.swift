@@ -55,7 +55,11 @@ enum ProfileMenu {
             item.representedObject = profile.id
             item.image = ProfileColors.avatar(for: profile, size: 18)
             item.state = profile.id == current ? .on : .off
-            item.subtitle = profile.browserEngine.name
+            if let loaded = services.loadedEngine(for: profile.id), loaded != profile.browserEngine {
+                item.subtitle = String(localized: "\(loaded.name) - restart pending for \(profile.browserEngine.name)")
+            } else {
+                item.subtitle = profile.browserEngine.name
+            }
             item.toolTip = profile.id == current
                 ? String(localized: "Profile in use")
                 : String(localized: "Open a window for this profile")

@@ -8,9 +8,9 @@ import AskaraCore
 @MainActor
 final class ProfileData {
     let id: UUID
-    /// Fixed for this process. Profile engine changes are applied on the next launch.
+    /// Fixed for this profile runtime. Engine changes recreate the profile runtime and its windows.
     let browserEngine: BrowserEngine
-    let engineAdapter: any BrowserEngineAdapter
+    let engineRuntime: any BrowserEngineRuntime
     let dataStore: WKWebsiteDataStore
     let sessionCookies: SessionCookies
 
@@ -36,8 +36,8 @@ final class ProfileData {
         self.id = id
         self.services = suppliedServices ?? .shared
         let configuredEngine = self.services.profileList.profile(id)?.browserEngine ?? .webkit
-        engineAdapter = self.services.engineRegistry.adapter(for: configuredEngine)
-        browserEngine = engineAdapter.engine
+        engineRuntime = self.services.engineRegistry.makeRuntime(for: configuredEngine)
+        browserEngine = engineRuntime.engine
         let folder = Profile.folder(for: id)
         // The first profile keeps WebKit's default store, so logins from before profiles existed stay.
         dataStore = suppliedDataStore ?? (id == Profile.defaultID ? .default() : WKWebsiteDataStore(forIdentifier: id))
@@ -110,6 +110,11 @@ final class ProfileData {
     func unloadExtensions() {
         extensionManager?.shutDown()
         extensionManager = nil
+    }
+
+    func shutDownRuntime() {
+        unloadExtensions()
+        engineRuntime.shutDown()
     }
 
     // MARK: - Permissions
@@ -260,7 +265,7 @@ final class ProfileData {
         isDiscarded = true
         saveTasks.values.forEach { $0.cancel() }
         saveTasks.removeAll()
-        unloadExtensions()
+        shutDownRuntime()
     }
 
     /// Debounces disk writes so rapid successive changes are written once.

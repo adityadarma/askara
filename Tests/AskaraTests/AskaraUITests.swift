@@ -6,17 +6,34 @@ import AskaraCore
 
 @Suite("AppKit UI components", .serialized)
 struct AskaraUITests {
-    @Test("Engine registry uses WebKit until another runtime is available")
+    @Test("Engine registry creates isolated runtimes and falls back honestly")
     @MainActor
     func browserEngineRegistryFallback() {
         let registry = BrowserEngineRegistry()
+        let first = registry.makeRuntime(for: .webkit)
+        let second = registry.makeRuntime(for: .webkit)
 
-        #expect(registry.adapter(for: .webkit).engine == .webkit)
-        #expect(registry.adapter(for: .blink).engine == .webkit)
-        #expect(registry.adapter(for: .gecko).engine == .webkit)
+        #expect(first.engine == .webkit)
+        #expect(second.engine == .webkit)
+        #expect(first !== second)
+        #expect(registry.makeRuntime(for: .blink).engine == .webkit)
+        #expect(registry.makeRuntime(for: .gecko).engine == .webkit)
         #expect(registry.availability(of: .webkit) == .available)
         #expect(registry.availability(of: .blink) != .available)
         #expect(registry.availability(of: .gecko) != .available)
+    }
+
+    @Test("WebKit runtime declares engine-specific capability limits")
+    @MainActor
+    func webKitRuntimeCapabilities() {
+        let runtime = WebKitBrowserEngineRuntime(passkeysAvailable: false)
+
+        #expect(runtime.capabilities.supports(.extensions))
+        #expect(runtime.capabilities.supports(.downloads))
+        #expect(runtime.capabilities[.deviceEmulation].support == .limited)
+        #expect(runtime.capabilities[.processManagement].support == .limited)
+        #expect(runtime.capabilities[.webAuthentication].support == .unavailable)
+        #expect(runtime.capabilities[.webAuthentication].note != nil)
     }
 
     @Test("Loading bar exposes progress and never moves backwards")

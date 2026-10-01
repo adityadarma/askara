@@ -65,10 +65,24 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     }
 
     func showExtensions() {
+        guard services.currentProfile.engineRuntime.capabilities.supports(.extensions) else {
+            showUnavailableFeature(.extensions)
+            return
+        }
         show()
         if let item = tabView.tabViewItems.first(where: { $0.identifier as? String == "extensions" }) {
             tabView.selectTabViewItem(item)
         }
+    }
+
+    private func showUnavailableFeature(_ feature: BrowserEngineFeature) {
+        let runtime = services.currentProfile.engineRuntime
+        let capability = runtime.capabilities[feature]
+        let alert = NSAlert()
+        alert.messageText = String(localized: "This feature isn't available with \(runtime.engine.name)")
+        alert.informativeText = capability.note ?? String(localized: "The selected engine does not support this feature.")
+        alert.addButton(withTitle: String(localized: "OK"))
+        alert.runModal()
     }
 
     // MARK: - Layout
