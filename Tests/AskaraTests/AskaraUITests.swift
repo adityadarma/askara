@@ -1,6 +1,7 @@
 import AppKit
 import JavaScriptCore
 import Testing
+import WebKit
 import AskaraCore
 @testable import Askara
 
@@ -21,6 +22,70 @@ struct AskaraUITests {
         #expect(registry.availability(of: .webkit) == .available)
         #expect(registry.availability(of: .blink) != .available)
         #expect(registry.availability(of: .gecko) != .available)
+    }
+
+    @Test("Registry passes the profile ID and uses an available Blink runtime")
+    @MainActor
+    func browserEngineRegistryUsesAvailableBlink() {
+        var requested: [UUID] = []
+        final class FakeBlink: BrowserEngineRuntime {
+            let engine = BrowserEngine.blink
+            let availability = BrowserEngineAvailability.available
+            let capabilities = BlinkEngineCapabilities.declared
+            func makeContent(frame: NSRect, privateSession: UUID?,
+                             webKitConfiguration: () -> WKWebViewConfiguration) throws -> BrowserEngineContent {
+                throw BrowserEngineRuntimeError.shutDown(engine)
+            }
+            func endPrivateSession(_ id: UUID) {}
+            func clearWebsiteData(completion: @escaping @MainActor () -> Void) { completion() }
+            func shutDown() {}
+        }
+        let registry = BrowserEngineRegistry(factories: [
+            .webkit: { _ in WebKitBrowserEngineRuntime() },
+            .blink: { id in requested.append(id); return FakeBlink() },
+        ])
+        let profileID = UUID()
+        let first = registry.makeRuntime(for: .blink, profileID: profileID)
+        let second = registry.makeRuntime(for: .blink, profileID: profileID)
+
+        #expect(first.engine == .blink)
+        #expect(first !== second)
+        #expect(requested == [profileID, profileID])
+        #expect(registry.makeRuntime(for: .gecko).engine == .webkit)
+    }
+
+    @Test("Blink declares every feature it does not support yet")
+    func blinkCapabilities() {
+        let capabilities = BlinkEngineCapabilities.declared
+        for feature in BrowserEngineFeature.allCases {
+            #expect(capabilities[feature].note != "Capability is not declared")
+            if capabilities[feature].support != .supported { #expect(capabilities[feature].note != nil) }
+        }
+        #expect(!capabilities.supports(.extensions))
+        #expect(!capabilities.supports(.pictureInPicture))
+        #expect(capabilities[.popupHandling].support == .limited)
+    }
+
+    @Test("WebKit tab content forwards the engine-neutral contract")
+    @MainActor
+    func webKitTabContentContract() {
+        let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 100, height: 100))
+        let content = WebKitTabContent(webView)
+        let tab = Tab(url: nil)
+        tab.content = content
+
+        #expect(content.view === webView)
+        #expect(tab.webView === webView)
+        content.setZoom(1.25)
+        #expect(webView.pageZoom == 1.25)
+        #expect(!content.canGoBack)
+
+        let host = NSView()
+        host.addSubview(content.view)
+        content.close()
+        #expect(webView.superview == nil)
+        tab.content = nil
+        #expect(tab.webView == nil)
     }
 
     @Test("WebKit runtime declares engine-specific capability limits")

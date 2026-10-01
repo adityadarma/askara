@@ -71,8 +71,7 @@ if $CEF; then
     /usr/libexec/PlistBuddy -c "Add :NSPrincipalClass string AskaraCEFApplication" "$APP/Contents/Info.plist"
     FRAMEWORKS="$APP/Contents/Frameworks"
     FRAMEWORK="$FRAMEWORKS/Chromium Embedded Framework.framework"
-    HELPER="$FRAMEWORKS/Askara Helper.app"
-    mkdir -p "$FRAMEWORKS" "$HELPER/Contents/MacOS"
+    mkdir -p "$FRAMEWORKS"
     ditto "Vendor/cef/Release/Chromium Embedded Framework.framework" "$FRAMEWORK"
 
     # Xcode 26 requires CEF's framework to use the conventional versioned layout.
@@ -84,18 +83,30 @@ if $CEF; then
     ln -s "Versions/Current/Libraries" "$FRAMEWORK/Libraries"
     ln -s "Versions/Current/Resources" "$FRAMEWORK/Resources"
 
-    clang++ -std=c++20 -mmacosx-version-min=15.4 -I Vendor/cef \
+    # CEF launches each sub-process type from its own helper bundle, found by name next to the
+    # base helper ("<App> Helper (Renderer).app", ...). A missing variant fails silently: e.g.
+    # without (Renderer) no page ever loads. Mirrors the layout of CEF's cefsimple.
+    HELPER_BIN="$(mktemp -t askara-helper)"
+    clang++ -std=c++20 -mmacosx-version-min=15.4 -DNDEBUG -I Vendor/cef \
         Sources/CEFHelper/main.mm \
         Vendor/cef/build/libcef_dll_wrapper/Release/libcef_dll_wrapper.a \
-        -framework AppKit -o "$HELPER/Contents/MacOS/Askara Helper"
-    cat > "$HELPER/Contents/Info.plist" <<'HELPERPLIST'
+        -framework AppKit -o "$HELPER_BIN"
+    HELPERS=()
+    for variant in "" " (GPU)" " (Renderer)" " (Plugin)" " (Alerts)"; do
+        name="Askara Helper$variant"
+        id_suffix="$(echo "$variant" | tr -d ' ()' | tr '[:upper:]' '[:lower:]')"
+        bundle_id="dev.adityadarma.askara.helper${id_suffix:+.$id_suffix}"
+        dir="$FRAMEWORKS/$name.app"
+        mkdir -p "$dir/Contents/MacOS"
+        cp "$HELPER_BIN" "$dir/Contents/MacOS/$name"
+        cat > "$dir/Contents/Info.plist" <<HELPERPLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-<key>CFBundleName</key><string>Askara Helper</string>
-<key>CFBundleDisplayName</key><string>Askara Helper</string>
-<key>CFBundleIdentifier</key><string>dev.adityadarma.askara.helper</string>
-<key>CFBundleExecutable</key><string>Askara Helper</string>
+<key>CFBundleName</key><string>$name</string>
+<key>CFBundleDisplayName</key><string>$name</string>
+<key>CFBundleIdentifier</key><string>$bundle_id</string>
+<key>CFBundleExecutable</key><string>$name</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleVersion</key><string>1</string>
 <key>LSUIElement</key><true/>
@@ -103,6 +114,9 @@ if $CEF; then
 <key>LSMinimumSystemVersion</key><string>15.4</string>
 </dict></plist>
 HELPERPLIST
+        HELPERS+=("$dir")
+    done
+    rm -f "$HELPER_BIN"
 fi
 
 # Passkeys need the com.apple.developer.web-browser.public-key-credential entitlement.
@@ -124,7 +138,9 @@ if [[ -n "${ASKARA_SIGN_IDENTITY:-}" && -n "${ASKARA_PROFILE:-}" ]]; then
 </plist>
 ENTPLIST
     if $CEF; then
-        codesign --force --options runtime --sign "$ASKARA_SIGN_IDENTITY" "$HELPER"
+        for helper in "${HELPERS[@]}"; do
+            codesign --force --options runtime --sign "$ASKARA_SIGN_IDENTITY" "$helper"
+        done
         codesign --force --options runtime --sign "$ASKARA_SIGN_IDENTITY" "$FRAMEWORK"
     fi
     codesign --force --options runtime --entitlements "$ENT" --sign "$ASKARA_SIGN_IDENTITY" "$APP"
@@ -132,7 +148,9 @@ ENTPLIST
     echo "Signed with passkey entitlement."
 else
     if $CEF; then
-        codesign --force --sign - "$HELPER"
+        for helper in "${HELPERS[@]}"; do
+            codesign --force --sign - "$helper"
+        done
         codesign --force --sign - "$FRAMEWORK"
     fi
     codesign --force --sign - "$APP"

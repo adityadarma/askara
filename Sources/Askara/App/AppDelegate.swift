@@ -10,6 +10,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         CEFHost.start()
+        // The smoke test uses its own throwaway storage: never open or touch the user's profiles.
+        guard !CEFHost.isSmokeTest else { return }
         NSApp.mainMenu = MainMenu.make(delegate: self)
         services.compileBlockList()
         // Retry removing website data of deleted profiles that was still in use last time.
@@ -23,16 +25,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        !services.isRestartingProfile
+        // The smoke test closes windows between phases and quits by itself.
+        !services.isRestartingProfile && !CEFHost.isSmokeTest
     }
 
     /// Save session cookies before quitting (cookie reads are asynchronous).
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        services.saveAll()
-        if ProcessInfo.processInfo.environment["ASKARA_CEF_SMOKE_FILE"] != nil {
+        if CEFHost.isSmokeTest {
             CEFHost.stop()
             return .terminateNow
         }
+        services.saveAll()
         var replied = false
         let finish = {
             guard !replied else { return }
@@ -48,6 +51,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        guard !CEFHost.isSmokeTest else { return }
         services.saveAll()
         CrashReporter.shared.finishCleanly()
     }

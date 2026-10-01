@@ -143,7 +143,7 @@ final class TaskManagerWindowController: NSWindowController, NSWindowDelegate, N
                 var cpuPercent: Double = 0
                 if let pid, cpuCounted.insert(pid).inserted { cpuPercent = cpuTracker.usage(pid: pid) }
                 var status: String
-                if web == nil {
+                if tab.content == nil {
                     status = String(localized: "Sleeping")
                 } else if window.isActive(tab) {
                     status = String(localized: "Active")
@@ -157,11 +157,11 @@ final class TaskManagerWindowController: NSWindowController, NSWindowDelegate, N
                 if let pid, let count = sharing[pid], count > 1 {
                     status += " · " + String(localized: "shares memory with \(count - 1) tabs")
                 }
-                var detail = AddressParser.displayString(for: web?.url ?? tab.url)
+                var detail = AddressParser.displayString(for: tab.content?.url ?? tab.url)
                 if window.isPrivate { detail = String(localized: "Private") + " · " + detail }
                 else if showProfile { detail = window.profile.profile.name + " · " + detail }
                 result.append(Row(tab: tab, window: window, title: tab.title, detail: detail, status: status,
-                                  bytes: bytes, cpuPercent: cpuPercent, isSleeping: web == nil, isActive: window.isActive(tab)))
+                                  bytes: bytes, cpuPercent: cpuPercent, isSleeping: tab.content == nil, isActive: window.isActive(tab)))
             }
         }
         cpuTracker.prune(keeping: Set(result.compactMap { $0.tab.webView?.askaraProcessID }))

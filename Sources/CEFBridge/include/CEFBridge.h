@@ -9,12 +9,50 @@ NS_ASSUME_NONNULL_BEGIN
 
 @interface AskaraCEFRequestContext : NSObject
 @property(nonatomic, readonly, copy) NSString *cachePath;
+/// Deletes all cookies and the HTTP cache of this context. The block runs on the main thread.
+- (void)clearCookiesAndCache:(dispatch_block_t)completion;
 - (void)invalidate;
+@end
+
+/// Native windowed CEF browser content. Callbacks execute on AppKit's main thread.
+@interface AskaraCEFBrowserView : NSView
+@property(nonatomic, readonly, nullable) NSURL *URL;
+@property(nonatomic, readonly, copy) NSString *pageTitle;
+@property(nonatomic, readonly, getter=isLoading) BOOL loading;
+@property(nonatomic, readonly) double estimatedProgress;
+@property(nonatomic, readonly) BOOL canGoBack;
+@property(nonatomic, readonly) BOOL canGoForward;
+@property(nonatomic, copy, nullable) dispatch_block_t onStateChanged;
+@property(nonatomic, copy, nullable) dispatch_block_t onBrowserCreated;
+@property(nonatomic, copy, nullable) dispatch_block_t onLoadCompleted;
+@property(nonatomic, copy, nullable) void (^onLoadFailed)(NSString *message);
+@property(nonatomic, copy, nullable) dispatch_block_t onClosed;
+/// target=_blank / window.open. The popup itself is cancelled; the host opens the URL in a tab.
+@property(nonatomic, copy, nullable) void (^onOpenURLInNewTab)(NSURL *URL);
+
+- (instancetype)initWithFrame:(NSRect)frame
+                requestContext:(AskaraCEFRequestContext *)requestContext NS_DESIGNATED_INITIALIZER;
+- (instancetype)initWithFrame:(NSRect)frameRect NS_UNAVAILABLE;
+- (nullable instancetype)initWithCoder:(NSCoder *)coder NS_UNAVAILABLE;
+- (void)loadURL:(NSURL *)URL;
+- (void)goBack;
+- (void)goForward;
+- (void)reload;
+- (void)stopLoading;
+/// 1 = 100%. Applied once the browser exists if called earlier.
+- (void)setZoomFactor:(double)factor;
+- (void)setAudioMuted:(BOOL)muted;
+/// Closes the browser. Safe before creation finished; onClosed fires exactly once either way.
+- (void)close;
 @end
 
 @interface AskaraCEFBridge : NSObject
 
 @property(class, nonatomic, readonly, getter=isInitialized) BOOL initialized;
+/// True after CefBrowserProcessHandler::OnContextInitialized.
+@property(class, nonatomic, readonly, getter=isReady) BOOL ready;
+/// Browsers being created or not yet fully closed. Zero once every tab released its browser.
+@property(class, nonatomic, readonly) NSInteger liveBrowserCount;
 /// Creates the required CefAppProtocol-conforming singleton before any NSApplication.shared access.
 @property(class, nonatomic, readonly) NSApplication *application;
 

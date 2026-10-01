@@ -36,7 +36,7 @@ final class ProfileData {
         self.id = id
         self.services = suppliedServices ?? .shared
         let configuredEngine = self.services.profileList.profile(id)?.browserEngine ?? .webkit
-        engineRuntime = self.services.engineRegistry.makeRuntime(for: configuredEngine)
+        engineRuntime = self.services.engineRegistry.makeRuntime(for: configuredEngine, profileID: id)
         browserEngine = engineRuntime.engine
         let folder = Profile.folder(for: id)
         // The first profile keeps WebKit's default store, so logins from before profiles existed stay.
@@ -102,7 +102,9 @@ final class ProfileData {
         if let extensionManager { return extensionManager }
         let manager = ExtensionManager(profile: self)
         extensionManager = manager
-        manager.start()
+        // Engines without WebKit extension support get an empty, idle manager: menus and
+        // settings still work, but no extension or background page is ever loaded.
+        if engineRuntime.capabilities.supports(.extensions) { manager.start() }
         return manager
     }
 
@@ -151,9 +153,16 @@ final class ProfileData {
         saveHistory()
         sessionCookies.delete()
         FaviconStore.shared.removeAll()
-        dataStore.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast) {
-            MainActor.assumeIsolated { completion() }
+        // WebKit data and the engine's own data (e.g. Blink cookies/cache) are cleared together.
+        var remaining = 2
+        let done: @MainActor () -> Void = {
+            remaining -= 1
+            if remaining == 0 { completion() }
         }
+        dataStore.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast) {
+            MainActor.assumeIsolated { done() }
+        }
+        engineRuntime.clearWebsiteData(completion: done)
     }
 
     private func historyChanged() {

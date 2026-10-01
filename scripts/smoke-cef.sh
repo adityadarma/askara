@@ -1,5 +1,6 @@
 #!/bin/zsh
-# Builds the CEF bundle, proves initialization/request-context creation, then quits cleanly.
+# Builds the CEF bundle, loads a page in a native Blink browser on an isolated profile request
+# context, closes the browser, then verifies a clean shutdown.
 set -euo pipefail
 cd "${0:A:h}/.."
 
@@ -12,20 +13,26 @@ log="$work/stderr.log"
 pid=""
 cleanup() {
     if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then kill -KILL "$pid" 2>/dev/null || true; fi
-    rm -rf "$work"
+    # Helpers of a failed run may still write into the cache; stop them before deleting it.
+    pkill -KILL -f "$work" 2>/dev/null || true
+    sleep 0.2
+    rm -rf "$work" 2>/dev/null || true
 }
 trap cleanup EXIT
 
 ASKARA_CEF_SMOKE_FILE="$marker" "build/Askara.app/Contents/MacOS/Askara" > "$log" 2>&1 &
 pid=$!
-for _ in {1..100}; do
-    [[ -f "$marker" ]] && break
+# The marker records each phase (context, attaching, state ..., navigated). Wait for the final
+# phase rather than the first write, or for the app to exit, up to 30 seconds.
+for _ in {1..300}; do
+    [[ -f "$marker" && "$(<"$marker")" == "navigated" ]] && break
     kill -0 "$pid" 2>/dev/null || break
     sleep 0.1
 done
 
-if [[ ! -f "$marker" ]] || [[ "$(<"$marker")" != "initialized" ]]; then
-    print -u2 "CEF did not initialize."
+if [[ ! -f "$marker" ]] || [[ "$(<"$marker")" != "navigated" ]]; then
+    print -u2 "CEF did not initialize and navigate a Blink browser."
+    [[ ! -f "$marker" ]] || print -u2 "Last phase: $(<"$marker")"
     [[ ! -s "$log" ]] || command cat "$log" >&2
     exit 1
 fi
@@ -46,4 +53,4 @@ if (( exit_code != 0 )); then
     [[ ! -s "$log" ]] || command cat "$log" >&2
     exit 1
 fi
-print "CEF initialization, profile request context, message loop, and shutdown passed."
+print "Blink profile tabs (normal and private window), navigation, browser release, and shutdown passed."

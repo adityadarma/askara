@@ -46,10 +46,17 @@ the existing `Askara` and `AskaraCore` modules.
 WebKit is the built-in runtime. Each loaded profile owns one `BrowserEngineRuntime` and its
 `BrowserEngineCapabilities`. Feature UI checks capabilities before exposing engine-owned behavior.
 
-Blink will be installed in the next engine phase as a bundled Chromium Embedded Framework (CEF)
-runtime under `Engines/Blink`. That phase includes the CEF framework, helper app processes, profile
-request contexts, application startup/shutdown, code signing, and packaging. Blink must remain
-unavailable until those artifacts are present; falling back to WebKit must never be labelled Blink.
+Blink runs through a bundled Chromium Embedded Framework (CEF) runtime. It is selectable only in
+CEF builds where `CefInitialize` succeeded; otherwise the registry falls back to WebKit and the
+profile reports `.webkit`, never Blink.
+
+Tabs hold an engine-neutral `TabContent` (`nil` = asleep). `WebKitTabContent` wraps the existing
+`WKWebView`, and WebKit-only features (extensions, PiP, find, print, Device Mode, snapshots,
+process metrics) still reach it through `Tab.webView`, which is `nil` for other engines.
+`BlinkTabContent` wraps a native CEF child view. A Blink profile owns one persistent request context
+under `Engines/Blink/Profiles/<id>`; each private window gets its own in-memory context that is
+dropped when the window closes. What Blink does not support yet is declared in
+`BlinkEngineCapabilities` and hidden or disabled in the UI.
 
 CEF uses Chromium's renderer and network stack, but it is not Google Chrome. Compatibility is not
 guaranteed for Chrome Extension APIs, Google account services, Chrome Sync, Widevine/DRM, native
@@ -67,13 +74,13 @@ scripts/smoke-cef.sh
 ```
 
 The vendor binary is stored under ignored `Vendor/cef/`. `scripts/bundle.sh --cef` enables the
-`CEFBridge` SwiftPM target and bundles the versioned framework plus the mandatory macOS helper app.
+`CEFBridge` SwiftPM target and bundles the versioned framework plus the macOS helper apps. CEF
+launches each sub-process type from its own helper bundle (`Askara Helper (Renderer).app`, GPU,
+Plugin, Alerts); a missing variant fails silently, e.g. pages never load without the renderer one.
 The default `swift build` and `swift test` remain independent of the large vendor binary.
 
-The current milestone proves framework loading, `CefInitialize`, AppKit message-loop integration,
-one persistent `CefRequestContext` per profile path, helper packaging, signing, and orderly shutdown.
-Blink remains unavailable in profile UI until `BrowserWindowController` no longer assumes every tab
-owns a `WKWebView` and a native CEF child view can satisfy the shared tab-content contract.
+`scripts/smoke-cef.sh` runs the real tab stack on throwaway storage: a Blink profile, a normal and a
+private window, navigation, release of every browser when windows close, and orderly shutdown.
 
 Implementation order:
 
