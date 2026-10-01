@@ -24,6 +24,9 @@ final class Tab: NSObject {
     var title: String
     var zoom: Double = 1
     var lastActive = Date()
+    /// Shown at least once. Background tabs (⌘+click) start false so Memory Saver evicts them
+    /// before tabs the user actually switched between.
+    var wasViewed = false
     var interactionState: Any?
     /// Device Mode (Develop menu): emulated screen size and user agent. nil = off.
     var device: DevicePreset?
@@ -36,6 +39,11 @@ final class Tab: NSObject {
     var isMuted = false
     /// RAM freed the last time this tab was put to sleep (Memory Saver). 0 = unknown.
     var freedBytes: UInt64 = 0
+    /// Dozing: still loaded, but media is suspended and the back/forward cache freed. Undone on activation.
+    var isDozing = false
+    /// JPEG of the page taken as it went to sleep, shown while it reloads so the tab doesn't open blank.
+    /// Kept compressed (~100-300 KB) instead of as a bitmap (several MB).
+    var sleepSnapshot: Data?
     /// HTTPS-Only Mode: the original http:// URL while its https:// upgrade is loading.
     var httpFallbackURL: URL?
     /// Frames on this page with unsubmitted form input (reported by FormGuard).
@@ -49,6 +57,7 @@ final class Tab: NSObject {
     var webView: WKWebView? {
         didSet {
             if webView == nil {
+                isDozing = false
                 observations.removeAll()
                 dirtyFrames.removeAll()
                 pictureInPictureFrames.removeAll()
@@ -197,6 +206,9 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     private let contentView = NSView()
     private let toast = ToastView()
     private let loadingBar = LoadingBar()
+    /// Last view of a tab woken from sleep, covering the page until it has reloaded.
+    private let sleepSnapshotView = SnapshotOverlayView()
+    private var sleepSnapshotTimeout: DispatchWorkItem?
 
     private var activeTab: Tab? { tabs.indices.contains(activeIndex) ? tabs[activeIndex] : nil }
     /// Loaded web view of the active tab (screenshot).
@@ -356,6 +368,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         configureProfileButton()
         pinnedExtensionStack.orientation = .horizontal
         pinnedExtensionStack.spacing = 2
+        // Fixed height so rebuilding pinned buttons (badge updates during loads) can't shift the toolbar.
+        pinnedExtensionStack.heightAnchor.constraint(equalToConstant: 28).isActive = true
         let separator = NSBox()
         separator.boxType = .separator
         separator.translatesAutoresizingMaskIntoConstraints = false
@@ -367,6 +381,9 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         toolbarStack.orientation = .horizontal
         toolbarStack.spacing = 6
         toolbarStack.edgeInsets = NSEdgeInsets(top: 5, left: 10, bottom: 6, right: 10)
+        // Pin row height (30pt address bar + 5/6 insets); otherwise only low-priority hugging holds it
+        // and the web view below can make it jitter while pages load.
+        toolbarStack.heightAnchor.constraint(equalToConstant: 41).isActive = true
 
         // Find-in-page bar (⌘F), hidden by default.
         findField.placeholderString = String(localized: "Find in page")
@@ -798,13 +815,19 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         return AddressParser.displayString(for: tab.displayURL)
     }
 
-    /// `activate: false` opens the tab in the background, asleep (using no RAM).
-    func newTab(url: URL?, activate: Bool = true) {
+    /// `activate: false` opens the tab in the background. By default it stays asleep (using no RAM);
+    /// `loadInBackground: true` starts loading the page right away (⌘+click), like Chrome.
+    func newTab(url: URL?, activate: Bool = true, loadInBackground: Bool = false) {
         if activate || tabs.isEmpty {
             insertTab(url: url, at: tabs.count, activate: true)
         } else {
-            insertTab(url: url, at: activeIndex + 1, activate: false)
-            showToast(String(localized: "Opened in background tab (sleeping until clicked)"), duration: 2)
+            let tab = insertTab(url: url, at: activeIndex + 1, activate: false)
+            if loadInBackground {
+                wake(tab)
+                refreshTabStrip()
+            } else {
+                showToast(String(localized: "Opened in background tab (sleeping until clicked)"), duration: 2)
+            }
         }
     }
 
@@ -860,6 +883,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         tab.url = url
         tab.displayURL = url
         tab.interactionState = nil
+        tab.sleepSnapshot = nil // shows a different page now
         tab.webView?.load(URLRequest(url: url))
     }
 
@@ -875,6 +899,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         // The typed address stays visible until the final page (after redirects) is done.
         tab.displayURL = url
         tab.interactionState = nil
+        hideSleepSnapshot(animated: false)
         let web = tab.webView ?? wake(tab, loadURL: false)
         web.load(URLRequest(url: url))
         window?.makeFirstResponder(web)
@@ -950,16 +975,23 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         let previous = activeTab
         previous?.lastActive = Date()
         previous?.webView?.removeFromSuperview()
+        hideSleepSnapshot(animated: false)
 
         activeIndex = index
         let tab = tabs[index]
         tab.lastActive = Date()
+        tab.wasViewed = true
+        let wasAsleep = tab.webView == nil
         let webView = tab.webView ?? wake(tab)
+        rouse(tab)
         if previous !== tab { extensionController?.didActivateTab(tab, previousActiveTab: previous) }
         refreshExtensionButtons()
 
         contentView.addSubview(webView)
         layoutWebView(of: tab)
+        // The snapshot is only useful while the page reloads; once the tab is in use it's stale.
+        if wasAsleep, let snapshot = tab.sleepSnapshot { showSleepSnapshot(snapshot) }
+        tab.sleepSnapshot = nil
         // Fill the address bar before focusing: while editing, updateToolbar won't overwrite it,
         // so the previous tab's URL could linger.
         addressField.abortEditing()
@@ -1128,7 +1160,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
             return TabSnapshot(id: tab.id, lastActive: tab.lastActive, isLoaded: tab.webView != nil,
                                isActive: index == activeIndex, memoryBytes: bytes,
                                isPlayingAudio: audible, hasUnsavedInput: tab.hasUnsavedInput,
-                               keepAwake: keepsAwake(tab))
+                               keepAwake: keepsAwake(tab), wasViewed: tab.wasViewed)
         }
     }
 
@@ -1151,6 +1183,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
             Log.notice("Askara: tab slept (\(reason), idle \(Int(Date().timeIntervalSince(tab.lastActive)))s, "
                        + "\(ProcessMemory.format(tab.freedBytes))): \(tab.webView?.url?.host ?? tab.url?.host ?? "?")")
             services.recordFreed(tab.freedBytes)
+            // Dozing tabs already took one; otherwise grab it now (WebKit finishes it after the drop).
+            if tab.sleepSnapshot == nil { captureSleepSnapshot(of: tab) }
             dropWebView(of: tab)
             changed = true
         }
@@ -1163,6 +1197,88 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         hibernate(tabIDs: Set(tabs.filter { !$0.isPinned }.map(\.id)), force: true)
         let slept = before - tabs.filter { $0.webView != nil }.count
         showToast(slept > 0 ? String(localized: "\(slept) tabs put to sleep") : String(localized: "No active background tabs"), duration: 2)
+    }
+
+    /// Light first step before sleep: the page stays loaded (no reload, JavaScript state kept), but
+    /// media is suspended and cached back/forward pages are freed. A snapshot is taken now, while the
+    /// page is intact, for when the tab sleeps fully later.
+    func doze(tabIDs: Set<UUID>) {
+        for (index, tab) in tabs.enumerated()
+        where index != activeIndex && tabIDs.contains(tab.id) && !tab.isDozing {
+            guard let web = tab.webView else { continue }
+            tab.isDozing = true
+            web.setAllMediaPlaybackSuspended(true)
+            web.askaraClearBackForwardCache()
+            captureSleepSnapshot(of: tab)
+            Log.notice("Askara: tab dozing (idle \(Int(Date().timeIntervalSince(tab.lastActive)))s): "
+                       + "\(web.url?.host ?? "?")")
+        }
+    }
+
+    /// Undoes `doze` when the tab is shown again.
+    private func rouse(_ tab: Tab) {
+        guard tab.isDozing, let web = tab.webView else { return }
+        tab.isDozing = false
+        web.setAllMediaPlaybackSuspended(false)
+    }
+
+    /// Stores a compressed snapshot of the tab's current view. Skipped in Device Mode, where the page
+    /// isn't laid out like the window.
+    private func captureSleepSnapshot(of tab: Tab) {
+        guard let web = tab.webView, tab.device == nil, web.bounds.width > 0, web.bounds.height > 0 else { return }
+        let config = WKSnapshotConfiguration()
+        config.afterScreenUpdates = false
+        web.takeSnapshot(with: config) { [weak tab] image, _ in
+            MainActor.assumeIsolated {
+                // Shown again in the meantime: the snapshot would already be stale.
+                guard let tab, tab.isDozing || tab.webView == nil,
+                      let tiff = image?.tiffRepresentation,
+                      let jpeg = NSBitmapImageRep(data: tiff)?
+                        .representation(using: .jpeg, properties: [.compressionFactor: 0.5]) else { return }
+                tab.sleepSnapshot = jpeg
+            }
+        }
+    }
+
+    private func showSleepSnapshot(_ data: Data) {
+        guard let image = NSImage(data: data) else { return }
+        sleepSnapshotView.image = image
+        sleepSnapshotView.alphaValue = 1
+        sleepSnapshotView.frame = contentView.bounds
+        sleepSnapshotView.autoresizingMask = [.width, .height]
+        contentView.addSubview(sleepSnapshotView, positioned: .above, relativeTo: nil)
+        // Never cover the page for long if loading stalls.
+        sleepSnapshotTimeout?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.hideSleepSnapshot(animated: true) }
+        sleepSnapshotTimeout = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8, execute: work)
+    }
+
+    private func hideSleepSnapshot(animated: Bool) {
+        sleepSnapshotTimeout?.cancel()
+        sleepSnapshotTimeout = nil
+        guard sleepSnapshotView.superview != nil else { return }
+        guard animated else {
+            sleepSnapshotView.removeFromSuperview()
+            sleepSnapshotView.image = nil
+            return
+        }
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = 0.15
+            sleepSnapshotView.animator().alphaValue = 0
+        }, completionHandler: { [weak self] in
+            MainActor.assumeIsolated {
+                // A newer snapshot may have been shown during the fade.
+                guard let self, self.sleepSnapshotView.alphaValue == 0 else { return }
+                self.sleepSnapshotView.removeFromSuperview()
+                self.sleepSnapshotView.image = nil
+            }
+        })
+    }
+
+    /// The active tab's page has rendered (or failed): reveal it.
+    private func pageSettled(_ webView: WKWebView) {
+        if webView === activeTab?.webView { hideSleepSnapshot(animated: true) }
     }
 
     private func dropWebView(of tab: Tab) {
@@ -1942,9 +2058,9 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         let scheme = url.scheme?.lowercased() ?? ""
         let isUserClick = action.navigationType == .linkActivated
 
-        // ⌘+click: open in a background tab (asleep until opened).
+        // ⌘+click: open in a background tab that starts loading immediately.
         if isUserClick, action.modifierFlags.contains(.command), ["http", "https"].contains(scheme) {
-            newTab(url: url, activate: false)
+            newTab(url: url, activate: false, loadInBackground: true)
             return .cancel
         }
 
@@ -1999,6 +2115,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         // Again once loaded: at commit time the document can still be too empty to take the CSS.
         applySiteCSS(to: webView)
+        pageSettled(webView)
         if let tab = tabs.first(where: { $0.webView === webView }), tab.refocusAddressAfterLoad {
             // After the page's own autofocus scripts have run.
             DispatchQueue.main.async { [weak self, weak tab] in
@@ -2037,11 +2154,13 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        pageSettled(webView)
         showLoadError(error, in: webView)
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!,
                  withError error: Error) {
+        pageSettled(webView)
         if let tab = tabs.first(where: { $0.webView === webView }), let insecure = tab.httpFallbackURL {
             tab.httpFallbackURL = nil
             let nsError = error as NSError

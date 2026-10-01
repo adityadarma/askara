@@ -33,6 +33,36 @@ import Testing
         let policy = prefs.hibernationPolicy(memoryBudget: nil)
         #expect(policy.idleTimeout == .infinity)
         #expect(policy.maxLoadedTabs == 20)
+        #expect(policy.dozeAfter == 60)
+        prefs.dozeAfterMinutes = 0
+        #expect(prefs.hibernationPolicy(memoryBudget: nil).dozeAfter == .infinity)
+        prefs.dozeAfterMinutes = 5
+        #expect(prefs.hibernationPolicy(memoryBudget: nil).dozeAfter == 300)
+    }
+
+    @Test func memoryLimitAndProtectedTabsSettings() throws {
+        let gb: UInt64 = 1_073_741_824
+        let old = try JSONDecoder().decode(BrowserPreferences.self, from: Data("{}".utf8))
+        #expect(old.memoryBudgetPercent == 25)
+        #expect(old.protectedTabs == 2)
+        var prefs = old
+        #expect(prefs.hibernationPolicy(physicalMemory: 8 * gb).memoryBudget == 8 * gb / 100 * 25)
+        #expect(prefs.hibernationPolicy(physicalMemory: 8 * gb).maxGracedTabs == 2)
+        prefs.memoryBudgetPercent = 0
+        #expect(prefs.hibernationPolicy(physicalMemory: 8 * gb).memoryBudget == nil)
+        prefs.memoryBudgetPercent = 12
+        // Never below 512 MB on small Macs.
+        #expect(prefs.hibernationPolicy(physicalMemory: 2 * gb).memoryBudget == 512 * 1_048_576)
+        prefs.protectedTabs = 99
+        #expect(prefs.hibernationPolicy(physicalMemory: 8 * gb).maxGracedTabs == 10)
+    }
+
+    @Test func dozeSettingDefaultsForOldFiles() throws {
+        let prefs = try JSONDecoder().decode(BrowserPreferences.self, from: Data(#"{"sleepAfterMinutes":15}"#.utf8))
+        #expect(prefs.dozeAfterMinutes == 1)
+        let saved = try JSONDecoder().decode(BrowserPreferences.self,
+                                             from: JSONEncoder().encode({ var p = prefs; p.dozeAfterMinutes = 0; return p }()))
+        #expect(saved.dozeAfterMinutes == 0)
     }
 
     @Test func keepAwakeSites() {

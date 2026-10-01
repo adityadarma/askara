@@ -19,8 +19,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     private let syncStatus = NSTextField(wrappingLabelWithString: "")
     // Memory Saver
     private let sleepPopup = NSPopUpButton()
+    private let dozePopup = NSPopUpButton()
     private let maxTabsStepper = NSStepper()
     private let maxTabsLabel = NSTextField(labelWithString: "")
+    private let memoryBudgetPopup = NSPopUpButton()
+    private let protectedStepper = NSStepper()
+    private let protectedLabel = NSTextField(labelWithString: "")
     private let awakeTable = NSTableView()
     private let awakeField = NSTextField()
     // Privacy
@@ -180,6 +184,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         sleepPopup.action = #selector(sleepChanged(_:))
         sleepPopup.setAccessibilityLabel(String(localized: "Put background tabs to sleep"))
 
+        for minutes in BrowserPreferences.dozeChoices {
+            dozePopup.addItem(withTitle: minutes == 0 ? String(localized: "Off")
+                                                      : String(localized: "After \(minutes) min"))
+            dozePopup.lastItem?.tag = minutes
+        }
+        dozePopup.target = self
+        dozePopup.action = #selector(dozeChanged(_:))
+        dozePopup.setAccessibilityLabel(String(localized: "Pause background tabs"))
+
         maxTabsStepper.minValue = Double(BrowserPreferences.maxLoadedTabRange.lowerBound)
         maxTabsStepper.maxValue = Double(BrowserPreferences.maxLoadedTabRange.upperBound)
         maxTabsStepper.increment = 1
@@ -189,9 +202,37 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         let tabsRow = NSStackView(views: [maxTabsLabel, maxTabsStepper])
         tabsRow.spacing = 6
 
+        let ramGB = Double(ProcessInfo.processInfo.physicalMemory) / 1_073_741_824
+        for percent in BrowserPreferences.memoryBudgetChoices {
+            let title: String
+            if percent == 0 {
+                title = String(localized: "No limit")
+            } else {
+                let budget = Double(HibernationPolicy.memoryBudget(percent: percent) ?? 0) / 1_073_741_824
+                title = String(localized: "\(percent)% of RAM (\(String(format: "%.1f", budget)) of \(String(format: "%.0f", ramGB)) GB)")
+            }
+            memoryBudgetPopup.addItem(withTitle: title)
+            memoryBudgetPopup.lastItem?.tag = percent
+        }
+        memoryBudgetPopup.target = self
+        memoryBudgetPopup.action = #selector(memoryBudgetChanged(_:))
+        memoryBudgetPopup.setAccessibilityLabel(String(localized: "Memory limit for tabs"))
+
+        protectedStepper.minValue = Double(BrowserPreferences.protectedTabRange.lowerBound)
+        protectedStepper.maxValue = Double(BrowserPreferences.protectedTabRange.upperBound)
+        protectedStepper.increment = 1
+        protectedStepper.target = self
+        protectedStepper.action = #selector(protectedTabsChanged(_:))
+        protectedStepper.setAccessibilityLabel(String(localized: "Recently used tabs kept awake"))
+        let protectedRow = NSStackView(views: [protectedLabel, protectedStepper])
+        protectedRow.spacing = 6
+
         let grid = NSGridView(views: [
+            [label(String(localized: "Pause background tabs:")), dozePopup],
             [label(String(localized: "Put background tabs to sleep:")), sleepPopup],
             [label(String(localized: "Maximum awake tabs:")), tabsRow],
+            [label(String(localized: "Memory limit for tabs:")), memoryBudgetPopup],
+            [label(String(localized: "Recently used tabs kept awake:")), protectedRow],
         ])
         grid.rowSpacing = 10
         grid.column(at: 0).xPlacement = .trailing
@@ -217,7 +258,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
 
         return stack([
             grid,
-            note(String(localized: "Sleeping tabs use no RAM and reload when you open them. Tabs with unsent form input, playing audio, or pinned tabs don't sleep. When macOS runs low on memory, background tabs sleep regardless of these settings.")),
+            note(String(localized: "Paused tabs stay loaded (no reload) but their media stops and caches are freed. Sleeping tabs use no RAM and reload when you open them, showing their last view meanwhile. Tabs with unsent form input, playing audio, or pinned tabs don't sleep. When macOS runs low on memory, background tabs sleep regardless of these settings.")),
             scroll, row,
         ])
     }
@@ -376,8 +417,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         if homeField.currentEditor() == nil { homeField.stringValue = prefs.homePage }
         homeField.placeholderString = prefs.searchEngine.homeURL.absoluteString
         if !sleepPopup.selectItem(withTag: prefs.sleepAfterMinutes) { sleepPopup.selectItem(withTag: 5) }
+        if !dozePopup.selectItem(withTag: prefs.dozeAfterMinutes) { dozePopup.selectItem(withTag: 1) }
         maxTabsStepper.integerValue = prefs.maxLoadedTabs
         maxTabsLabel.stringValue = "\(prefs.maxLoadedTabs)"
+        if !memoryBudgetPopup.selectItem(withTag: prefs.memoryBudgetPercent) { memoryBudgetPopup.selectItem(withTag: 25) }
+        protectedStepper.integerValue = prefs.protectedTabs
+        protectedLabel.stringValue = "\(prefs.protectedTabs)"
         httpsOnlyBox.state = prefs.httpsOnly ? .on : .off
         let permissions = services.currentProfile.permissions
         permissionRows = permissions.hosts.flatMap { host in
@@ -413,6 +458,22 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     @objc private func sleepChanged(_ sender: NSPopUpButton) {
         let minutes = sender.selectedTag()
         services.updatePreferences { $0.sleepAfterMinutes = minutes }
+    }
+
+    @objc private func dozeChanged(_ sender: NSPopUpButton) {
+        let minutes = sender.selectedTag()
+        services.updatePreferences { $0.dozeAfterMinutes = minutes }
+    }
+
+    @objc private func memoryBudgetChanged(_ sender: NSPopUpButton) {
+        let percent = sender.selectedTag()
+        services.updatePreferences { $0.memoryBudgetPercent = percent }
+    }
+
+    @objc private func protectedTabsChanged(_ sender: NSStepper) {
+        let count = sender.integerValue
+        protectedLabel.stringValue = "\(count)"
+        services.updatePreferences { $0.protectedTabs = count }
     }
 
     @objc private func maxTabsChanged(_ sender: NSStepper) {

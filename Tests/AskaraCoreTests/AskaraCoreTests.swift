@@ -142,6 +142,28 @@ import Testing
         #expect(Set(slept) == [t3.id, t4.id])
     }
 
+    @Test func unviewedBackgroundTabsDontStealGraceAndGoFirst() {
+        // Switching 3 → 5 → 4 → 3 while ⌘+clicked tabs load must not reload tab 3.
+        let policy = HibernationPolicy(idleTimeout: 3_600, maxLoadedTabs: 2,
+                                       memoryBudget: 500 * 1_048_576, recentGrace: 300)
+        func unviewed(_ age: TimeInterval) -> TabSnapshot {
+            TabSnapshot(id: UUID(), lastActive: now.addingTimeInterval(-age), isLoaded: true,
+                        isActive: false, memoryBytes: 300 * 1_048_576, wasViewed: false)
+        }
+        let active = memTab(0, mb: 100, active: true)
+        let five = memTab(20, mb: 100), three = memTab(40, mb: 100)
+        let new1 = unviewed(2), new2 = unviewed(3)
+        let slept = Set(policy.tabsToHibernate([active, three, five, new1, new2], now: now))
+        #expect(slept == [new1.id, new2.id])
+    }
+
+    @Test func protectedTabCountIsConfigurable() {
+        let policy = HibernationPolicy(idleTimeout: 3_600, maxLoadedTabs: 2, recentGrace: 300, maxGracedTabs: 4)
+        let t1 = tab(10), t2 = tab(20), t3 = tab(30), t4 = tab(40), t5 = tab(50)
+        let slept = policy.tabsToHibernate([tab(0, active: true), t1, t2, t3, t4, t5], now: now)
+        #expect(slept == [t5.id])
+    }
+
     @Test func warningPressureIgnoresGraceButNotLimits() {
         let policy = HibernationPolicy(idleTimeout: 3_600, maxLoadedTabs: 2, recentGrace: 300)
         let a = tab(10), b = tab(20)
@@ -170,6 +192,21 @@ import Testing
         let active = tab(0, active: true)
         #expect(policy.tabsToHibernate([active, form], now: now).isEmpty)
         #expect(policy.tabsToHibernate([active, form], now: now, underMemoryPressure: true).isEmpty)
+    }
+
+    @Test func dozesIdleBackgroundTabsOnly() {
+        let policy = HibernationPolicy(idleTimeout: 3_600, maxLoadedTabs: 10, dozeAfter: 60)
+        let idle = tab(120), recent = tab(30), asleep = tab(999, loaded: false)
+        let active = tab(999, active: true)
+        let music = TabSnapshot(id: UUID(), lastActive: now.addingTimeInterval(-999), isLoaded: true,
+                                isActive: false, isPlayingAudio: true)
+        let pinned = TabSnapshot(id: UUID(), lastActive: now.addingTimeInterval(-999), isLoaded: true,
+                                 isActive: false, keepAwake: true)
+        // Unsaved form input is fine: dozing keeps the page, so nothing is lost.
+        let form = TabSnapshot(id: UUID(), lastActive: now.addingTimeInterval(-999), isLoaded: true,
+                               isActive: false, hasUnsavedInput: true)
+        #expect(policy.tabsToDoze([active, idle, recent, asleep, music, pinned, form], now: now)
+                == [idle.id, form.id])
     }
 
     @Test func defaultBudgetIsClamped() {

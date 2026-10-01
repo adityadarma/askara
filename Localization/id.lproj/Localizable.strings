@@ -297,7 +297,9 @@
 "Site Permissions" = "Izin Situs";
 "Site to keep awake" = "Situs yang tetap aktif";
 "Sites that never sleep" = "Situs yang tidak pernah tidur";
-"Sleeping tabs use no RAM and reload when you open them. Tabs with unsent form input, playing audio, or pinned tabs don't sleep. When macOS runs low on memory, background tabs sleep regardless of these settings." = "Tab yang tidur tidak memakai RAM dan dimuat ulang saat dibuka. Tab dengan isian form yang belum dikirim, yang memutar audio, atau yang disematkan tidak ditidurkan. Saat memori macOS menipis, tab latar belakang tetap ditidurkan apa pun pengaturannya.";
+"Pause background tabs" = "Jeda tab latar belakang";
+"Pause background tabs:" = "Jeda tab latar belakang:";
+"Paused tabs stay loaded (no reload) but their media stops and caches are freed. Sleeping tabs use no RAM and reload when you open them, showing their last view meanwhile. Tabs with unsent form input, playing audio, or pinned tabs don't sleep. When macOS runs low on memory, background tabs sleep regardless of these settings." = "Tab yang dijeda tetap termuat (tanpa reload), tetapi medianya berhenti dan cache dibebaskan. Tab yang tidur tidak memakai RAM dan dimuat ulang saat dibuka, sambil menampilkan tampilan terakhirnya. Tab dengan isian form yang belum dikirim, yang memutar audio, atau yang disematkan tidak ditidurkan. Saat memori macOS menipis, tab latar belakang tetap ditidurkan apa pun pengaturannya.";
 "Sleeping: freed about %@" = "Tidur: sekitar %@ dibebaskan";
 "The site redirected its secure page back to HTTP." = "Situs mengalihkan halaman amannya kembali ke HTTP.";
 "Unmute Tab" = "Bunyikan Tab";
@@ -476,3 +478,9 @@
 "Unpin from Toolbar" = "Lepas dari Toolbar";
 "Extension Settings…" = "Pengaturan Ekstensi…";
 "Manage Extensions" = "Kelola Ekstensi";
+"No limit" = "Tanpa batas";
+"%lld%% of RAM (%@ of %@ GB)" = "%lld%% RAM (%@ dari %@ GB)";
+"Memory limit for tabs" = "Batas memori tab";
+"Memory limit for tabs:" = "Batas memori tab:";
+"Recently used tabs kept awake" = "Tab terakhir dipakai yang tetap aktif";
+"Recently used tabs kept awake:" = "Tab terakhir dipakai yang tetap aktif:";

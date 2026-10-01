@@ -270,10 +270,8 @@ final class BrowserServices {
 
     // MARK: - Hibernation (global, across windows)
 
-    /// Sleep timeout and tab count come from Settings; total tab memory ≤ 1/8 RAM (512 MB–1.5 GB).
-    var hibernationPolicy: HibernationPolicy {
-        preferences.hibernationPolicy(memoryBudget: HibernationPolicy.defaultMemoryBudget())
-    }
+    /// Sleep timeout, tab count, memory limit (share of RAM), and protected tabs all come from Settings.
+    var hibernationPolicy: HibernationPolicy { preferences.hibernationPolicy() }
     /// RAM freed by putting tabs to sleep since launch (Memory Saver, shown in the View menu).
     private(set) var freedBytes: UInt64 = 0
     func recordFreed(_ bytes: UInt64) { freedBytes += bytes }
@@ -297,7 +295,13 @@ final class BrowserServices {
     func enforceHibernation(pressure: MemoryPressure = .normal) {
         var seen = Set<pid_t>()
         let snapshots = windows.flatMap { $0.hibernationSnapshots(seenProcesses: &seen) }
-        let decisions = hibernationPolicy.decisions(snapshots, pressure: pressure)
+        let policy = hibernationPolicy
+        let decisions = policy.decisions(snapshots, pressure: pressure)
+        // Step 1 for tabs that aren't sleeping yet: doze (page kept, media suspended, caches freed).
+        let sleeping = Set(decisions.map(\.id))
+        let dozing = Set(policy.tabsToDoze(snapshots)).subtracting(sleeping)
+        if !dozing.isEmpty { windows.forEach { $0.doze(tabIDs: dozing) } }
+        // Step 2: sleep fully (idle timeout, tab/memory limits, memory pressure).
         guard !decisions.isEmpty else { return }
         let reasons = Dictionary(decisions.map { ($0.id, $0.reason) }, uniquingKeysWith: { a, _ in a })
         windows.forEach { $0.hibernate(tabIDs: Set(reasons.keys), reasons: reasons) }

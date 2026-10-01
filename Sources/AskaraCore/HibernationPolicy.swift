@@ -14,10 +14,14 @@ public struct TabSnapshot: Equatable {
     public let hasUnsavedInput: Bool
     /// Pinned tab or a Memory Saver exception site: never put to sleep.
     public let keepAwake: Bool
+    /// The user has looked at this tab. Tabs opened in the background (⌘+click) and never shown
+    /// have a fresh `lastActive` but nothing the user would miss, so they don't get the grace period
+    /// and are the first to go when over a limit.
+    public let wasViewed: Bool
 
     public init(id: UUID, lastActive: Date, isLoaded: Bool, isActive: Bool,
                 memoryBytes: UInt64 = 0, isPlayingAudio: Bool = false, hasUnsavedInput: Bool = false,
-                keepAwake: Bool = false) {
+                keepAwake: Bool = false, wasViewed: Bool = true) {
         self.id = id
         self.lastActive = lastActive
         self.isLoaded = isLoaded
@@ -26,6 +30,7 @@ public struct TabSnapshot: Equatable {
         self.isPlayingAudio = isPlayingAudio
         self.hasUnsavedInput = hasUnsavedInput
         self.keepAwake = keepAwake
+        self.wasViewed = wasViewed
     }
 }
 
@@ -51,15 +56,30 @@ public struct HibernationPolicy: Equatable {
     /// Tabs used within this time are spared by the tab-count and memory limits, so switching
     /// away from a tab and straight back doesn't reload it. Ignored when macOS reports memory pressure.
     public var recentGrace: TimeInterval
-    /// At most this many background tabs are spared by `recentGrace`.
-    public static let maxGracedTabs = 2
+    /// At most this many background tabs are spared by `recentGrace` (Settings: protected tabs).
+    public var maxGracedTabs: Int
+    /// Background tabs idle longer than this doze: the page stays loaded (no reload, JavaScript state
+    /// kept) but its media is suspended and cached back/forward pages are freed. A lighter first
+    /// step before sleeping fully.
+    public var dozeAfter: TimeInterval
 
     public init(idleTimeout: TimeInterval = 5 * 60, maxLoadedTabs: Int = 3, memoryBudget: UInt64? = nil,
-                recentGrace: TimeInterval = 0) {
+                recentGrace: TimeInterval = 0, dozeAfter: TimeInterval = 60, maxGracedTabs: Int = 2) {
         self.idleTimeout = idleTimeout
+        self.maxGracedTabs = max(0, maxGracedTabs)
         self.maxLoadedTabs = max(1, maxLoadedTabs)
         self.memoryBudget = memoryBudget
         self.recentGrace = max(0, recentGrace)
+        self.dozeAfter = max(0, dozeAfter)
+    }
+
+    /// Loaded background tabs that should doze. Tabs playing audio or on a call keep running, and
+    /// keep-awake tabs (pinned, exception sites) are left alone so e.g. chat notification sounds still play.
+    public func tabsToDoze(_ tabs: [TabSnapshot], now: Date = Date()) -> [UUID] {
+        tabs.filter {
+            $0.isLoaded && !$0.isActive && !$0.isPlayingAudio && !$0.keepAwake
+                && now.timeIntervalSince($0.lastActive) >= dozeAfter
+        }.map(\.id)
     }
 
     /// 1/8 of physical RAM, clamped to 512 MB – 1.5 GB.
@@ -68,6 +88,14 @@ public struct HibernationPolicy: Equatable {
     ) -> UInt64 {
         let mb: UInt64 = 1_048_576
         return min(max(physicalMemory / 8, 512 * mb), 1_536 * mb)
+    }
+
+    /// `percent` of physical RAM for all loaded tabs (Settings), at least 512 MB. 0 = no limit.
+    public static func memoryBudget(percent: Int,
+                                    physicalMemory: UInt64 = ProcessInfo.processInfo.physicalMemory) -> UInt64? {
+        guard percent > 0 else { return nil }
+        let mb: UInt64 = 1_048_576
+        return max(physicalMemory / 100 * UInt64(min(percent, 100)), 512 * mb)
     }
 
     public func tabsToHibernate(_ tabs: [TabSnapshot],
@@ -99,10 +127,12 @@ public struct HibernationPolicy: Equatable {
 
         // Only the few most recently used background tabs get the grace period. Without this cap,
         // opening many tabs in a row kept all of them awake and ignored the limits.
+        // Background tabs never viewed don't take a slot, or ⌘+clicking a few links would push
+        // the tab the user just left out of the grace period.
         let graced = Set(background
-            .filter { now.timeIntervalSince($0.lastActive) < recentGrace }
+            .filter { $0.wasViewed && now.timeIntervalSince($0.lastActive) < recentGrace }
             .sorted { $0.lastActive > $1.lastActive }
-            .prefix(Self.maxGracedTabs)
+            .prefix(maxGracedTabs)
             .map(\.id))
         func evictable(_ tab: TabSnapshot) -> Bool {
             pressure == .warning || !graced.contains(tab.id)
@@ -112,9 +142,10 @@ public struct HibernationPolicy: Equatable {
         // There can be more than one active tab with multiple windows.
         // Tabs that always stay awake still count toward the limit.
         let activeLoaded = tabs.filter { $0.isLoaded && ($0.isActive || $0.keepAwake) }.count
+        // Eviction order: never-viewed tabs first, then least recently used.
         let survivors = background
             .filter { reasons[$0.id] == nil }
-            .sorted { $0.lastActive < $1.lastActive }
+            .sorted { ($0.wasViewed ? 1 : 0, $0.lastActive) < ($1.wasViewed ? 1 : 0, $1.lastActive) }
         let excess = survivors.count + activeLoaded - maxLoadedTabs
         if excess > 0 {
             survivors.filter(evictable).prefix(excess).forEach { reasons[$0.id] = .tabLimit }

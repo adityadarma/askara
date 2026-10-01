@@ -83,6 +83,14 @@ extension WKWebView {
         cameraCaptureState != .none || microphoneCaptureState != .none
     }
 
+    /// Frees pages kept in memory for instant back/forward (private `_clearBackForwardCache`, checked
+    /// first). History itself is kept; going back just loads the page again.
+    func askaraClearBackForwardCache() {
+        let selector = Selector(("_clearBackForwardCache"))
+        guard responds(to: selector) else { return }
+        perform(selector)
+    }
+
     /// Mutes page audio via the private `_setPageMuted:` (the same call Safari uses). Returns false
     /// when unavailable. Only audio is muted; camera/microphone capture is unaffected.
     @discardableResult
