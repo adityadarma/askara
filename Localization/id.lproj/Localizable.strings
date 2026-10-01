@@ -34,6 +34,8 @@
 "Bookmark name" = "Nama bookmark";
 "Bookmark removed" = "Bookmark dihapus";
 "Bookmarks" = "Bookmark";
+"Browser engine" = "Engine browser";
+"Browser engine:" = "Engine browser:";
 "Bring All to Front" = "Bawa Semua ke Depan";
 "Caches emptied" = "Cache dikosongkan";
 "Cancel" = "Batal";
@@ -314,6 +316,11 @@
 "Profiles" = "Profil";
 "Profile in use" = "Profil yang sedang dipakai";
 "Open a window for this profile" = "Buka jendela untuk profil ini";
+"A profile has its own engine, logins, history, bookmarks, site permissions, and extensions. Other settings are shared." = "Setiap profil memiliki engine, login, riwayat, bookmark, izin situs, dan ekstensi sendiri. Pengaturan lainnya dipakai bersama.";
+"Restart this profile to use %@?" = "Mulai ulang profil ini untuk memakai %@?";
+"This profile's normal windows will reopen with the new engine. Private windows and unsaved page state will be closed. Other profiles stay open." = "Jendela normal profil ini akan dibuka kembali dengan engine baru. Jendela privat dan state halaman yang belum tersimpan akan ditutup. Profil lain tetap terbuka.";
+"Restart Profile" = "Mulai Ulang Profil";
+"Later" = "Nanti";
 "Add Profile…" = "Tambah Profil…";
 "Edit “%@”…" = "Edit “%@”…";
 "Delete “%@”…" = "Hapus “%@”…";

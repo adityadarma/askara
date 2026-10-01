@@ -8,6 +8,9 @@ import AskaraCore
 @MainActor
 final class ProfileData {
     let id: UUID
+    /// Fixed for this process. Profile engine changes are applied on the next launch.
+    let browserEngine: BrowserEngine
+    let engineAdapter: any BrowserEngineAdapter
     let dataStore: WKWebsiteDataStore
     let sessionCookies: SessionCookies
 
@@ -32,6 +35,9 @@ final class ProfileData {
          dataStore suppliedDataStore: WKWebsiteDataStore? = nil, storageDirectory: URL? = nil) {
         self.id = id
         self.services = suppliedServices ?? .shared
+        let configuredEngine = self.services.profileList.profile(id)?.browserEngine ?? .webkit
+        engineAdapter = self.services.engineRegistry.adapter(for: configuredEngine)
+        browserEngine = engineAdapter.engine
         let folder = Profile.folder(for: id)
         // The first profile keeps WebKit's default store, so logins from before profiles existed stay.
         dataStore = suppliedDataStore ?? (id == Profile.defaultID ? .default() : WKWebsiteDataStore(forIdentifier: id))
@@ -73,13 +79,17 @@ final class ProfileData {
     /// Restores every normal window. Background tabs remain asleep, so this does not cause a load storm.
     func restoreSession() -> Bool {
         guard let session = sessionFile.load(), !session.isEmpty else { return false }
+        restore(session: session)
+        return true
+    }
+
+    func restore(session: SessionState) {
         for (index, saved) in session.windows.enumerated() {
             // Keep one global loaded-tab slot for the active tab of each window still to restore.
             let remainingActiveTabs = session.windows.count - index - 1
             services.makeWindow(profile: self, restoring: true)
                 .restore(saved, reservedLoadedSlots: remainingActiveTabs)
         }
-        return true
     }
 
     // MARK: - Extensions

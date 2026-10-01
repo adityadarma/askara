@@ -1,42 +1,5 @@
 import Foundation
 
-/// A search engine for the address bar and "Search with…" in the context menu.
-public struct SearchEngine: Equatable, Sendable, Identifiable {
-    public let id: String
-    public let name: String
-    /// `%@` is replaced by the encoded query.
-    public let searchTemplate: String
-    public let homeURL: URL
-
-    public init(id: String, name: String, searchTemplate: String, homeURL: URL) {
-        self.id = id
-        self.name = name
-        self.searchTemplate = searchTemplate
-        self.homeURL = homeURL
-    }
-
-    public static let all: [SearchEngine] = [
-        SearchEngine(id: "google", name: "Google", searchTemplate: AddressParser.defaultSearchTemplate,
-                     homeURL: AddressParser.defaultHomeURL),
-        SearchEngine(id: "duckduckgo", name: "DuckDuckGo", searchTemplate: "https://duckduckgo.com/?q=%@",
-                     homeURL: URL(string: "https://duckduckgo.com")!),
-        SearchEngine(id: "bing", name: "Bing", searchTemplate: "https://www.bing.com/search?q=%@",
-                     homeURL: URL(string: "https://www.bing.com")!),
-        SearchEngine(id: "brave", name: "Brave Search", searchTemplate: "https://search.brave.com/search?q=%@",
-                     homeURL: URL(string: "https://search.brave.com")!),
-        SearchEngine(id: "ecosia", name: "Ecosia", searchTemplate: "https://www.ecosia.org/search?q=%@",
-                     homeURL: URL(string: "https://www.ecosia.org")!),
-        SearchEngine(id: "startpage", name: "Startpage", searchTemplate: "https://www.startpage.com/do/search?q=%@",
-                     homeURL: URL(string: "https://www.startpage.com")!),
-    ]
-
-    public static func engine(id: String) -> SearchEngine { all.first { $0.id == id } ?? all[0] }
-
-    public func searchURL(for query: String) -> URL? {
-        AddressParser.searchURL(for: query, template: searchTemplate)
-    }
-}
-
 /// User settings (Settings window, ⌘,). Missing keys in the saved file fall back to defaults,
 /// so adding a setting never resets the others.
 public struct BrowserPreferences: Codable, Equatable, Sendable {
@@ -153,27 +116,5 @@ public struct BrowserPreferences: Codable, Equatable, Sendable {
         guard let host, !host.isEmpty else { return nil }
         let key = SiteSettings.key(for: host)
         return key.isEmpty ? nil : key
-    }
-}
-
-/// Upgrades plain HTTP to HTTPS for public sites (HTTPS-Only Mode).
-public enum HTTPSUpgrade {
-    /// The https:// version of a public http:// URL, or nil when it shouldn't be upgraded.
-    public static func upgradedURL(for url: URL) -> URL? {
-        guard url.scheme?.lowercased() == "http", let host = url.host, isPublicHost(host),
-              var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
-        components.scheme = "https"
-        if components.port == 80 { components.port = nil }
-        return components.url
-    }
-
-    /// Local names and IP addresses usually have no certificate (routers, dev servers), so they're left alone.
-    public static func isPublicHost(_ rawHost: String) -> Bool {
-        var host = rawHost.lowercased()
-        if host.hasSuffix(".") { host.removeLast() }
-        guard host.contains("."), !host.contains(":") else { return false } // single label or IPv6
-        if host.split(separator: ".").allSatisfy({ $0.allSatisfy(\.isNumber) }) { return false } // IPv4
-        let localSuffixes = [".local", ".localhost", ".internal", ".lan", ".home.arpa", ".test", ".invalid"]
-        return !localSuffixes.contains { host.hasSuffix($0) }
     }
 }

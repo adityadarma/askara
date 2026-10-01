@@ -39,8 +39,11 @@ final class BrowserServices {
     /// Settings window (⌘,). Shared by all profiles.
     private(set) var preferences: BrowserPreferences
     private(set) var profileList: ProfileList
+    let engineRegistry = BrowserEngineRegistry()
     /// Profiles opened since launch.
     private var profileData: [UUID: ProfileData] = [:]
+    private var restartingProfileIDs: Set<UUID> = []
+    var isRestartingProfile: Bool { !restartingProfileIDs.isEmpty }
 
     init(storageDirectory: URL? = nil,
          dataStoreFactory: ((UUID) -> WKWebsiteDataStore)? = nil) {
@@ -121,21 +124,63 @@ final class BrowserServices {
     /// Profile of the window in use, or the last used profile when no window is open.
     var currentProfile: ProfileData { keyBrowserWindow?.profile ?? data(for: profileList.lastUsedID) }
 
+    /// Engine held by this profile's currently loaded runtime, or nil if it has not loaded this launch.
+    func loadedEngine(for id: UUID) -> BrowserEngine? { profileData[id]?.browserEngine }
+
     /// A normal window of this profile became active: it opens at next launch.
     func profileUsed(_ profile: ProfileData) {
         guard profileList.markUsed(profile.id) else { return }
         saveProfiles()
     }
 
-    func addProfile(name: String) -> Profile? {
-        guard let profile = profileList.add(name: name) else { return nil }
+    func addProfile(name: String, browserEngine: BrowserEngine = .webkit) -> Profile? {
+        guard let profile = profileList.add(name: name, browserEngine: browserEngine) else { return nil }
         saveProfiles()
         return profile
     }
 
-    func updateProfile(_ id: UUID, name: String, colorIndex: Int) {
-        guard profileList.update(id, name: name, colorIndex: colorIndex) else { return }
+    func updateProfile(_ id: UUID, name: String, colorIndex: Int,
+                       browserEngine: BrowserEngine? = nil) {
+        guard profileList.update(id, name: name, colorIndex: colorIndex,
+                                 browserEngine: browserEngine) else { return }
         saveProfiles()
+    }
+
+    /// Recreates one profile's runtime after its engine changes. Other profiles keep running.
+    /// Normal windows are restored from portable tab metadata; private windows are intentionally closed.
+    func restartProfile(_ id: UUID, completion: (@MainActor () -> Void)? = nil) {
+        guard !restartingProfileIDs.contains(id), let oldData = profileData[id] else {
+            openProfile(id)
+            completion?()
+            return
+        }
+
+        let normalWindows = oldData.windows.filter { !$0.isPrivate }.sorted { $0.lastFocused > $1.lastFocused }
+        let session = SessionState(windows: normalWindows.map { $0.savedState() }).portableForEngineChange
+        oldData.saveAll()
+        oldData.saveSession(session)
+        oldData.unloadExtensions()
+        restartingProfileIDs.insert(id)
+
+        // Closing a window normally updates the session. During a runtime restart the snapshot above
+        // is authoritative, so windowWillClose only removes each controller from the window list.
+        oldData.windows.forEach { $0.close() }
+        profileData[id] = nil
+
+        // Give AppKit and the old engine views one run-loop turn to release their runtime objects.
+        DispatchQueue.main.async {
+            let newData = self.data(for: id)
+            newData.prepare {
+                if session.isEmpty {
+                    self.makeWindow(profile: newData).newTab(url: self.homeURL)
+                } else {
+                    newData.restore(session: session)
+                }
+                self.restartingProfileIDs.remove(id)
+                NSApp.activate()
+                completion?()
+            }
+        }
     }
 
     /// Closes the profile's windows and deletes all its data: website data, history, bookmarks, session.
@@ -221,7 +266,7 @@ final class BrowserServices {
 
     func windowWillClose(_ controller: BrowserWindowController) {
         let profile = controller.profile
-        if !controller.isPrivate {
+        if !controller.isPrivate, !restartingProfileIDs.contains(profile.id) {
             let remainingNormal = profile.windows.filter { $0 !== controller && !$0.isPrivate }
             if remainingNormal.isEmpty {
                 // Last normal window of this profile: save it so it is restored when the profile reopens.

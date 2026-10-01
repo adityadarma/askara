@@ -7,11 +7,28 @@ public struct Profile: Codable, Equatable, Identifiable, Sendable {
     public var name: String
     /// Index into the app's avatar color palette.
     public var colorIndex: Int
+    /// Rendering runtime used by this profile. Changing it takes effect after an app restart.
+    public var browserEngineID: String
 
-    public init(id: UUID = UUID(), name: String, colorIndex: Int) {
+    public init(id: UUID = UUID(), name: String, colorIndex: Int,
+                browserEngineID: String = BrowserEngine.webkit.id) {
         self.id = id
         self.name = name
         self.colorIndex = colorIndex
+        self.browserEngineID = browserEngineID
+    }
+
+    public var browserEngine: BrowserEngine { BrowserEngine.engine(id: browserEngineID) }
+
+    private enum CodingKeys: String, CodingKey { case id, name, colorIndex, browserEngineID }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        colorIndex = try c.decode(Int.self, forKey: .colorIndex)
+        browserEngineID = try c.decodeIfPresent(String.self, forKey: .browserEngineID)
+            ?? BrowserEngine.webkit.id
     }
 
     /// The first profile owns the data from before profiles existed: files in the root of the app
@@ -83,20 +100,22 @@ public struct ProfileList: Codable, Equatable {
 
     /// Adds a profile with the first color not used yet, so profiles are easy to tell apart.
     @discardableResult
-    public mutating func add(name: String) -> Profile? {
+    public mutating func add(name: String, browserEngine: BrowserEngine = .webkit) -> Profile? {
         guard let name = Self.cleanName(name) else { return nil }
         let used = Set(profiles.map(\.colorIndex))
         let color = (0..<Self.colorCount).first { !used.contains($0) } ?? profiles.count % Self.colorCount
-        let profile = Profile(name: name, colorIndex: color)
+        let profile = Profile(name: name, colorIndex: color, browserEngineID: browserEngine.id)
         profiles.append(profile)
         return profile
     }
 
     @discardableResult
-    public mutating func update(_ id: UUID, name: String, colorIndex: Int) -> Bool {
+    public mutating func update(_ id: UUID, name: String, colorIndex: Int,
+                                browserEngine: BrowserEngine? = nil) -> Bool {
         guard let index = profiles.firstIndex(where: { $0.id == id }), let name = Self.cleanName(name) else { return false }
         profiles[index].name = name
         profiles[index].colorIndex = min(max(0, colorIndex), Self.colorCount - 1)
+        if let browserEngine { profiles[index].browserEngineID = browserEngine.id }
         return true
     }
 

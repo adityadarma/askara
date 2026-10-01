@@ -60,74 +60,22 @@ public struct SessionState: Codable, Equatable {
 
     public var isEmpty: Bool { windows.isEmpty }
 
+    /// State safe to pass to a different rendering engine. Opaque interaction state belongs to the
+    /// engine that produced it, while URL, title, pin, mute, geometry, and active-tab state are portable.
+    public var portableForEngineChange: SessionState {
+        SessionState(windows: windows.map { window in
+            SavedWindow(tabs: window.tabs.map { tab in
+                SavedTab(url: tab.url, title: tab.title, isPinned: tab.isPinned == true,
+                         isMuted: tab.isMuted == true)
+            }, activeIndex: window.activeIndex, frame: window.frame,
+                        isFullScreen: window.isFullScreen == true)
+        })
+    }
+
     /// The active tab of the most recently used window (saved first). Askara opens only this tab
     /// when a profile opens, so launching doesn't bring back a pile of tabs.
     public var startupTab: SavedTab? {
         guard let window = windows.first else { return nil }
         return window.tabs.indices.contains(window.activeIndex) ? window.tabs[window.activeIndex] : window.tabs.first
-    }
-}
-
-/// Stack of recently closed tabs, for "Reopen Closed Tab" (⌘⇧T).
-public struct RecentlyClosed<Item> {
-    public private(set) var items: [Item] = []
-    public let capacity: Int
-
-    public init(capacity: Int = 20) { self.capacity = max(1, capacity) }
-
-    public mutating func push(_ item: Item) {
-        items.append(item)
-        if items.count > capacity { items.removeFirst(items.count - capacity) }
-    }
-
-    public mutating func pop() -> Item? { items.popLast() }
-
-    public var isEmpty: Bool { items.isEmpty }
-}
-
-/// Page zoom steps, similar to most browsers.
-public enum ZoomLevels {
-    public static let steps: [Double] = [0.5, 0.67, 0.75, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0]
-
-    public static func zoomIn(from current: Double) -> Double {
-        steps.first { $0 > current + 0.001 } ?? steps.last!
-    }
-
-    public static func zoomOut(from current: Double) -> Double {
-        steps.last { $0 < current - 0.001 } ?? steps.first!
-    }
-
-    public static func label(_ zoom: Double) -> String { "\(Int((zoom * 100).rounded()))%" }
-}
-
-/// Safe download file naming that never overwrites existing files.
-public enum DownloadNaming {
-    /// Strips dangerous characters/path separators from the server-suggested name.
-    public static func sanitize(_ suggested: String) -> String {
-        let forbidden = CharacterSet(charactersIn: "/\\:\0").union(.controlCharacters)
-        var name = suggested.components(separatedBy: forbidden).joined(separator: "_")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        // Prevent hidden files and ".." names
-        while name.hasPrefix(".") { name.removeFirst() }
-        if name.isEmpty { name = "download" }
-        // Limit length to stay safe for the file system (255 bytes).
-        while name.utf8.count > 200 { name.removeFirst() }
-        return name
-    }
-
-    /// "a.pdf" becomes "a (1).pdf", "a (2).pdf", etc. if it already exists.
-    public static func uniqueURL(in directory: URL, suggested: String,
-                                 exists: (URL) -> Bool = { FileManager.default.fileExists(atPath: $0.path) }) -> URL {
-        let name = sanitize(suggested)
-        let ext = (name as NSString).pathExtension
-        let base = (name as NSString).deletingPathExtension
-        var candidate = directory.appendingPathComponent(name)
-        var n = 1
-        while exists(candidate) {
-            let numbered = ext.isEmpty ? "\(base) (\(n))" : "\(base) (\(n)).\(ext)"
-            candidate = directory.appendingPathComponent(numbered)
-            n += 1
-        }
-        return candidate
     }
 }

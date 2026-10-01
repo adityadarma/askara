@@ -1016,7 +1016,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     private func wake(_ tab: Tab, loadURL: Bool = true) -> WKWebView {
         let configuration = (isPrivate ? nil : profile.extensions.webViewConfiguration(for: tab.url))
             ?? makeConfiguration()
-        let webView = AskaraWebView(frame: contentView.bounds, configuration: configuration)
+        let webView = makeEngineWebView(frame: contentView.bounds, configuration: configuration)
         attach(webView, to: tab)
         guard loadURL else { return webView }
         if let state = tab.interactionState {
@@ -1136,6 +1136,21 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
                 source: Passkey.detectionScript, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         }
         return config
+    }
+
+    private func makeEngineWebView(frame: NSRect, configuration: WKWebViewConfiguration) -> AskaraWebView {
+        do {
+            let content = try profile.engineAdapter.makeContentView(
+                frame: frame, webKitConfiguration: configuration)
+            switch content {
+            case .webKit(let webView): return webView
+            }
+        } catch {
+            // The registry normally falls back before this point. Keep tabs usable if a runtime
+            // disappears between selection and construction.
+            Log.error("Askara: browser engine failed, falling back to WebKit: \(error)")
+            return AskaraWebView(frame: frame, configuration: configuration)
+        }
     }
 
     func applyRuleList(_ list: WKContentRuleList) {
@@ -2221,7 +2236,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     /// WebKit's `configuration` keeps `window.opener`, so OAuth/payment logins still work.
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
                  for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-        let popup = AskaraWebView(frame: contentView.bounds, configuration: configuration)
+        let popup = makeEngineWebView(frame: contentView.bounds, configuration: configuration)
         insertTab(url: navigationAction.request.url, at: activeIndex + 1, activate: true, webView: popup)
         return popup
     }
@@ -2615,34 +2630,4 @@ extension BrowserWindowController: WKWebExtensionWindow {
         window?.performClose(nil)
         completionHandler(nil)
     }
-}
-
-
-// MARK: - Bookmarks bar
-
-extension BrowserWindowController: BookmarkBarDelegate {
-    var bookmarkBarProfile: ProfileData { profile }
-
-    func bookmarkBar(_ bar: BookmarkBarView, open url: URL, newTab: Bool) {
-        if newTab { self.newTab(url: url) } else { load(url) }
-    }
-
-    func bookmarkBar(_ bar: BookmarkBarView, openAll urls: [URL]) {
-        urls.forEach { newTab(url: $0) }
-    }
-}
-
-/// Window content view. With a full-size content view the tab strip sits under the titlebar, and
-/// the window server moves the window on any drag there before the app sees the events, so tabs
-/// couldn't be dragged. AppKit asks the content view which part of the titlebar area is "opaque"
-/// (not a window-drag area) through this private method, the same one Chromium implements.
-/// Empty space in the strip still moves the window: TabStripView.mouseDown calls performDrag.
-final class BrowserRootView: NSView {
-    weak var tabStrip: TabStripView?
-
-    @objc func _opaqueRectForWindowMoveWhenInTitlebar() -> NSRect {
-        guard let tabStrip, !tabStrip.isHidden else { return .zero }
-        return convert(tabStrip.bounds, from: tabStrip)
-    }
-
 }

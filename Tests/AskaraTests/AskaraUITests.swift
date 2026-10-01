@@ -6,6 +6,19 @@ import AskaraCore
 
 @Suite("AppKit UI components", .serialized)
 struct AskaraUITests {
+    @Test("Engine registry uses WebKit until another runtime is available")
+    @MainActor
+    func browserEngineRegistryFallback() {
+        let registry = BrowserEngineRegistry()
+
+        #expect(registry.adapter(for: .webkit).engine == .webkit)
+        #expect(registry.adapter(for: .blink).engine == .webkit)
+        #expect(registry.adapter(for: .gecko).engine == .webkit)
+        #expect(registry.availability(of: .webkit) == .available)
+        #expect(registry.availability(of: .blink) != .available)
+        #expect(registry.availability(of: .gecko) != .available)
+    }
+
     @Test("Loading bar exposes progress and never moves backwards")
     @MainActor
     func loadingBarProgress() {

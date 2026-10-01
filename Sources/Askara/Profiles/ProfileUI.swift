@@ -55,6 +55,7 @@ enum ProfileMenu {
             item.representedObject = profile.id
             item.image = ProfileColors.avatar(for: profile, size: 18)
             item.state = profile.id == current ? .on : .off
+            item.subtitle = profile.browserEngine.name
             item.toolTip = profile.id == current
                 ? String(localized: "Profile in use")
                 : String(localized: "Open a window for this profile")
@@ -86,20 +87,28 @@ enum ProfileDialogs {
     private static var services: BrowserServices { .shared }
 
     static func add() {
-        guard let (name, color) = ask(title: String(localized: "Add Profile"),
-                                      info: String(localized: "A profile has its own logins, history, bookmarks, site permissions, and extensions. Settings are shared."),
-                                      button: String(localized: "Add"), name: "", colorIndex: nil) else { return }
-        guard let profile = services.addProfile(name: name) else { return }
-        if let color { services.updateProfile(profile.id, name: profile.name, colorIndex: color) }
+        guard let result = ask(title: String(localized: "Add Profile"),
+                               info: String(localized: "A profile has its own engine, logins, history, bookmarks, site permissions, and extensions. Other settings are shared."),
+                               button: String(localized: "Add"), name: "", colorIndex: nil,
+                               browserEngine: .webkit) else { return }
+        guard let profile = services.addProfile(name: result.name, browserEngine: result.engine) else { return }
+        if let color = result.color {
+            services.updateProfile(profile.id, name: profile.name, colorIndex: color)
+        }
         services.openProfile(profile.id)
     }
 
     static func edit(_ id: UUID) {
         guard let profile = services.profileList.profile(id),
-              let (name, color) = ask(title: String(localized: "Edit Profile"), info: nil,
-                                      button: String(localized: "Save"), name: profile.name,
-                                      colorIndex: profile.colorIndex) else { return }
-        services.updateProfile(id, name: name, colorIndex: color ?? profile.colorIndex)
+              let result = ask(title: String(localized: "Edit Profile"), info: nil,
+                               button: String(localized: "Save"), name: profile.name,
+                               colorIndex: profile.colorIndex,
+                               browserEngine: profile.browserEngine) else { return }
+        let loadedEngine = services.loadedEngine(for: id)
+        let runtimeNeedsRestart = loadedEngine != nil && loadedEngine != result.engine
+        services.updateProfile(id, name: result.name, colorIndex: result.color ?? profile.colorIndex,
+                               browserEngine: result.engine)
+        if runtimeNeedsRestart { offerProfileRestart(id, for: result.engine) }
     }
 
     static func delete(_ id: UUID) {
@@ -115,9 +124,15 @@ enum ProfileDialogs {
         services.removeProfile(id)
     }
 
-    /// Name field + color picker. Returns nil when cancelled or the name is empty.
+    private struct ProfileInput {
+        let name: String
+        let color: Int?
+        let engine: BrowserEngine
+    }
+
+    /// Name, color, and engine picker. Returns nil when cancelled or the name is empty.
     private static func ask(title: String, info: String?, button: String, name: String,
-                            colorIndex: Int?) -> (String, Int?)? {
+                            colorIndex: Int?, browserEngine: BrowserEngine) -> ProfileInput? {
         let alert = NSAlert()
         alert.messageText = title
         if let info { alert.informativeText = info }
@@ -136,20 +151,50 @@ enum ProfileDialogs {
             colors.selectItem(at: preview.add(name: "x")?.colorIndex ?? 0)
         }
         colors.setAccessibilityLabel(String(localized: "Profile color"))
+        let engines = NSPopUpButton()
+        for engine in BrowserEngine.allCases {
+            let availability = services.engineRegistry.availability(of: engine)
+            let title: String
+            switch availability {
+            case .available: title = engine.name
+            case .unavailable: title = String(localized: "\(engine.name) - Runtime not installed")
+            }
+            engines.addItem(withTitle: title)
+            engines.lastItem?.representedObject = engine.id
+            engines.lastItem?.isEnabled = availability == .available || engine == browserEngine
+        }
+        let engineIndex = engines.itemArray.firstIndex {
+            $0.representedObject as? String == browserEngine.id
+        } ?? 0
+        engines.selectItem(at: engineIndex)
+        engines.setAccessibilityLabel(String(localized: "Browser engine"))
         let grid = NSGridView(views: [
             [NSTextField(labelWithString: String(localized: "Name:")), field],
             [NSTextField(labelWithString: String(localized: "Color:")), colors],
+            [NSTextField(labelWithString: String(localized: "Browser engine:")), engines],
         ])
         grid.rowSpacing = 8
         grid.column(at: 0).xPlacement = .trailing
-        grid.frame = NSRect(x: 0, y: 0, width: 300, height: 58)
+        grid.frame = NSRect(x: 0, y: 0, width: 380, height: 88)
         field.widthAnchor.constraint(equalToConstant: 230).isActive = true
         alert.accessoryView = grid
         alert.addButton(withTitle: button)
         alert.addButton(withTitle: String(localized: "Cancel"))
         alert.window.initialFirstResponder = field
         guard alert.runModal() == .alertFirstButtonReturn,
-              let clean = ProfileList.cleanName(field.stringValue) else { return nil }
-        return (clean, colors.indexOfSelectedItem)
+              let clean = ProfileList.cleanName(field.stringValue),
+              let engineID = engines.selectedItem?.representedObject as? String else { return nil }
+        return ProfileInput(name: clean, color: colors.indexOfSelectedItem,
+                            engine: BrowserEngine.engine(id: engineID))
+    }
+
+    private static func offerProfileRestart(_ profileID: UUID, for engine: BrowserEngine) {
+        let alert = NSAlert()
+        alert.messageText = String(localized: "Restart this profile to use \(engine.name)?")
+        alert.informativeText = String(localized: "This profile's normal windows will reopen with the new engine. Private windows and unsaved page state will be closed. Other profiles stay open.")
+        alert.addButton(withTitle: String(localized: "Restart Profile"))
+        alert.addButton(withTitle: String(localized: "Later"))
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        services.restartProfile(profileID)
     }
 }

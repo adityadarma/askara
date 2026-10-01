@@ -8,6 +8,23 @@ import Testing
         #expect(list.profiles.count == 1)
         #expect(list.lastUsed.isDefault)
         #expect(list.lastUsed.folder == "")
+        #expect(list.lastUsed.browserEngine == .webkit)
+    }
+
+    @Test func engineBelongsToProfileAndOldFilesDefaultToWebKit() throws {
+        var list = ProfileList(defaultName: "Main")
+        let result = list.add(name: "Chromium", browserEngine: .blink)
+        let added = try #require(result)
+        #expect(added.browserEngine == .blink)
+        let updated = list.update(added.id, name: added.name, colorIndex: added.colorIndex,
+                                  browserEngine: .gecko)
+        #expect(updated)
+        #expect(list.profile(added.id)?.browserEngine == .gecko)
+
+        let id = UUID()
+        let oldJSON = #"{"id":"\#(id.uuidString)","name":"Old","colorIndex":0}"#
+        let old = try JSONDecoder().decode(Profile.self, from: Data(oldJSON.utf8))
+        #expect(old.browserEngine == .webkit)
     }
 
     @Test func initials() {

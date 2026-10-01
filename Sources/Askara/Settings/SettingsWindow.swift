@@ -171,7 +171,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         ])
         grid.rowSpacing = 10
         grid.column(at: 0).xPlacement = .trailing
-        return stack([grid, note(String(localized: "New tabs and windows open the home page. Leave it empty to use the search engine's page."))])
+        return stack([
+            grid,
+            note(String(localized: "New tabs and windows open the home page. Leave it empty to use the search engine's page.")),
+        ])
     }
 
     private func memoryPage() -> NSView {
