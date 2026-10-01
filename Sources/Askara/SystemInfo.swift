@@ -204,24 +204,61 @@ enum PictureInPictureScript {
     (() => {
       const handler = window.webkit && window.webkit.messageHandlers.askaraPiP;
       if (!handler) return;
+      const frame = Math.random().toString(36).slice(2);
       const videos = () => Array.from(document.querySelectorAll('video'));
-      const candidate = () => videos().filter((v) => v.readyState >= 2 && v.videoWidth > 0 && v.videoHeight > 0)
-        .sort((a, b) => ((b.paused ? 0 : 1) - (a.paused ? 0 : 1)) ||
-                        (b.getBoundingClientRect().width * b.getBoundingClientRect().height -
-                         a.getBoundingClientRect().width * a.getBoundingClientRect().height))[0];
-      const report = () => handler.postMessage({
-        eligible: !!candidate(),
-        active: !!document.pictureInPictureElement || videos().some((v) => v.webkitPresentationMode === 'picture-in-picture')
-      });
+      // Pick the playing/largest video in one pass. The old sort read every element's layout
+      // repeatedly, which was expensive on pages with several players.
+      const candidate = (all) => {
+        let best = null, bestPlaying = -1, bestArea = -1;
+        for (const video of all) {
+          if (video.readyState < 2 || video.videoWidth <= 0 || video.videoHeight <= 0) continue;
+          const rect = video.getBoundingClientRect();
+          const playing = video.paused ? 0 : 1;
+          const area = rect.width * rect.height;
+          if (!best || playing > bestPlaying || (playing === bestPlaying && area > bestArea)) {
+            best = video;
+            bestPlaying = playing;
+            bestArea = area;
+          }
+        }
+        return best;
+      };
+
+      let scheduled = false;
+      let pageVisible = true;
+      let lastEligible;
+      let lastActive;
+      const report = (force = false) => {
+        scheduled = false;
+        if (!pageVisible) return;
+        const all = videos();
+        const eligible = !!candidate(all);
+        const active = !!document.pictureInPictureElement ||
+          all.some((video) => video.webkitPresentationMode === 'picture-in-picture');
+        // Crossing the WebKit script-message boundary is not free. Only report state changes.
+        if (!force && eligible === lastEligible && active === lastActive) return;
+        lastEligible = eligible;
+        lastActive = active;
+        handler.postMessage({ frame, eligible, active });
+      };
+      const scheduleReport = () => {
+        if (scheduled || !pageVisible) return;
+        scheduled = true;
+        requestAnimationFrame(() => report(false));
+      };
+
       window.__askaraTogglePiP = async () => {
-        const active = document.pictureInPictureElement || videos().find((v) => v.webkitPresentationMode === 'picture-in-picture');
+        const all = videos();
+        const active = document.pictureInPictureElement ||
+          all.find((video) => video.webkitPresentationMode === 'picture-in-picture');
         if (active) {
-          if (document.pictureInPictureElement && document.exitPictureInPicture) await document.exitPictureInPicture();
+          if (document.pictureInPictureElement && document.exitPictureInPicture)
+            await document.exitPictureInPicture();
           else if (active.webkitSetPresentationMode) active.webkitSetPresentationMode('inline');
           report();
           return true;
         }
-        const video = candidate();
+        const video = candidate(all);
         if (!video) return false;
         if (video.requestPictureInPicture) await video.requestPictureInPicture();
         else if (video.webkitSupportsPresentationMode && video.webkitSupportsPresentationMode('picture-in-picture'))
@@ -230,9 +267,36 @@ enum PictureInPictureScript {
         report();
         return true;
       };
-      for (const event of ['play', 'pause', 'loadedmetadata', 'enterpictureinpicture', 'leavepictureinpicture',
-                           'webkitpresentationmodechanged']) document.addEventListener(event, report, true);
-      new MutationObserver(report).observe(document.documentElement, { childList: true, subtree: true });
+      // High-frequency readiness/play events may wait for the next frame. PiP transitions must be
+      // immediate because background WebViews can suspend requestAnimationFrame indefinitely.
+      for (const event of ['play', 'pause', 'loadedmetadata'])
+        document.addEventListener(event, scheduleReport, true);
+      for (const event of ['enterpictureinpicture', 'leavepictureinpicture', 'webkitpresentationmodechanged'])
+        document.addEventListener(event, () => report(false), true);
+      window.addEventListener('pagehide', () => {
+        pageVisible = false;
+        scheduled = false;
+        lastEligible = undefined;
+        lastActive = undefined;
+        handler.postMessage({ frame, eligible: false, active: false });
+      });
+      window.addEventListener('pageshow', () => {
+        pageVisible = true;
+        lastEligible = undefined;
+        lastActive = undefined;
+        report(true);
+      });
+
+      // Dynamic sites can mutate the DOM hundreds of times per frame. Ignore unrelated mutations
+      // and collapse video-related bursts into one scan per animation frame.
+      const containsVideo = (node) => !!node &&
+        (node.nodeName === 'VIDEO' || (node.querySelector && !!node.querySelector('video')));
+      new MutationObserver((mutations) => {
+        const changed = mutations.some((mutation) => mutation.target?.nodeName === 'VIDEO' ||
+          Array.from(mutation.addedNodes || []).some(containsVideo) ||
+          Array.from(mutation.removedNodes || []).some(containsVideo));
+        if (changed) scheduleReport();
+      }).observe(document.documentElement, { childList: true, subtree: true });
       report();
     })();
     """

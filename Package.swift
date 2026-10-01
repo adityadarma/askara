@@ -11,5 +11,7 @@ let package = Package(
         // AppKit + WKWebView browser app.
         .executableTarget(name: "Askara", dependencies: ["AskaraCore"]),
         .testTarget(name: "AskaraCoreTests", dependencies: ["AskaraCore"]),
+        // AppKit component tests exercise UI behavior without launching against user data.
+        .testTarget(name: "AskaraTests", dependencies: ["Askara"]),
     ]
 )

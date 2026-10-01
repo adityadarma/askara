@@ -32,7 +32,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <dict>
     <key>CFBundleName</key><string>Askara</string>
     <key>CFBundleDisplayName</key><string>Askara</string>
-    <key>CFBundleIdentifier</key><string>local.askara.browser</string>
+    <key>CFBundleIdentifier</key><string>dev.adityadarma.askara</string>
     <key>CFBundleExecutable</key><string>Askara</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundlePackageType</key><string>APPL</string>

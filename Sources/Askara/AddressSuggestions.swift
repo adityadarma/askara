@@ -43,6 +43,7 @@ final class AddressSuggestionsController {
         background.addSubview(list)
         background.setAccessibilityRole(.list)
         background.setAccessibilityLabel(String(localized: "Suggestions"))
+        background.setAccessibilityIdentifier("askara.address.suggestions")
         panel.contentView = background
     }
 
@@ -72,6 +73,7 @@ final class AddressSuggestionsController {
         for (index, row) in rows.enumerated() {
             row.frame = NSRect(x: 0, y: list.bounds.height - CGFloat(index + 1) * Self.rowHeight,
                                width: list.bounds.width, height: Self.rowHeight)
+            row.setAccessibilityIdentifier("askara.address.suggestion.\(index)")
             row.configure(items[index])
             row.isSelected = false
         }

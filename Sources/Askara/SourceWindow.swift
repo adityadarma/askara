@@ -4,8 +4,13 @@ import AppKit
 @MainActor
 enum SourceWindow {
     private static var open: [NSWindow] = []
+    private static var closeObservers: [ObjectIdentifier: NSObjectProtocol] = [:]
 
-    static func show(html: String, url: URL, relativeTo parent: NSWindow?) {
+    static var openWindowCount: Int { open.count }
+    static var closeObserverCount: Int { closeObservers.count }
+
+    @discardableResult
+    static func show(html: String, url: URL, relativeTo parent: NSWindow?) -> NSWindow? {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 700),
                               styleMask: [.titled, .closable, .resizable, .miniaturizable],
                               backing: .buffered, defer: false)
@@ -13,7 +18,7 @@ enum SourceWindow {
         window.isReleasedWhenClosed = false
 
         let scroll = NSTextView.scrollableTextView()
-        guard let text = scroll.documentView as? NSTextView else { return }
+        guard let text = scroll.documentView as? NSTextView else { return nil }
         text.isEditable = false
         text.isRichText = false
         text.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
@@ -30,10 +35,17 @@ enum SourceWindow {
             window.center()
         }
         open.append(window)
-        NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: window,
-                                               queue: .main) { note in
-            MainActor.assumeIsolated { open.removeAll { $0 === note.object as? NSWindow } }
+        let id = ObjectIdentifier(window)
+        let center = NotificationCenter.default
+        let observer = center.addObserver(forName: NSWindow.willCloseNotification, object: window,
+                                          queue: .main) { _ in
+            MainActor.assumeIsolated {
+                open.removeAll { ObjectIdentifier($0) == id }
+                if let observer = closeObservers.removeValue(forKey: id) { center.removeObserver(observer) }
+            }
         }
+        closeObservers[id] = observer
         window.makeKeyAndOrderFront(nil)
+        return window
     }
 }

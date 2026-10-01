@@ -26,19 +26,29 @@ final class ProfileData {
     /// Set when the profile is deleted, so pending saves don't recreate its folder.
     private(set) var isDiscarded = false
 
-    private var services: BrowserServices { .shared }
+    private let services: BrowserServices
 
-    init(id: UUID) {
+    init(id: UUID, services suppliedServices: BrowserServices? = nil,
+         dataStore suppliedDataStore: WKWebsiteDataStore? = nil, storageDirectory: URL? = nil) {
         self.id = id
+        self.services = suppliedServices ?? .shared
         let folder = Profile.folder(for: id)
         // The first profile keeps WebKit's default store, so logins from before profiles existed stay.
-        dataStore = id == Profile.defaultID ? .default() : WKWebsiteDataStore(forIdentifier: id)
-        historyFile = .inAppSupport(folder + "history.json")
-        bookmarksFile = .inAppSupport(folder + "bookmarks.json")
-        sessionFile = .inAppSupport(folder + "session.json")
-        permissionsFile = .inAppSupport(folder + "site-permissions.json")
-        sessionCookies = SessionCookies(store: dataStore.httpCookieStore,
-                                        fileURL: JSONFile<Int>.inAppSupport(folder + "session-cookies.plist").url)
+        dataStore = suppliedDataStore ?? (id == Profile.defaultID ? .default() : WKWebsiteDataStore(forIdentifier: id))
+        if let storageDirectory {
+            historyFile = JSONFile(url: storageDirectory.appendingPathComponent("history.json"))
+            bookmarksFile = JSONFile(url: storageDirectory.appendingPathComponent("bookmarks.json"))
+            sessionFile = JSONFile(url: storageDirectory.appendingPathComponent("session.json"))
+            permissionsFile = JSONFile(url: storageDirectory.appendingPathComponent("site-permissions.json"))
+        } else {
+            historyFile = .inAppSupport(folder + "history.json")
+            bookmarksFile = .inAppSupport(folder + "bookmarks.json")
+            sessionFile = .inAppSupport(folder + "session.json")
+            permissionsFile = .inAppSupport(folder + "site-permissions.json")
+        }
+        let cookieURL = storageDirectory?.appendingPathComponent("session-cookies.plist")
+            ?? JSONFile<Int>.inAppSupport(folder + "session-cookies.plist").url
+        sessionCookies = SessionCookies(store: dataStore.httpCookieStore, fileURL: cookieURL)
         history = historyFile.load() ?? HistoryStore()
         bookmarks = bookmarksFile.load() ?? BookmarkStore()
         permissions = permissionsFile.load() ?? SitePermissions()
@@ -63,8 +73,11 @@ final class ProfileData {
     /// Restores every normal window. Background tabs remain asleep, so this does not cause a load storm.
     func restoreSession() -> Bool {
         guard let session = sessionFile.load(), !session.isEmpty else { return false }
-        for saved in session.windows {
-            services.makeWindow(profile: self, restoring: true).restore(saved)
+        for (index, saved) in session.windows.enumerated() {
+            // Keep one global loaded-tab slot for the active tab of each window still to restore.
+            let remainingActiveTabs = session.windows.count - index - 1
+            services.makeWindow(profile: self, restoring: true)
+                .restore(saved, reservedLoadedSlots: remainingActiveTabs)
         }
         return true
     }
@@ -106,7 +119,7 @@ final class ProfileData {
     }
 
     func updateHistoryTitle(_ title: String, for url: URL) {
-        history.updateTitle(title, for: url)
+        guard history.updateTitle(title, for: url) else { return }
         historyChanged()
     }
 

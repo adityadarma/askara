@@ -1,7 +1,7 @@
 import Foundation
 
 /// Flat view of one bookmarked page, used by search, address suggestions, and the Library list.
-public struct Bookmark: Codable, Equatable, Identifiable {
+public struct Bookmark: Codable, Equatable, Identifiable, Sendable {
     public var id: UUID
     public var url: URL
     public var title: String

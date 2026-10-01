@@ -29,9 +29,11 @@ final class BrowserServices {
     let downloads = DownloadManager()
     lazy var sync = SyncCoordinator(services: self)
 
-    private let siteSettingsFile = JSONFile<SiteSettings>.inAppSupport("site-settings.json")
-    private let preferencesFile = JSONFile<BrowserPreferences>.inAppSupport("preferences.json")
-    private let profilesFile = JSONFile<ProfileList>.inAppSupport("profiles.json")
+    private let siteSettingsFile: JSONFile<SiteSettings>
+    private let preferencesFile: JSONFile<BrowserPreferences>
+    private let profilesFile: JSONFile<ProfileList>
+    private let storageDirectory: URL?
+    private let dataStoreFactory: (UUID) -> WKWebsiteDataStore
     /// Per-site JavaScript blocking and custom CSS/JavaScript. Kept when browsing data is cleared, like Chrome.
     private(set) var siteSettings: SiteSettings
     /// Settings window (⌘,). Shared by all profiles.
@@ -40,7 +42,21 @@ final class BrowserServices {
     /// Profiles opened since launch.
     private var profileData: [UUID: ProfileData] = [:]
 
-    private init() {
+    init(storageDirectory: URL? = nil,
+         dataStoreFactory: ((UUID) -> WKWebsiteDataStore)? = nil) {
+        self.storageDirectory = storageDirectory
+        self.dataStoreFactory = dataStoreFactory ?? { id in
+            id == Profile.defaultID ? .default() : WKWebsiteDataStore(forIdentifier: id)
+        }
+        if let storageDirectory {
+            siteSettingsFile = JSONFile(url: storageDirectory.appendingPathComponent("site-settings.json"))
+            preferencesFile = JSONFile(url: storageDirectory.appendingPathComponent("preferences.json"))
+            profilesFile = JSONFile(url: storageDirectory.appendingPathComponent("profiles.json"))
+        } else {
+            siteSettingsFile = .inAppSupport("site-settings.json")
+            preferencesFile = .inAppSupport("preferences.json")
+            profilesFile = .inAppSupport("profiles.json")
+        }
         siteSettings = siteSettingsFile.load() ?? SiteSettings()
         preferences = preferencesFile.load() ?? BrowserPreferences()
         profileList = profilesFile.load() ?? ProfileList(defaultName: String(localized: "Main"))
@@ -93,7 +109,11 @@ final class BrowserServices {
     /// Loaded data for a profile (created on first use).
     func data(for id: UUID) -> ProfileData {
         if let data = profileData[id] { return data }
-        let data = ProfileData(id: profileList.profile(id) != nil ? id : Profile.defaultID)
+        let resolvedID = profileList.profile(id) != nil ? id : Profile.defaultID
+        let profileDirectory = storageDirectory?.appendingPathComponent(Profile.folder(for: resolvedID),
+                                                                         isDirectory: true)
+        let data = ProfileData(id: resolvedID, services: self, dataStore: dataStoreFactory(resolvedID),
+                               storageDirectory: profileDirectory)
         profileData[data.id] = data
         return data
     }
@@ -127,7 +147,8 @@ final class BrowserServices {
         profileData[id] = nil
         profileList.remove(id)
         saveProfiles()
-        let folder = JSONFile<Int>.inAppSupport(Profile.folder(for: id)).url
+        let folder = storageDirectory?.appendingPathComponent(Profile.folder(for: id), isDirectory: true)
+            ?? JSONFile<Int>.inAppSupport(Profile.folder(for: id)).url
         do { try FileManager.default.removeItem(at: folder) } catch CocoaError.fileNoSuchFile {} catch {
             Log.error("Askara: failed to delete profile folder: \(error)")
         }
@@ -185,7 +206,8 @@ final class BrowserServices {
     @discardableResult
     func makeWindow(profile: ProfileData? = nil, isPrivate: Bool = false,
                     restoring: Bool = false) -> BrowserWindowController {
-        let controller = BrowserWindowController(profile: profile ?? currentProfile, isPrivate: isPrivate)
+        let controller = BrowserWindowController(profile: profile ?? currentProfile, isPrivate: isPrivate,
+                                                 services: self)
         if !restoring, let last = windows.last?.window, let window = controller.window {
             let topLeft = NSPoint(x: last.frame.minX, y: last.frame.maxY)
             window.setFrameTopLeftPoint(window.cascadeTopLeft(from: topLeft))
@@ -292,7 +314,7 @@ final class BrowserServices {
 
     // MARK: - Ad blocker
 
-    let blockListUpdater = BlockListUpdater()
+    lazy var blockListUpdater = BlockListUpdater(storageDirectory: storageDirectory, services: self)
 
     /// Loads the saved blocklist, then updates it automatically once a day.
     func compileBlockList() {

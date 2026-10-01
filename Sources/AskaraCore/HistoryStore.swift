@@ -1,6 +1,6 @@
 import Foundation
 
-public struct HistoryEntry: Codable, Equatable, Identifiable {
+public struct HistoryEntry: Codable, Equatable, Identifiable, Sendable {
     public var id: URL { url }
     public var url: URL
     public var title: String
@@ -44,10 +44,14 @@ public struct HistoryStore: Codable, Equatable {
     }
 
     /// Updates the title without counting a new visit (titles often arrive after the URL).
-    public mutating func updateTitle(_ title: String, for url: URL) {
+    /// Returns false for a missing URL or unchanged title so callers can skip persistence work.
+    @discardableResult
+    public mutating func updateTitle(_ title: String, for url: URL) -> Bool {
         let clean = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !clean.isEmpty, let index = entries.firstIndex(where: { $0.url == url }) else { return }
+        guard !clean.isEmpty, let index = entries.firstIndex(where: { $0.url == url }),
+              entries[index].title != clean else { return false }
         entries[index].title = clean
+        return true
     }
 
     /// Case-insensitive search over title and URL. All words must match.

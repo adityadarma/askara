@@ -20,12 +20,21 @@ final class FaviconStore {
     })();
     """
 
-    private var memory: [String: NSImage] = [:]
-    /// Hosts with no file on disk, so the disk isn't read repeatedly.
+    /// A browser can encounter thousands of hosts in one session. NSCache keeps decoded images
+    /// under a hard cost/count budget and also responds to system memory pressure automatically.
+    private let memory: NSCache<NSString, NSImage> = {
+        let cache = NSCache<NSString, NSImage>()
+        cache.countLimit = 512
+        cache.totalCostLimit = 8 * 1_048_576
+        return cache
+    }()
+    /// Hosts with no file on disk, so the disk isn't read repeatedly. Metadata sets are bounded too.
     private var missingOnDisk: Set<String> = []
     private var inFlight: Set<String> = []
     /// Hosts whose icon was refreshed since the app launched (once per session is enough).
     private var refreshed: Set<String> = []
+    private var generation: UInt = 0
+    private static let metadataLimit = 2_048
     private let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         .appendingPathComponent("Askara/Favicons", isDirectory: true)
 
@@ -39,13 +48,14 @@ final class FaviconStore {
 
     func icon(for url: URL?) -> NSImage? {
         guard let host = Self.host(of: url) else { return nil }
-        if let image = memory[host] { return image }
+        let key = host as NSString
+        if let image = memory.object(forKey: key) { return image }
         guard !missingOnDisk.contains(host) else { return nil }
         if let data = try? Data(contentsOf: file(for: host)), let image = Self.image(fromPNG: data) {
-            memory[host] = image
+            memory.setObject(image, forKey: key, cost: 32 * 32 * 4)
             return image
         }
-        missingOnDisk.insert(host)
+        Self.remember(host, in: &missingOnDisk)
         return nil
     }
 
@@ -53,18 +63,25 @@ final class FaviconStore {
     /// `persist: false` for private windows: the icon is kept in memory only.
     func update(pageURL: URL, candidates: [[String: Any]], persist: Bool,
                 onChange: @escaping @MainActor () -> Void) {
-        guard let host = Self.host(of: pageURL), !inFlight.contains(host), !refreshed.contains(host) else { return }
+        guard let host = Self.host(of: pageURL), !inFlight.contains(host),
+              !persist || !refreshed.contains(host) else { return }
+        // Private icons are not on disk. Keep the in-memory copy, but allow a fresh request after
+        // NSCache evicts it instead of permanently suppressing that host for the whole session.
+        if !persist, memory.object(forKey: host as NSString) != nil { return }
         inFlight.insert(host)
+        let requestGeneration = generation
         var urls = Self.rank(candidates)
         if let fallback = URL(string: "/favicon.ico", relativeTo: pageURL)?.absoluteURL, !urls.contains(fallback) {
             urls.append(fallback)
         }
         Task { @MainActor in
             let png = await Self.download(Array(urls.prefix(4)))
+            // Clearing browsing data invalidates requests that were already in flight.
+            guard requestGeneration == generation else { return }
             inFlight.remove(host)
-            refreshed.insert(host)
+            if persist { Self.remember(host, in: &refreshed) }
             guard let png, let image = Self.image(fromPNG: png) else { return }
-            memory[host] = image
+            memory.setObject(image, forKey: host as NSString, cost: 32 * 32 * 4)
             missingOnDisk.remove(host)
             if persist {
                 try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -75,10 +92,18 @@ final class FaviconStore {
     }
 
     func removeAll() {
-        memory.removeAll()
+        generation &+= 1
+        memory.removeAllObjects()
         refreshed.removeAll()
         missingOnDisk.removeAll()
+        inFlight.removeAll()
         try? FileManager.default.removeItem(at: directory)
+    }
+
+    /// Keep negative/refreshed metadata bounded during very long browsing sessions.
+    private static func remember(_ host: String, in set: inout Set<String>) {
+        if set.count >= Self.metadataLimit, !set.contains(host), let oldest = set.first { set.remove(oldest) }
+        set.insert(host)
     }
 
     // MARK: - Helpers

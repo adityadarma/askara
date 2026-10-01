@@ -20,7 +20,8 @@ public struct AddressSuggestion: Equatable, Sendable {
 /// by how often and how recently a page was visited.
 public enum AddressSuggester {
     public static func suggestions(for rawQuery: String, history: [HistoryEntry], bookmarks: [Bookmark],
-                                   now: Date = Date(), limit: Int = 6) -> [AddressSuggestion] {
+                                   now: Date = Date(), limit: Int = 6,
+                                   isCancelled: () -> Bool = { false }) -> [AddressSuggestion] {
         let query = stripPrefixes(rawQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
         let words = query.split(whereSeparator: \.isWhitespace).map(String.init)
         guard !words.isEmpty, limit > 0 else { return [] }
@@ -28,11 +29,13 @@ public enum AddressSuggester {
         // One candidate per URL; a bookmarked page that is also in history keeps its visit stats.
         struct Candidate { var title: String; var visits: Int; var date: Date; var isBookmark: Bool }
         var candidates: [URL: Candidate] = [:]
-        for entry in history where HistoryStore.isRecordable(entry.url) {
+        for (index, entry) in history.enumerated() where HistoryStore.isRecordable(entry.url) {
+            if index.isMultiple(of: 128), isCancelled() { return [] }
             candidates[entry.url] = Candidate(title: entry.title, visits: entry.visitCount,
                                               date: entry.lastVisited, isBookmark: false)
         }
-        for bookmark in bookmarks {
+        for (index, bookmark) in bookmarks.enumerated() {
+            if index.isMultiple(of: 128), isCancelled() { return [] }
             if var existing = candidates[bookmark.url] {
                 existing.isBookmark = true
                 if existing.title.isEmpty { existing.title = bookmark.title }
@@ -43,22 +46,32 @@ public enum AddressSuggester {
             }
         }
 
-        let scored: [(suggestion: AddressSuggestion, score: Double, date: Date)] = candidates.compactMap { url, c in
-            guard let match = matchScore(words: words, query: query, url: url, title: c.title) else { return nil }
+        typealias Scored = (suggestion: AddressSuggestion, score: Double, date: Date)
+        func ranksBefore(_ lhs: Scored, _ rhs: Scored) -> Bool {
+            if lhs.score != rhs.score { return lhs.score > rhs.score }
+            if lhs.date != rhs.date { return lhs.date > rhs.date }
+            return lhs.suggestion.url.absoluteString < rhs.suggestion.url.absoluteString
+        }
+
+        // The UI requests only six rows. Keep a bounded sorted top-N instead of allocating and
+        // sorting every match (history alone can contain 5,000 entries).
+        var best: [Scored] = []
+        best.reserveCapacity(min(limit, candidates.count))
+        for (index, element) in candidates.enumerated() {
+            if index.isMultiple(of: 128), isCancelled() { return [] }
+            let (url, c) = element
+            guard let match = matchScore(words: words, query: query, url: url, title: c.title) else { continue }
             let days = max(0, now.timeIntervalSince(c.date)) / 86_400
             let recency: Double = days < 1 ? 10 : days < 7 ? 6 : days < 30 ? 3 : 0
             let score = match + log2(Double(c.visits) + 1) * 8 + recency + (c.isBookmark ? 15 : 0)
             let suggestion = AddressSuggestion(kind: c.isBookmark ? .bookmark : .history, url: url, title: c.title)
-            return (suggestion, score, c.date)
+            let scored: Scored = (suggestion, score, c.date)
+            let insertion = best.firstIndex { ranksBefore(scored, $0) } ?? best.endIndex
+            guard insertion < limit else { continue }
+            best.insert(scored, at: insertion)
+            if best.count > limit { best.removeLast() }
         }
-        return scored
-            .sorted {
-                if $0.score != $1.score { return $0.score > $1.score }
-                if $0.date != $1.date { return $0.date > $1.date }
-                return $0.suggestion.url.absoluteString < $1.suggestion.url.absoluteString
-            }
-            .prefix(limit)
-            .map(\.suggestion)
+        return best.map(\.suggestion)
     }
 
     /// nil when the entry doesn't match every typed word.

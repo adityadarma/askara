@@ -85,6 +85,7 @@ final class LoadingBar: NSView {
         setAccessibilityElement(true)
         setAccessibilityRole(.progressIndicator)
         setAccessibilityLabel(String(localized: "Loading page"))
+        setAccessibilityIdentifier("askara.page.loading")
     }
 
     @available(*, unavailable)
@@ -170,6 +171,7 @@ final class TabStripView: NSView, NSDraggingSource {
 
     private var itemViews: [TabItemView] = []
     private var items: [TabStripItem] = []
+    private var activeIndex = -1
     private let newTabButton = NSButton()
     private let privateBadge = NSTextField(labelWithString: String(localized: "Private"))
 
@@ -181,6 +183,7 @@ final class TabStripView: NSView, NSDraggingSource {
         newTabButton.action = #selector(newTabClicked(_:))
         newTabButton.toolTip = String(localized: "New tab (⌘T)")
         newTabButton.setAccessibilityLabel(String(localized: "New tab"))
+        newTabButton.setAccessibilityIdentifier("askara.tabs.new")
         addSubview(newTabButton)
 
         privateBadge.font = .boldSystemFont(ofSize: NSFont.smallSystemFontSize)
@@ -190,6 +193,7 @@ final class TabStripView: NSView, NSDraggingSource {
 
         setAccessibilityRole(.tabGroup)
         setAccessibilityLabel(String(localized: "Tabs"))
+        setAccessibilityIdentifier("askara.tabs")
         registerForDraggedTypes([Self.tabType])
     }
 
@@ -197,7 +201,10 @@ final class TabStripView: NSView, NSDraggingSource {
     required init?(coder: NSCoder) { fatalError("not used") }
 
     func update(items: [TabStripItem], activeIndex: Int) {
+        let previousItems = self.items
+        let previousActiveIndex = self.activeIndex
         self.items = items
+        self.activeIndex = activeIndex
         while itemViews.count > items.count { itemViews.removeLast().removeFromSuperview() }
         while itemViews.count < items.count {
             let view = TabItemView(strip: self)
@@ -205,9 +212,13 @@ final class TabStripView: NSView, NSDraggingSource {
             itemViews.append(view)
         }
         for (index, item) in items.enumerated() {
+            let itemChanged = !previousItems.indices.contains(index) || previousItems[index] != item
+            let activeChanged = previousActiveIndex != activeIndex &&
+                (index == previousActiveIndex || index == activeIndex)
+            guard itemChanged || activeChanged else { continue }
             itemViews[index].configure(index: index, item: item, isActive: index == activeIndex)
         }
-        needsLayout = true
+        if previousItems != items || previousActiveIndex != activeIndex { needsLayout = true }
     }
 
     override func viewDidMoveToWindow() {
@@ -387,6 +398,7 @@ final class TabItemView: NSView, NSViewToolTipOwner {
     private let closeButton = NSButton()
     private var title = ""
     private var isLoading = false
+    private(set) var configurationCount = 0
 
     init(strip: TabStripView) {
         self.strip = strip
@@ -415,6 +427,7 @@ final class TabItemView: NSView, NSViewToolTipOwner {
     required init?(coder: NSCoder) { fatalError("not used") }
 
     func configure(index: Int, item: TabStripItem, isActive: Bool) {
+        configurationCount += 1
         self.index = index
         self.isActive = isActive
         self.isPinned = item.isPinned
@@ -441,8 +454,10 @@ final class TabItemView: NSView, NSViewToolTipOwner {
             if isLoading { spinner.startAnimation(nil) } else { spinner.stopAnimation(nil) }
         }
         closeButton.setAccessibilityLabel(String(localized: "Close tab \(item.title)"))
+        closeButton.setAccessibilityIdentifier("askara.tab.\(index).close")
         setAccessibilityElement(true)
         setAccessibilityRole(.radioButton)
+        setAccessibilityIdentifier("askara.tab.\(index)")
         var state = item.isLoading ? String(localized: ", loading") : (item.isSleeping ? String(localized: ", sleeping") : "")
         if item.isPinned { state += String(localized: ", pinned") }
         if item.isMuted { state += String(localized: ", muted") }

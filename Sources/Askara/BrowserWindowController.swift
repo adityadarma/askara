@@ -43,12 +43,18 @@ final class Tab: NSObject {
     var pictureInPictureEligible = false
     var isPictureInPicture = false
     var pictureInPictureFrame: WKFrameInfo?
+    /// PiP availability is reported independently by every frame; aggregate it at tab level.
+    var pictureInPictureFrames: [String: (eligible: Bool, active: Bool, frame: WKFrameInfo)] = [:]
     var hasUnsavedInput: Bool { !dirtyFrames.isEmpty }
     var webView: WKWebView? {
         didSet {
             if webView == nil {
                 observations.removeAll()
                 dirtyFrames.removeAll()
+                pictureInPictureFrames.removeAll()
+                pictureInPictureEligible = false
+                isPictureInPicture = false
+                pictureInPictureFrame = nil
             }
         }
     }
@@ -128,8 +134,8 @@ private final class WeakScriptHandler: NSObject, WKScriptMessageHandler {
                 web.contextTarget = ContextTarget(link: url("link"), image: url("image"),
                                                   selection: body["selection"] as? String ?? "")
             case PictureInPictureScript.handlerName:
-                guard let body = message.body as? [String: Any] else { return }
-                target?.pictureInPictureState(in: message.webView, frame: message.frameInfo,
+                guard let body = message.body as? [String: Any], let frameID = body["frame"] as? String else { return }
+                target?.pictureInPictureState(in: message.webView, frameID: frameID, frame: message.frameInfo,
                                               eligible: body["eligible"] as? Bool ?? false,
                                               active: body["active"] as? Bool ?? false)
             default:
@@ -154,7 +160,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     private var activeIndex = -1
     private var passkeyWarnedHosts: Set<String> = []
     private var focusAddressBarOnActivate = false
-    private var services: BrowserServices { .shared }
+    private let services: BrowserServices
 
     // UI
     private let tabStrip = TabStripView()
@@ -169,6 +175,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     }()
     /// What the user actually typed, restored when arrowing back past the first suggestion.
     private var typedAddress = ""
+    /// Debounces ranking so rapid typing does not rescan thousands of history entries per keypress.
+    private var suggestionTask: Task<Void, Never>?
     private let backButton = NSButton()
     private let forwardButton = NSButton()
     private let reloadButton = NSButton()
@@ -194,9 +202,10 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     /// Loaded web view of the active tab (screenshot).
     var activeWebViewForCapture: WKWebView? { activeTab?.webView }
 
-    init(profile: ProfileData, isPrivate: Bool) {
+    init(profile: ProfileData, isPrivate: Bool, services suppliedServices: BrowserServices? = nil) {
         self.profile = profile
         self.isPrivate = isPrivate
+        self.services = suppliedServices ?? .shared
         // Private window: cookies/cache live in memory only and vanish when the window closes.
         dataStore = isPrivate ? .nonPersistent() : profile.dataStore
 
@@ -204,6 +213,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
                               styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                               backing: .buffered, defer: true)
         window.isReleasedWhenClosed = false
+        window.setAccessibilityIdentifier("askara.browser.window")
         window.minSize = NSSize(width: 480, height: 320)
         // Tabs sit in the titlebar area, like Chrome. An empty toolbar makes the titlebar as tall as
         // the tab strip so the red/yellow/green buttons line up with the tabs.
@@ -280,12 +290,24 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         moreButton.contentTintColor = .labelColor
         configure(extensionsButton, symbol: "puzzlepiece.extension", label: String(localized: "Extensions"),
                   action: #selector(showExtensionsMenu(_:)))
+        [
+            (backButton, "askara.navigation.back"),
+            (forwardButton, "askara.navigation.forward"),
+            (reloadButton, "askara.navigation.reload"),
+            (homeButton, "askara.navigation.home"),
+            (bookmarkButton, "askara.bookmark.toggle"),
+            (privacyButton, "askara.privacy"),
+            (pictureInPictureButton, "askara.picture-in-picture"),
+            (extensionsButton, "askara.extensions"),
+            (moreButton, "askara.menu"),
+        ].forEach { $0.0.setAccessibilityIdentifier($0.1) }
 
         tabStrip.delegate = self
         tabStrip.isPrivate = isPrivate
 
         addressField.placeholderString = isPrivate ? String(localized: "Private: search or enter address") : String(localized: "Search or enter address")
         addressField.setAccessibilityLabel(String(localized: "Address bar"))
+        addressField.setAccessibilityIdentifier("askara.address")
         addressField.target = self
         addressField.action = #selector(addressSubmitted(_:))
         addressField.delegate = self
@@ -425,6 +447,13 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
                          isPinned: $0.isPinned, isMuted: $0.isMuted)
         }
         tabStrip.update(items: items, activeIndex: activeIndex)
+    }
+
+    private func refreshTabStrip(forHost rawHost: String?) {
+        guard let host = rawHost?.lowercased(), tabs.contains(where: {
+            ($0.webView?.url ?? $0.url)?.host?.lowercased() == host
+        }) else { return }
+        refreshTabStrip()
     }
 
     /// Settings changed (e.g. Memory Saver exceptions): redraw tab tooltips/state.
@@ -851,7 +880,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         window?.makeFirstResponder(web)
     }
 
-    func restore(_ saved: SessionState.SavedWindow) {
+    func restore(_ saved: SessionState.SavedWindow, reservedLoadedSlots: Int = 0) {
         if let frame = saved.frame, let window {
             let rect = NSRect(x: frame.x, y: frame.y, width: frame.width, height: frame.height)
             let visible = NSScreen.screens.contains { $0.visibleFrame.intersects(rect) }
@@ -869,9 +898,24 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         let active = tabs.indices.contains(saved.activeIndex) ? tabs[saved.activeIndex] : nil
         normalizeTabOrder()
         activate(index: active.flatMap { a in tabs.firstIndex { $0 === a } } ?? 0)
-        // Pinned tabs are loaded at launch, like Chrome, so mail/chat apps are ready.
-        for tab in tabs where tab.isPinned && tab.webView == nil { wake(tab) }
+        // Respect the configured loaded-tab limit at startup. Extra pinned tabs retain their state
+        // and wake on first click instead of creating an unbounded WebContent process load storm.
+        let globallyLoaded = services.windows.reduce(into: 0) { $0 += $1.loadedWebViews.count }
+        let preload = Self.restoredPinnedTabsToPreload(tabs, active: active,
+                                                        maxLoadedTabs: services.preferences.maxLoadedTabs,
+                                                        loadedTabCount: globallyLoaded,
+                                                        reservedLoadedSlots: reservedLoadedSlots)
+        for tab in preload { wake(tab) }
+        if !preload.isEmpty { refreshTabStrip() }
         if saved.isFullScreen == true { window?.toggleFullScreen(nil) }
+    }
+
+    static func restoredPinnedTabsToPreload(_ tabs: [Tab], active: Tab?, maxLoadedTabs: Int,
+                                            loadedTabCount: Int, reservedLoadedSlots: Int = 0) -> [Tab] {
+        let limit = min(max(maxLoadedTabs, BrowserPreferences.maxLoadedTabRange.lowerBound),
+                        BrowserPreferences.maxLoadedTabRange.upperBound)
+        let available = max(0, limit - loadedTabCount - max(0, reservedLoadedSlots))
+        return Array(tabs.lazy.filter { $0.isPinned && $0 !== active && $0.webView == nil }.prefix(available))
     }
 
     func savedState() -> SessionState.SavedWindow {
@@ -892,11 +936,12 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
                      isFullScreen: window?.styleMask.contains(.fullScreen) == true)
     }
 
-    private func sessionChanged() {
-        if !isPrivate {
-            profile.checkpointSession()
-            services.sync.localDataChanged()
-        }
+    private func sessionChanged(immediate: Bool = true) {
+        guard !isPrivate else { return }
+        // Structural changes are crash-recovery checkpoints. Navigation metadata is debounced to
+        // avoid repeatedly copying every WKWebView interactionState and atomically rewriting JSON.
+        if immediate { profile.checkpointSession() } else { profile.scheduleSessionSave() }
+        services.sync.localDataChanged()
     }
 
     private func activate(index: Int) {
@@ -969,7 +1014,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         tab.observations = [
             webView.observe(\.title) { [weak self, weak tab] web, _ in
                 MainActor.assumeIsolated {
-                    guard let self, let tab, let title = web.title, !title.isEmpty else { return }
+                    guard let self, let tab, let title = web.title, !title.isEmpty,
+                          tab.title != title else { return }
                     tab.title = title
                     if !self.isPrivate, let url = web.url { self.profile.updateHistoryTitle(title, for: url) }
                     self.tabChanged(tab, .title)
@@ -1333,6 +1379,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     }
 
     @objc private func addressSubmitted(_ sender: NSTextField) {
+        suggestionTask?.cancel()
+        suggestionTask = nil
         if let chosen = suggestions.isVisible ? suggestions.selected : nil { return chooseSuggestion(chosen) }
         suggestions.hide()
         guard let url = AddressParser.url(from: sender.stringValue,
@@ -1346,20 +1394,46 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         load(suggestion.url)
     }
 
-    private func updateSuggestions() {
+    private func scheduleSuggestions() {
+        suggestionTask?.cancel()
         typedAddress = addressField.stringValue
-        let found = AddressSuggester.suggestions(for: typedAddress, history: profile.history.entries,
-                                                 bookmarks: profile.bookmarks.bookmarks)
-        if found.isEmpty { suggestions.hide() } else { suggestions.show(found, below: addressField) }
+        let query = typedAddress
+        // Never allow Enter/click to choose rows computed for the previous query.
+        suggestions.hide()
+        guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            suggestionTask = nil
+            return
+        }
+        // Snapshot value types once. The nonisolated worker runs away from AppKit's main thread,
+        // while remaining part of this Task so cancellation propagates into ranking.
+        let history = profile.history.entries
+        let bookmarks = profile.bookmarks.bookmarks
+        suggestionTask = Task { @MainActor [weak self] in
+            guard let found = await Self.rankSuggestions(query: query, history: history, bookmarks: bookmarks),
+                  !Task.isCancelled, let self, self.addressField.stringValue == query else { return }
+            self.suggestionTask = nil
+            if !found.isEmpty { self.suggestions.show(found, below: self.addressField) }
+        }
+    }
+
+    nonisolated private static func rankSuggestions(query: String, history: [HistoryEntry],
+                                                    bookmarks: [Bookmark]) async -> [AddressSuggestion]? {
+        do { try await Task.sleep(for: .milliseconds(50)) } catch { return nil }
+        guard !Task.isCancelled else { return nil }
+        let found = AddressSuggester.suggestions(for: query, history: history, bookmarks: bookmarks,
+                                                 isCancelled: { Task.isCancelled })
+        return Task.isCancelled ? nil : found
     }
 
     func controlTextDidChange(_ obj: Notification) {
         guard (obj.object as? NSTextField) === addressField else { return }
-        updateSuggestions()
+        scheduleSuggestions()
     }
 
     func controlTextDidEndEditing(_ obj: Notification) {
         guard (obj.object as? NSTextField) === addressField else { return }
+        suggestionTask?.cancel()
+        suggestionTask = nil
         // Let a click on a suggestion row land before the panel disappears.
         DispatchQueue.main.async { [weak self] in
             guard let self, self.addressField.currentEditor() == nil else { return }
@@ -1452,16 +1526,32 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
     }
 
-    func pictureInPictureState(in webView: WKWebView?, frame: WKFrameInfo, eligible: Bool, active: Bool) {
+    func pictureInPictureState(in webView: WKWebView?, frameID: String, frame: WKFrameInfo,
+                               eligible: Bool, active: Bool) {
         guard let webView, let tab = tabs.first(where: { $0.webView === webView }) else { return }
-        if active || (eligible && !tab.pictureInPictureEligible) { tab.pictureInPictureFrame = frame }
-        tab.pictureInPictureEligible = eligible || active
-        tab.isPictureInPicture = active
+        if eligible || active {
+            tab.pictureInPictureFrames[frameID] = (eligible, active, frame)
+        } else {
+            tab.pictureInPictureFrames.removeValue(forKey: frameID)
+        }
+        let states = tab.pictureInPictureFrames.values.map { (eligible: $0.eligible, active: $0.active) }
+        let aggregate = Self.aggregatePictureInPictureStates(states)
+        let activeFrame = tab.pictureInPictureFrames.values.first { $0.active }
+        let candidateFrame = activeFrame ?? tab.pictureInPictureFrames.values.first { $0.eligible }
+        tab.pictureInPictureEligible = aggregate.eligible
+        tab.isPictureInPicture = aggregate.active
+        tab.pictureInPictureFrame = candidateFrame?.frame
         if tab === activeTab {
             pictureInPictureButton.isEnabled = tab.pictureInPictureEligible
             pictureInPictureButton.isHidden = !tab.pictureInPictureEligible
-            pictureInPictureButton.contentTintColor = active ? .controlAccentColor : .secondaryLabelColor
+            pictureInPictureButton.contentTintColor = tab.isPictureInPicture ? .controlAccentColor : .secondaryLabelColor
         }
+    }
+
+    static func aggregatePictureInPictureStates(
+        _ states: [(eligible: Bool, active: Bool)]
+    ) -> (eligible: Bool, active: Bool) {
+        (states.contains { $0.eligible || $0.active }, states.contains { $0.active })
     }
 
     @objc func togglePictureInPicture(_ sender: Any?) {
@@ -1894,8 +1984,12 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         tab.displayURL = url
         if tab.hidesHomeAddress, tab.homeLandingURL == nil { tab.homeLandingURL = url }
         tab.httpFallbackURL = nil
-        // New page: the old page's form input is gone.
+        // New page: the old page's form input and frame-level media state are gone.
         tab.dirtyFrames.removeAll()
+        tab.pictureInPictureFrames.removeAll()
+        tab.pictureInPictureEligible = false
+        tab.isPictureInPicture = false
+        tab.pictureInPictureFrame = nil
         if tab === activeTab { updateToolbar() }
         // As early as possible so the page doesn't flash without the custom CSS.
         applySiteCSS(to: webView)
@@ -1912,7 +2006,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
             }
         }
         if !isPrivate, let url = webView.url { profile.recordVisit(url: url, title: webView.title) }
-        sessionChanged()
+        sessionChanged(immediate: false)
         loadFavicon(for: webView)
     }
 
@@ -1923,7 +2017,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
             guard let self else { return }
             let candidates = result as? [[String: Any]] ?? []
             FaviconStore.shared.update(pageURL: pageURL, candidates: candidates, persist: !self.isPrivate) {
-                BrowserServices.shared.windows.forEach { $0.refreshTabStrip() }
+                BrowserServices.shared.windows.forEach { $0.refreshTabStrip(forHost: pageURL.host) }
             }
         }
     }
@@ -2164,7 +2258,11 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     func windowWillMove(_ notification: Notification) { suggestions.hide() }
 
     func windowWillClose(_ notification: Notification) {
+        suggestionTask?.cancel()
+        suggestionTask = nil
         suggestions.hide()
+        contentView.postsFrameChangedNotifications = false
+        NotificationCenter.default.removeObserver(self)
         services.windowWillClose(self)
         let closing = tabs
         tabs.forEach(dropWebView(of:))

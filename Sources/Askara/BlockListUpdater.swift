@@ -16,8 +16,9 @@ final class BlockListUpdater {
     /// A list that is too small is most likely broken or an error page; don't use it.
     private static let minimumDomains = 500
 
-    private let domainsFile = JSONFile<[String]>.inAppSupport("blocklist-domains.json")
-    private let metadataFile = JSONFile<BlockListMetadata>.inAppSupport("blocklist-meta.json")
+    private let domainsFile: JSONFile<[String]>
+    private let metadataFile: JSONFile<BlockListMetadata>
+    private weak var services: BrowserServices?
     private(set) var metadata: BlockListMetadata
     private(set) var isUpdating = false
     private var timer: Timer?
@@ -25,7 +26,15 @@ final class BlockListUpdater {
     /// Called each time a new list finishes compiling.
     var onCompiled: ((WKContentRuleList) -> Void)?
 
-    init() {
+    init(storageDirectory: URL? = nil, services: BrowserServices) {
+        self.services = services
+        if let storageDirectory {
+            domainsFile = JSONFile(url: storageDirectory.appendingPathComponent("blocklist-domains.json"))
+            metadataFile = JSONFile(url: storageDirectory.appendingPathComponent("blocklist-meta.json"))
+        } else {
+            domainsFile = .inAppSupport("blocklist-domains.json")
+            metadataFile = .inAppSupport("blocklist-meta.json")
+        }
         metadata = metadataFile.load() ?? BlockListMetadata()
     }
 
@@ -34,8 +43,8 @@ final class BlockListUpdater {
         compile(downloaded: domainsFile.load() ?? [])
         checkIfNeeded()
         // Check hourly whether it's time (once a day). Large tolerance to save CPU.
-        let timer = Timer(timeInterval: 60 * 60, repeats: true) { _ in
-            MainActor.assumeIsolated { BrowserServices.shared.blockListUpdater.checkIfNeeded() }
+        let timer = Timer(timeInterval: 60 * 60, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.checkIfNeeded() }
         }
         timer.tolerance = 10 * 60
         RunLoop.main.add(timer, forMode: .common)
@@ -121,7 +130,7 @@ final class BlockListUpdater {
         let domains = BlockList.merged(with: downloaded)
         let json = BlockList.contentRuleListJSON(
             domains: domains,
-            excludingSites: BrowserServices.shared.siteSettings.adBlockExceptions
+            excludingSites: services?.siteSettings.adBlockExceptions ?? []
         )
         // The same identifier overwrites the old version; WebKit stores the compiled result on disk.
         WKContentRuleListStore.default().compileContentRuleList(

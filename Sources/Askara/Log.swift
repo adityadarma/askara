@@ -2,9 +2,9 @@ import os
 
 /// App logging. NSLog text is redacted as "<private>" in the unified log on recent macOS,
 /// so messages go through os.Logger marked public instead.
-/// View with: log stream --predicate 'subsystem == "local.askara.browser"'
+/// View with: log stream --predicate 'subsystem == "dev.adityadarma.askara"'
 enum Log {
-    private static let logger = Logger(subsystem: "local.askara.browser", category: "app")
+    private static let logger = Logger(subsystem: "dev.adityadarma.askara", category: "app")
 
     static func error(_ message: String) {
         logger.error("\(message, privacy: .public)")

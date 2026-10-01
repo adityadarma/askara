@@ -191,7 +191,7 @@ final class SyncCoordinator {
     }
 
     private func syncKey(createIfMissing: Bool) throws -> SymmetricKey {
-        let service = Bundle.main.bundleIdentifier ?? "local.askara.browser"
+        let service = Bundle.main.bundleIdentifier ?? "dev.adityadarma.askara"
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
