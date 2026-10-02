@@ -132,7 +132,6 @@ final class TaskManagerWindowController: NSWindowController, NSWindowDelegate, N
         let windows = services.windows
         for window in windows { for web in window.loadedWebViews { if let pid = web.askaraProcessID { sharing[pid, default: 0] += 1 } } }
         let showProfile = services.profileList.profiles.count > 1
-
         var result: [Row] = []
         for window in windows {
             for tab in window.allTabs {
@@ -143,7 +142,7 @@ final class TaskManagerWindowController: NSWindowController, NSWindowDelegate, N
                 var cpuPercent: Double = 0
                 if let pid, cpuCounted.insert(pid).inserted { cpuPercent = cpuTracker.usage(pid: pid) }
                 var status: String
-                if tab.content == nil {
+                if tab.webView == nil {
                     status = String(localized: "Sleeping")
                 } else if window.isActive(tab) {
                     status = String(localized: "Active")
@@ -157,11 +156,12 @@ final class TaskManagerWindowController: NSWindowController, NSWindowDelegate, N
                 if let pid, let count = sharing[pid], count > 1 {
                     status += " · " + String(localized: "shares memory with \(count - 1) tabs")
                 }
-                var detail = AddressParser.displayString(for: tab.content?.url ?? tab.url)
+                var detail = AddressParser.displayString(for: tab.webView?.url ?? tab.url)
                 if window.isPrivate { detail = String(localized: "Private") + " · " + detail }
                 else if showProfile { detail = window.profile.profile.name + " · " + detail }
                 result.append(Row(tab: tab, window: window, title: tab.title, detail: detail, status: status,
-                                  bytes: bytes, cpuPercent: cpuPercent, isSleeping: tab.content == nil, isActive: window.isActive(tab)))
+                                  bytes: bytes, cpuPercent: cpuPercent,
+                                  isSleeping: tab.webView == nil, isActive: window.isActive(tab)))
             }
         }
         cpuTracker.prune(keeping: Set(result.compactMap { $0.tab.webView?.askaraProcessID }))

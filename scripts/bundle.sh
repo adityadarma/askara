@@ -1,27 +1,19 @@
 #!/bin/zsh
-# Builds Askara.app (release) in build/. Pass --cef to bundle Chromium and --install to install it.
+# Builds Askara.app (release) in build/. Pass --install to install it.
 set -euo pipefail
 cd "${0:A:h}/.."
 
 INSTALL=false
-CEF=false
 while (( $# > 0 )); do
     case "$1" in
         --install) INSTALL=true ;;
-        --cef) CEF=true ;;
-        *) print -u2 "Usage: $0 [--cef] [--install]"; exit 2 ;;
+        *) print -u2 "Usage: $0 [--install]"; exit 2 ;;
     esac
     shift
 done
 
-if $CEF; then
-    [[ -f Vendor/cef/.version ]] || { print -u2 "Run scripts/install-cef.sh first."; exit 1; }
-    ASKARA_ENABLE_CEF=1 swift build -c release
-    BIN="$(ASKARA_ENABLE_CEF=1 swift build -c release --show-bin-path)/Askara"
-else
-    swift build -c release
-    BIN="$(swift build -c release --show-bin-path)/Askara"
-fi
+swift build -c release
+BIN="$(swift build -c release --show-bin-path)/Askara"
 APP="build/Askara.app"
 
 rm -rf "$APP"
@@ -67,58 +59,6 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
-if $CEF; then
-    /usr/libexec/PlistBuddy -c "Add :NSPrincipalClass string AskaraCEFApplication" "$APP/Contents/Info.plist"
-    FRAMEWORKS="$APP/Contents/Frameworks"
-    FRAMEWORK="$FRAMEWORKS/Chromium Embedded Framework.framework"
-    mkdir -p "$FRAMEWORKS"
-    ditto "Vendor/cef/Release/Chromium Embedded Framework.framework" "$FRAMEWORK"
-
-    # Xcode 26 requires CEF's framework to use the conventional versioned layout.
-    mkdir -p "$FRAMEWORK/Versions/A"
-    mv "$FRAMEWORK/Chromium Embedded Framework" "$FRAMEWORK/Libraries" "$FRAMEWORK/Resources" \
-        "$FRAMEWORK/Versions/A/"
-    ln -s A "$FRAMEWORK/Versions/Current"
-    ln -s "Versions/Current/Chromium Embedded Framework" "$FRAMEWORK/Chromium Embedded Framework"
-    ln -s "Versions/Current/Libraries" "$FRAMEWORK/Libraries"
-    ln -s "Versions/Current/Resources" "$FRAMEWORK/Resources"
-
-    # CEF launches each sub-process type from its own helper bundle, found by name next to the
-    # base helper ("<App> Helper (Renderer).app", ...). A missing variant fails silently: e.g.
-    # without (Renderer) no page ever loads. Mirrors the layout of CEF's cefsimple.
-    HELPER_BIN="$(mktemp -t askara-helper)"
-    clang++ -std=c++20 -mmacosx-version-min=15.4 -DNDEBUG -I Vendor/cef \
-        Sources/CEFHelper/main.mm \
-        Vendor/cef/build/libcef_dll_wrapper/Release/libcef_dll_wrapper.a \
-        -framework AppKit -o "$HELPER_BIN"
-    HELPERS=()
-    for variant in "" " (GPU)" " (Renderer)" " (Plugin)" " (Alerts)"; do
-        name="Askara Helper$variant"
-        id_suffix="$(echo "$variant" | tr -d ' ()' | tr '[:upper:]' '[:lower:]')"
-        bundle_id="dev.adityadarma.askara.helper${id_suffix:+.$id_suffix}"
-        dir="$FRAMEWORKS/$name.app"
-        mkdir -p "$dir/Contents/MacOS"
-        cp "$HELPER_BIN" "$dir/Contents/MacOS/$name"
-        cat > "$dir/Contents/Info.plist" <<HELPERPLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-<key>CFBundleName</key><string>$name</string>
-<key>CFBundleDisplayName</key><string>$name</string>
-<key>CFBundleIdentifier</key><string>$bundle_id</string>
-<key>CFBundleExecutable</key><string>$name</string>
-<key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleVersion</key><string>1</string>
-<key>LSUIElement</key><true/>
-<key>LSBackgroundOnly</key><true/>
-<key>LSMinimumSystemVersion</key><string>15.4</string>
-</dict></plist>
-HELPERPLIST
-        HELPERS+=("$dir")
-    done
-    rm -f "$HELPER_BIN"
-fi
-
 # Passkeys need the com.apple.developer.web-browser.public-key-credential entitlement.
 # Apple must approve it, and it is only valid with a Developer ID/Apple Development certificate
 # plus a provisioning profile that includes it. Set these two variables to enable it:
@@ -137,22 +77,10 @@ if [[ -n "${ASKARA_SIGN_IDENTITY:-}" && -n "${ASKARA_PROFILE:-}" ]]; then
 </dict>
 </plist>
 ENTPLIST
-    if $CEF; then
-        for helper in "${HELPERS[@]}"; do
-            codesign --force --options runtime --sign "$ASKARA_SIGN_IDENTITY" "$helper"
-        done
-        codesign --force --options runtime --sign "$ASKARA_SIGN_IDENTITY" "$FRAMEWORK"
-    fi
     codesign --force --options runtime --entitlements "$ENT" --sign "$ASKARA_SIGN_IDENTITY" "$APP"
     rm -f "$ENT"
     echo "Signed with passkey entitlement."
 else
-    if $CEF; then
-        for helper in "${HELPERS[@]}"; do
-            codesign --force --sign - "$helper"
-        done
-        codesign --force --sign - "$FRAMEWORK"
-    fi
     codesign --force --sign - "$APP"
     echo "Ad-hoc signing: passkeys unavailable."
 fi

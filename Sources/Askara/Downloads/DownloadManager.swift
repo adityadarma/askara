@@ -2,9 +2,6 @@ import AppKit
 import CryptoKit
 import WebKit
 import AskaraCore
-#if ASKARA_CEF
-import CEFBridge
-#endif
 
 /// Manages browser downloads. Files are saved with unique names.
 @MainActor
@@ -30,9 +27,6 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
         var risks: [DownloadRisk] = []
         var fileSize: Int64?
         weak var download: WKDownload?
-#if ASKARA_CEF
-        var cefDownload: AskaraCEFDownload?
-#endif
         var observation: NSKeyValueObservation?
 
         var statusText: String {
@@ -121,9 +115,6 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
     func cancel(_ item: Item) {
         guard item.state == .running else { return }
         item.download?.cancel { _ in }
-#if ASKARA_CEF
-        item.cefDownload?.cancel()
-#endif
         markCancelled(item)
     }
 
@@ -155,10 +146,6 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
         item.state = .finished
         item.fraction = 1
         item.observation = nil
-#if ASKARA_CEF
-        item.cefDownload?.onChanged = nil
-        item.cefDownload = nil
-#endif
         if let path = item.destination?.path {
             DistributedNotificationCenter.default()
                 .post(name: .init("com.apple.DownloadFileFinished"), object: path)
@@ -172,10 +159,6 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
         guard item.state == .running else { return }
         item.state = .cancelled
         item.observation = nil
-#if ASKARA_CEF
-        item.cefDownload?.onChanged = nil
-        item.cefDownload = nil
-#endif
         changed()
     }
 
@@ -183,56 +166,9 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
         guard item.state == .running else { return }
         item.state = .failed(message)
         item.observation = nil
-#if ASKARA_CEF
-        item.cefDownload?.onChanged = nil
-        item.cefDownload = nil
-#endif
         announce(String(localized: "Download failed: \(item.filename)"))
         changed()
     }
-
-#if ASKARA_CEF
-    func track(_ download: AskaraCEFDownload) -> URL? {
-        if let existing = items.first(where: { $0.cefDownload === download }) {
-            return existing.destination
-        }
-        let item = Item()
-        item.cefDownload = download
-        item.sourceURL = download.sourceURL
-        let destination = destination(for: download.suggestedFilename)
-        item.filename = destination.lastPathComponent
-        item.destination = destination
-        items.insert(item, at: 0)
-        download.onChanged = { [weak self, weak item, weak download] in
-            guard let self, let item, let download else { return }
-            self.update(item, from: download)
-        }
-        announce(String(localized: "Downloading \(destination.lastPathComponent). See Window › Downloads (⌥⌘L)."))
-        changed()
-        return destination
-    }
-
-    private func update(_ item: Item, from download: AskaraCEFDownload) {
-        guard item.cefDownload === download, item.state == .running else { return }
-        switch download.state {
-        case .running:
-            let fraction = download.fractionCompleted
-            guard fraction >= 0 else { return }
-            let clamped = min(max(fraction, item.fraction), 1)
-            if clamped - item.fraction >= 0.01 || clamped >= 1 {
-                item.fraction = clamped
-                changed()
-            }
-        case .complete: finish(item)
-        case .cancelled: markCancelled(item)
-        case .failed:
-            fail(item, message: download.failureMessage
-                 ?? String(localized: "Chromium interrupted the download"))
-        @unknown default:
-            fail(item, message: String(localized: "Unknown Chromium download state"))
-        }
-    }
-#endif
 
     // MARK: - WKDownloadDelegate
 

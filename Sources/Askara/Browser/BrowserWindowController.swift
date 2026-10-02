@@ -57,13 +57,10 @@ final class Tab: NSObject {
     /// PiP availability is reported independently by every frame; aggregate it at tab level.
     var pictureInPictureFrames: [String: (eligible: Bool, active: Bool, frame: WKFrameInfo)] = [:]
     var hasUnsavedInput: Bool { !dirtyFrames.isEmpty }
-    /// WebKit page of this tab, or nil while asleep or when the profile uses another engine.
-    /// WebKit-only features (extensions, PiP, find, print, Device Mode, snapshots) go through this.
-    var webView: WKWebView? { (content as? WebKitTabContent)?.webView }
-    /// Live page of any engine. nil = the tab is asleep.
-    var content: (any TabContent)? {
+    /// Live WebKit page, or nil while the tab sleeps.
+    var webView: WKWebView? {
         didSet {
-            if content == nil {
+            if webView == nil {
                 isDozing = false
                 observations.removeAll()
                 dirtyFrames.removeAll()
@@ -83,9 +80,78 @@ final class Tab: NSObject {
         super.init()
     }
 
-    var isPlayingAudio: Bool {
-        guard let webView else { return false }
-        return webView.askaraIsPlayingAudio || webView.askaraIsCapturingMedia
+    var isPlayingAudio: Bool { webView?.askaraIsPlayingAudio == true || webView?.askaraIsCapturingMedia == true }
+}
+
+extension Tab: WKWebExtensionTab {
+    func window(for context: WKWebExtensionContext) -> (any WKWebExtensionWindow)? { owner }
+    func indexInWindow(for context: WKWebExtensionContext) -> Int { owner?.index(of: self) ?? NSNotFound }
+    func webView(for context: WKWebExtensionContext) -> WKWebView? { webView }
+    func title(for context: WKWebExtensionContext) -> String? { title }
+    func url(for context: WKWebExtensionContext) -> URL? { webView?.url ?? url }
+    func isLoadingComplete(for context: WKWebExtensionContext) -> Bool { !(webView?.isLoading ?? false) }
+    func isSelected(for context: WKWebExtensionContext) -> Bool { owner?.isActive(self) ?? false }
+    func isPlayingAudio(for context: WKWebExtensionContext) -> Bool { isPlayingAudio }
+    func isPinned(for context: WKWebExtensionContext) -> Bool { isPinned }
+    func isMuted(for context: WKWebExtensionContext) -> Bool { isMuted }
+    func zoomFactor(for context: WKWebExtensionContext) -> Double { zoom }
+    func size(for context: WKWebExtensionContext) -> CGSize { webView?.bounds.size ?? .zero }
+
+    func setPinned(_ pinned: Bool, for context: WKWebExtensionContext,
+                   completionHandler: @escaping ((any Error)?) -> Void) {
+        owner?.setPinned(pinned, tab: self)
+        completionHandler(nil)
+    }
+
+    func setMuted(_ muted: Bool, for context: WKWebExtensionContext,
+                  completionHandler: @escaping ((any Error)?) -> Void) {
+        owner?.setMuted(muted, tab: self)
+        completionHandler(nil)
+    }
+
+    func activate(for context: WKWebExtensionContext, completionHandler: @escaping ((any Error)?) -> Void) {
+        owner?.activate(tab: self)
+        completionHandler(nil)
+    }
+
+    func setSelected(_ selected: Bool, for context: WKWebExtensionContext,
+                     completionHandler: @escaping ((any Error)?) -> Void) {
+        if selected { owner?.activate(tab: self) }
+        completionHandler(nil)
+    }
+
+    func loadURL(_ url: URL, for context: WKWebExtensionContext,
+                 completionHandler: @escaping ((any Error)?) -> Void) {
+        owner?.load(url, in: self)
+        completionHandler(nil)
+    }
+
+    func reload(fromOrigin: Bool, for context: WKWebExtensionContext,
+                completionHandler: @escaping ((any Error)?) -> Void) {
+        if fromOrigin { webView?.reloadFromOrigin() } else { webView?.reload() }
+        completionHandler(nil)
+    }
+
+    func goBack(for context: WKWebExtensionContext, completionHandler: @escaping ((any Error)?) -> Void) {
+        webView?.goBack()
+        completionHandler(nil)
+    }
+
+    func goForward(for context: WKWebExtensionContext, completionHandler: @escaping ((any Error)?) -> Void) {
+        webView?.goForward()
+        completionHandler(nil)
+    }
+
+    func setZoomFactor(_ zoomFactor: Double, for context: WKWebExtensionContext,
+                       completionHandler: @escaping ((any Error)?) -> Void) {
+        zoom = zoomFactor
+        webView?.pageZoom = zoomFactor
+        completionHandler(nil)
+    }
+
+    func close(for context: WKWebExtensionContext, completionHandler: @escaping ((any Error)?) -> Void) {
+        owner?.close(tab: self)
+        completionHandler(nil)
     }
 }
 
@@ -452,7 +518,6 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
             contentView.topAnchor.constraint(equalTo: toolbar.bottomAnchor),
             contentView.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             contentView.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            contentView.bottomAnchor.constraint(equalTo: root.bottomAnchor),
 
             // Progress line sits on the toolbar's bottom edge, above the page.
             loadingBar.bottomAnchor.constraint(equalTo: toolbar.bottomAnchor),
@@ -464,13 +529,14 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
             toast.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -10),
             toast.widthAnchor.constraint(lessThanOrEqualToConstant: 520),
         ])
+        contentView.bottomAnchor.constraint(equalTo: root.bottomAnchor).isActive = true
     }
 
     func refreshTabStrip() {
         let items = tabs.map {
-            TabStripItem(title: $0.title, isSleeping: $0.content == nil, isPlayingAudio: $0.isPlayingAudio,
-                         isLoading: $0.content?.isLoading ?? false,
-                         favicon: FaviconStore.shared.icon(for: $0.content?.url ?? $0.url),
+            TabStripItem(title: $0.title, isSleeping: $0.webView == nil, isPlayingAudio: $0.isPlayingAudio,
+                         isLoading: $0.webView?.isLoading ?? false,
+                         favicon: FaviconStore.shared.icon(for: $0.webView?.url ?? $0.url),
                          isPinned: $0.isPinned, isMuted: $0.isMuted)
         }
         tabStrip.update(items: items, activeIndex: activeIndex)
@@ -478,7 +544,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
 
     private func refreshTabStrip(forHost rawHost: String?) {
         guard let host = rawHost?.lowercased(), tabs.contains(where: {
-            ($0.content?.url ?? $0.url)?.host?.lowercased() == host
+            ($0.webView?.url ?? $0.url)?.host?.lowercased() == host
         }) else { return }
         refreshTabStrip()
     }
@@ -502,7 +568,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
 
     private func updateToolbar() {
         let tab = activeTab
-        let web = tab?.content
+        let web = tab?.webView
         backButton.isEnabled = web?.canGoBack ?? false
         forwardButton.isEnabled = web?.canGoForward ?? false
         if addressField.currentEditor() == nil {
@@ -604,7 +670,6 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         add(String(localized: "Actual Size"), "1.magnifyingglass", #selector(zoomResetAction(_:)))
         add(String(localized: "Print…"), "printer", #selector(printPageAction(_:)), key: "p")
         menu.addItem(.separator())
-        add(String(localized: "Password Managers…"), "key", #selector(AppDelegate.showPasswordManagersAction(_:)), target: app)
         add(String(localized: "Task Manager"), "gauge.with.dots.needle.67percent", #selector(AppDelegate.showTaskManagerAction(_:)), target: app)
         add(String(localized: "Settings…"), "gearshape", #selector(AppDelegate.showSettingsAction(_:)), target: app, key: ",")
         showToolbarMenu(menu, below: sender)
@@ -653,16 +718,13 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         guard tabs.indices.contains(index) else { return "" }
         let tab = tabs[index]
         // Only this tab's RAM usage.
-        guard tab.content != nil else {
+        guard tab.webView != nil else {
             return tab.freedBytes > 0 ? String(localized: "Sleeping: freed about \(ProcessMemory.format(tab.freedBytes))")
                                       : String(localized: "RAM: 0 MB (sleeping)")
         }
         var lines: [String] = []
-        // Only WebKit exposes a per-tab process; Blink tab memory isn't measured yet.
         if let pid = tab.webView?.askaraProcessID, let bytes = ProcessMemory.footprint(pid: pid) {
             lines.append(String(localized: "RAM: \(ProcessMemory.format(bytes))"))
-        } else {
-            lines.append(String(localized: "RAM: unknown"))
         }
         if tab.isPinned {
             lines.append(String(localized: "Pinned: never sleeps"))
@@ -755,7 +817,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     /// Takes a tab out of this window without closing its page (it's moving to another window).
     fileprivate func removeTabForMove(_ tab: Tab) {
         guard let index = tabs.firstIndex(where: { $0 === tab }) else { return }
-        tab.content?.view.removeFromSuperview()
+        tab.webView?.removeFromSuperview()
         tabs.remove(at: index)
         if tabs.isEmpty {
             activeIndex = -1
@@ -780,8 +842,6 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         // Re-point delegates and observers at this window.
         if let web = tab.webView {
             attach(web, to: tab)
-        } else if let content = tab.content {
-            attachNative(content, to: tab)
         }
         let position = clampedIndex(index, pinned: tab.isPinned)
         tabs.insert(tab, at: position)
@@ -813,7 +873,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         guard tab.hidesHomeAddress else { return }
         let editing = addressField.currentEditor() != nil
         if editing, !addressField.stringValue.isEmpty { return } // already typing: leave it alone
-        if !editing, let web = tab.content?.view, window?.firstResponder !== web,
+        if !editing, let web = tab.webView, window?.firstResponder !== web,
            window?.firstResponder !== window { return } // focus moved elsewhere on purpose
         addressField.stringValue = ""
         focusAddressBar(nil)
@@ -848,13 +908,11 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
 
     /// The only path for adding tabs, so extensions are always notified.
     @discardableResult
-    func insertTab(url: URL?, at index: Int, activate: Bool, webView: WKWebView? = nil,
-                   nativeContent: (any TabContent)? = nil) -> Tab {
+    func insertTab(url: URL?, at index: Int, activate: Bool, webView: WKWebView? = nil) -> Tab {
         // nil = empty tab (e.g. ⌘T, or an extension opening a tab without an address).
         let tab = Tab(url: url)
         tab.owner = self
         if let webView { attach(webView, to: tab) }
-        if let nativeContent { attachNative(nativeContent, to: tab) }
         // New tabs never go between pinned tabs.
         let firstUnpinned = tabs.firstIndex { !$0.isPinned } ?? tabs.count
         let position = min(max(firstUnpinned, index), tabs.count)
@@ -874,17 +932,14 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
 
     /// Extension controller, for normal windows only. Private windows are invisible to extensions.
     var extensionController: WKWebExtensionController? {
-        isPrivate || !supportsExtensions ? nil : profile.extensions.controller
+        isPrivate ? nil : profile.extensions.controller
     }
-
-    /// WebKit extensions only run in WebKit profiles; other engines never start the manager.
-    private var supportsExtensions: Bool { profile.engineRuntime.capabilities.supports(.extensions) }
 
     var allTabs: [Tab] { tabs }
     /// WebKit pages only (process metrics and sharing are WebKit-specific).
     var loadedWebViews: [WKWebView] { tabs.compactMap(\.webView) }
     /// Awake tabs of any engine, for the loaded-tab budget.
-    var loadedTabCount: Int { tabs.lazy.filter { $0.content != nil }.count }
+    var loadedTabCount: Int { tabs.lazy.filter { $0.webView != nil }.count }
     var currentTab: Tab? { activeTab }
     func index(of tab: Tab) -> Int { tabs.firstIndex { $0 === tab } ?? NSNotFound }
     func isActive(_ tab: Tab) -> Bool { activeTab === tab }
@@ -907,7 +962,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         tab.displayURL = url
         tab.interactionState = nil
         tab.sleepSnapshot = nil // shows a different page now
-        tab.content?.load(url)
+        tab.webView?.load(URLRequest(url: url))
     }
 
     private func tabChanged(_ tab: Tab, _ properties: WKWebExtension.TabChangedProperties) {
@@ -923,9 +978,9 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         tab.displayURL = url
         tab.interactionState = nil
         hideSleepSnapshot(animated: false)
-        let content = tab.content ?? wake(tab, loadURL: false)
-        content.load(url)
-        window?.makeFirstResponder(content.view)
+        let webView = tab.webView ?? wake(tab, loadURL: false)
+        webView.load(URLRequest(url: url))
+        window?.makeFirstResponder(webView)
     }
 
     func restore(_ saved: SessionState.SavedWindow, reservedLoadedSlots: Int = 0) {
@@ -963,7 +1018,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         let limit = min(max(maxLoadedTabs, BrowserPreferences.maxLoadedTabRange.lowerBound),
                         BrowserPreferences.maxLoadedTabRange.upperBound)
         let available = max(0, limit - loadedTabCount - max(0, reservedLoadedSlots))
-        return Array(tabs.lazy.filter { $0.isPinned && $0 !== active && $0.content == nil }.prefix(available))
+        return Array(tabs.lazy.filter { $0.isPinned && $0 !== active && $0.webView == nil }.prefix(available))
     }
 
     func savedState() -> SessionState.SavedWindow {
@@ -971,7 +1026,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         var active = 0
         for (index, tab) in tabs.enumerated() {
             // Temporary extension pages (e.g. passkey confirmation) are not restored.
-            guard let url = tab.content?.url ?? tab.url, url.scheme != "webkit-extension" else { continue }
+            guard let url = tab.webView?.url ?? tab.url, url.scheme != "webkit-extension" else { continue }
             if index == activeIndex { active = saved.count }
             // A live tab's state must be read from its WebView; a sleeping tab already has it cached.
             let interactionData = (tab.webView?.interactionState ?? tab.interactionState) as? Data
@@ -997,20 +1052,20 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         if index != activeIndex { hideFindBar(nil) }
         let previous = activeTab
         previous?.lastActive = Date()
-        previous?.content?.view.removeFromSuperview()
+        previous?.webView?.removeFromSuperview()
         hideSleepSnapshot(animated: false)
 
         activeIndex = index
         let tab = tabs[index]
         tab.lastActive = Date()
         tab.wasViewed = true
-        let wasAsleep = tab.content == nil
-        let content = tab.content ?? wake(tab)
+        let wasAsleep = tab.webView == nil
+        let webView = tab.webView ?? wake(tab)
         rouse(tab)
         if previous !== tab { extensionController?.didActivateTab(tab, previousActiveTab: previous) }
         refreshExtensionButtons()
 
-        contentView.addSubview(content.view)
+        contentView.addSubview(webView)
         layoutWebView(of: tab)
         // The snapshot is only useful while the page reloads; once the tab is in use it's stale.
         if wasAsleep, let snapshot = tab.sleepSnapshot { showSleepSnapshot(snapshot) }
@@ -1023,42 +1078,35 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
             focusAddressBarOnActivate = false
             focusAddressBar(nil)
         } else {
-            window?.makeFirstResponder(tab.url == nil ? addressField : content.view)
+            window?.makeFirstResponder(tab.url == nil ? addressField : webView)
         }
 
         refreshTabStrip()
         updateToolbar()
-        loadingBar.update(loading: content.isLoading, progress: content.estimatedProgress, animated: false)
+        loadingBar.update(loading: webView.isLoading, progress: webView.estimatedProgress, animated: false)
         // Tab count and memory limits are enforced across all windows right away.
         services.enforceHibernation()
     }
 
-    /// Creates the page of a tab (new or sleeping) with the profile's engine. A WebKit tab that
-    /// slept gets its back/forward history and scroll position back via `interactionState`.
+    /// Creates a page for a new or sleeping tab and restores its history and scroll position.
     @discardableResult
-    private func wake(_ tab: Tab, loadURL: Bool = true) -> any TabContent {
-        switch makeEngineContent(for: tab) {
-        case .webKit(let webView):
-            let content = attach(webView, to: tab)
-            guard loadURL else { return content }
-            if let state = tab.interactionState {
-                webView.interactionState = state
-                tab.interactionState = nil
-            } else if let url = tab.url {
-                webView.load(URLRequest(url: url))
-            }
-            return content
-        case .native(let content):
-            attachNative(content, to: tab)
-            // interactionState is WebKit data; other engines start again at the tab's URL.
+    private func wake(_ tab: Tab, loadURL: Bool = true) -> WKWebView {
+        let configuration = extensionController != nil
+            ? profile.extensions.webViewConfiguration(for: tab.url) ?? makeConfiguration()
+            : makeConfiguration()
+        let webView = AskaraWebView(frame: contentView.bounds, configuration: configuration)
+        attach(webView, to: tab)
+        guard loadURL else { return webView }
+        if let state = tab.interactionState {
+            webView.interactionState = state
             tab.interactionState = nil
-            if loadURL, let url = tab.url { content.load(url) }
-            return content
+        } else if let url = tab.url {
+            webView.load(URLRequest(url: url))
         }
+        return webView
     }
 
-    @discardableResult
-    private func attach(_ webView: WKWebView, to tab: Tab) -> WebKitTabContent {
+    private func attach(_ webView: WKWebView, to tab: Tab) {
         webView.navigationDelegate = self
         webView.uiDelegate = self
         webView.allowsBackForwardNavigationGestures = true
@@ -1067,9 +1115,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         // Inspectable from Web Inspector (Develop menu) and from Safari > Develop.
         webView.isInspectable = true
         (webView as? AskaraWebView)?.browser = self
-        let content = (tab.content as? WebKitTabContent).flatMap { $0.webView === webView ? $0 : nil }
-            ?? WebKitTabContent(webView)
-        tab.content = content
+        tab.webView = webView
         // A tab woken from sleep keeps its Device Mode, Appearance, and mute settings.
         webView.customUserAgent = tab.device?.userAgent
         webView.appearance = tab.colorScheme.flatMap(NSAppearance.init(named:))
@@ -1134,114 +1180,6 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
                 MainActor.assumeIsolated { self?.refreshTabStrip() }
             },
         ]
-        return content
-    }
-
-    /// Wires a non-WebKit page to this window. Also used when a tab moves between windows.
-    private func attachNative(_ content: any TabContent, to tab: Tab) {
-        tab.content = content
-        content.setZoom(tab.zoom)
-        if tab.isMuted { content.setMuted(true) }
-#if ASKARA_CEF
-        if let blink = content as? BlinkTabContent {
-            configure(blink, for: tab)
-        }
-#endif
-        content.onEvent = { [weak self, weak tab, weak content] event in
-            // Events of a page the tab no longer shows (it slept or closed) are stale.
-            guard let self, let tab, let content, tab.content === content else { return }
-            self.handle(event, from: content, in: tab)
-        }
-    }
-
-#if ASKARA_CEF
-    private func configure(_ blink: BlinkTabContent, for tab: Tab) {
-        blink.configureContentPolicy(
-            blockedDomains: services.blockListDomains,
-            adBlockExceptions: services.siteSettings.adBlockExceptions,
-            javaScriptBlockedDomains: Array(services.siteSettings.javaScriptBlocked),
-            httpsOnly: services.preferences.httpsOnly,
-            allowedHTTPHosts: Array(services.httpAllowedHosts)
-        )
-        blink.onHTTPSFallback { [weak self, weak tab] insecure, code, message in
-            guard let self, let tab, tab.content === blink else { return }
-            tab.httpFallbackURL = nil
-            let error = NSError(domain: "dev.adityadarma.askara.cef", code: code,
-                                userInfo: [NSLocalizedDescriptionKey: message])
-            self.offerInsecureFallback(insecure, error: error, in: tab)
-        }
-        blink.onDownload { [weak downloads = services.downloads] download in
-            downloads?.track(download)
-        }
-        blink.onPermissionRequest({ [weak self, weak tab, weak blink] requestID, origin, kinds, reply in
-            guard let self, let tab, let blink, tab.content === blink, let host = origin.host else {
-                return reply(false)
-            }
-            self.decidePermission(kinds, host: host, for: tab, blinkRequestID: requestID,
-                                  completion: reply)
-        }, cancelled: { [weak self] requestID in
-            self?.cancelBlinkPermissionAlert(requestID)
-        })
-    }
-
-    private func cancelBlinkPermissionAlert(_ requestID: UInt64) {
-        guard let alert = blinkPermissionAlerts.removeValue(forKey: requestID) else { return }
-        if let parent = alert.window.sheetParent {
-            parent.endSheet(alert.window, returnCode: .abort)
-        } else {
-            alert.window.orderOut(nil)
-        }
-    }
-#endif
-
-    private func handle(_ event: TabContentEvent, from content: any TabContent, in tab: Tab) {
-        switch event {
-        case .stateChanged:
-            if let title = content.title, !title.isEmpty, tab.title != title {
-                tab.title = title
-                if !isPrivate, let url = content.url { profile.updateHistoryTitle(title, for: url) }
-            }
-            if let url = content.url {
-                tab.url = url
-                tab.displayURL = url
-            }
-            if tab === activeTab {
-                loadingBar.update(loading: content.isLoading, progress: content.estimatedProgress)
-                updateToolbar()
-            }
-            refreshTabStrip()
-        case .mainFrameLoadStarted(let url):
-            applySiteCSS(to: content, url: url)
-            applySiteJavaScript(to: content, url: url)
-        case .loadFinished:
-            tab.httpFallbackURL = nil
-            applySiteCSS(to: content, url: content.url)
-            if tab.hidesHomeAddress, tab.homeLandingURL == nil { tab.homeLandingURL = content.url }
-            if tab === activeTab { hideSleepSnapshot(animated: true); updateToolbar() }
-            if tab.refocusAddressAfterLoad {
-                // After the page's own autofocus scripts have run.
-                DispatchQueue.main.async { [weak self, weak tab] in
-                    MainActor.assumeIsolated { if let tab { self?.refocusAddressBarIfNeeded(tab) } }
-                }
-            }
-            if !isPrivate, let url = content.url { profile.recordVisit(url: url, title: content.title) }
-            sessionChanged(immediate: false)
-        case .loadFailed(_, _, let message):
-            guard tab === activeTab else { return }
-            hideSleepSnapshot(animated: true)
-            showToast(String(localized: "Failed to load: \(message)"), duration: 5)
-        case .openInNewTab(let url):
-            let index = tabs.firstIndex { $0 === tab } ?? activeIndex
-            insertTab(url: url, at: index + 1, activate: true)
-        case .popup(let popup, let url):
-            let index = tabs.firstIndex { $0 === tab } ?? activeIndex
-            insertTab(url: url, at: index + 1, activate: true, nativeContent: popup)
-        case .closed:
-            // The page closed itself (window.close()). During app shutdown CEF closes every
-            // browser; those tabs must stay so the saved session keeps them.
-            guard !CEFHost.isShuttingDown else { return }
-            close(tab: tab)
-        }
     }
 
     private func makeConfiguration() -> WKWebViewConfiguration {
@@ -1278,46 +1216,12 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         return config
     }
 
-    private func makeEngineContent(for tab: Tab) -> BrowserEngineContent {
-        let frame = contentView.bounds
-        // Evaluated by WebKit only, so other engines never start the WebKit extension manager.
-        let configuration = { [unowned self] () -> WKWebViewConfiguration in
-            (self.extensionController != nil ? self.profile.extensions.webViewConfiguration(for: tab.url) : nil)
-                ?? self.makeConfiguration()
-        }
-        do {
-            return try profile.engineRuntime.makeContent(
-                frame: frame, privateSession: isPrivate ? privateSessionID : nil,
-                webKitConfiguration: configuration)
-        } catch {
-            // The registry normally falls back before this point. Keep tabs usable if a runtime
-            // disappears between selection and construction.
-            Log.error("Askara: browser engine failed, falling back to WebKit: \(error)")
-            return .webKit(AskaraWebView(frame: frame, configuration: configuration()))
-        }
-    }
-
     func applyRuleList(_ list: WKContentRuleList) {
         for tab in tabs {
             guard let controller = tab.webView?.configuration.userContentController else { continue }
             controller.removeAllContentRuleLists()
             controller.add(list)
         }
-    }
-
-    func applyBlinkBlockList(domains: [String], exceptions: [String]) {
-#if ASKARA_CEF
-        for tab in tabs {
-            guard let blink = tab.content as? BlinkTabContent else { continue }
-            blink.configureContentPolicy(
-                blockedDomains: domains,
-                adBlockExceptions: exceptions,
-                javaScriptBlockedDomains: Array(services.siteSettings.javaScriptBlocked),
-                httpsOnly: services.preferences.httpsOnly,
-                allowedHTTPHosts: Array(services.httpAllowedHosts)
-            )
-        }
-#endif
     }
 
     // MARK: - Hibernation
@@ -1331,7 +1235,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
             }
             // A muted tab's sound doesn't matter to the user, but a call (camera/mic) still does.
             let audible = tab.isMuted ? (tab.webView?.askaraIsCapturingMedia ?? false) : tab.isPlayingAudio
-            return TabSnapshot(id: tab.id, lastActive: tab.lastActive, isLoaded: tab.content != nil,
+            return TabSnapshot(id: tab.id, lastActive: tab.lastActive, isLoaded: tab.webView != nil,
                                isActive: index == activeIndex, memoryBytes: bytes,
                                isPlayingAudio: audible, hasUnsavedInput: tab.hasUnsavedInput,
                                keepAwake: keepsAwake(tab), wasViewed: tab.wasViewed)
@@ -1341,7 +1245,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     /// Pinned tabs and Memory Saver exception sites never sleep.
     private func keepsAwake(_ tab: Tab) -> Bool {
         if tab.isPinned || tab.isPictureInPicture { return true }
-        guard let host = (tab.content?.url ?? tab.url)?.host else { return false }
+        guard let host = (tab.webView?.url ?? tab.url)?.host else { return false }
         return services.preferences.keepsAwake(host: host)
     }
 
@@ -1351,11 +1255,11 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         var changed = false
         for (index, tab) in tabs.enumerated()
         where index != activeIndex && tabIDs.contains(tab.id) && !tab.hasUnsavedInput && (force || !keepsAwake(tab))
-            && tab.content != nil {
+            && tab.webView != nil {
             tab.freedBytes = services.exclusiveFootprint(of: tab.webView)
             let reason = force ? "manual" : (reasons[tab.id]?.rawValue ?? "collapsed")
             Log.notice("Askara: tab slept (\(reason), idle \(Int(Date().timeIntervalSince(tab.lastActive)))s, "
-                       + "\(ProcessMemory.format(tab.freedBytes))): \(tab.content?.url?.host ?? tab.url?.host ?? "?")")
+                       + "\(ProcessMemory.format(tab.freedBytes))): \(tab.webView?.url?.host ?? tab.url?.host ?? "?")")
             services.recordFreed(tab.freedBytes)
             // Dozing tabs already took one; otherwise grab it now (WebKit finishes it after the drop).
             if tab.sleepSnapshot == nil { captureSleepSnapshot(of: tab) }
@@ -1367,9 +1271,9 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
 
     /// "Sleep Background Tabs" menu: every tab except the active one (and pinned tabs) in this window.
     @objc func hibernateNowAction(_ sender: Any?) {
-        let before = tabs.filter { $0.content != nil }.count
+        let before = tabs.filter { $0.webView != nil }.count
         hibernate(tabIDs: Set(tabs.filter { !$0.isPinned }.map(\.id)), force: true)
-        let slept = before - tabs.filter { $0.content != nil }.count
+        let slept = before - tabs.filter { $0.webView != nil }.count
         showToast(slept > 0 ? String(localized: "\(slept) tabs put to sleep") : String(localized: "No active background tabs"), duration: 2)
     }
 
@@ -1385,7 +1289,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
             web.askaraClearBackForwardCache()
             captureSleepSnapshot(of: tab)
             Log.notice("Askara: tab dozing (idle \(Int(Date().timeIntervalSince(tab.lastActive)))s): "
-                       + "\(web.url?.host ?? "?")")
+                        + "\(web.url?.host ?? "?")")
         }
     }
 
@@ -1399,19 +1303,24 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     /// Stores a compressed snapshot of the tab's current view. Skipped in Device Mode, where the page
     /// isn't laid out like the window.
     private func captureSleepSnapshot(of tab: Tab) {
-        guard let web = tab.webView, tab.device == nil, web.bounds.width > 0, web.bounds.height > 0 else { return }
+        guard tab.device == nil else { return }
+        guard let web = tab.webView, web.bounds.width > 0, web.bounds.height > 0 else { return }
         let config = WKSnapshotConfiguration()
         config.afterScreenUpdates = false
         web.takeSnapshot(with: config) { [weak tab] image, _ in
             MainActor.assumeIsolated {
                 // Shown again in the meantime: the snapshot would already be stale.
-                guard let tab, tab.isDozing || tab.content == nil,
-                      let tiff = image?.tiffRepresentation,
-                      let jpeg = NSBitmapImageRep(data: tiff)?
-                        .representation(using: .jpeg, properties: [.compressionFactor: 0.5]) else { return }
-                tab.sleepSnapshot = jpeg
+                guard let tab, tab.isDozing || tab.webView == nil, let image else { return }
+                self.storeSleepSnapshot(image, on: tab)
             }
         }
+    }
+
+    private func storeSleepSnapshot(_ image: NSImage, on tab: Tab) {
+        guard let tiff = image.tiffRepresentation,
+              let jpeg = NSBitmapImageRep(data: tiff)?
+                .representation(using: .jpeg, properties: [.compressionFactor: 0.5]) else { return }
+        tab.sleepSnapshot = jpeg
     }
 
     private func showSleepSnapshot(_ data: Data) {
@@ -1456,20 +1365,21 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     }
 
     private func dropWebView(of tab: Tab) {
-        guard let content = tab.content else { return }
-        if let url = content.url { tab.url = url }
+        guard let webView = tab.webView else { return }
+        if let url = webView.url { tab.url = url }
         // Keep back/forward history and scroll position so the tab feels intact when woken.
         if let web = tab.webView { tab.interactionState = web.interactionState }
-        // Detach first so the engine's own close notification is ignored for this tab.
-        tab.content = nil
-        content.onEvent = nil
-        content.close()
+        tab.webView = nil
+        webView.stopLoading()
+        webView.navigationDelegate = nil
+        webView.uiDelegate = nil
+        webView.removeFromSuperview()
     }
 
     private func closeTab(at index: Int) {
         guard tabs.indices.contains(index) else { return }
         let tab = tabs[index]
-        if !isPrivate, let url = tab.content?.url ?? tab.url {
+        if !isPrivate, let url = tab.webView?.url ?? tab.url {
             profile.recentlyClosed.push(ClosedTab(url: url, title: tab.title))
         }
         dropWebView(of: tab)
@@ -1537,13 +1447,13 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         tabChanged(tab, .pinned)
         tabsChanged()
         // A pinned tab never sleeps, so load it now.
-        if pinned, tab.content == nil { wake(tab); refreshTabStrip() }
+        if pinned, tab.webView == nil { wake(tab); refreshTabStrip() }
     }
 
     func setMuted(_ muted: Bool, tab: Tab) {
         guard tab.isMuted != muted else { return }
         tab.isMuted = muted
-        tab.content?.setMuted(muted)
+        tab.webView?.askaraSetMuted(muted)
         tabChanged(tab, .muted)
         refreshTabStrip()
         sessionChanged()
@@ -1560,16 +1470,16 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     }
 
     @objc func duplicateTabAction(_ sender: Any?) {
-        guard let tab = targetTab(sender), let url = tab.content?.url ?? tab.url,
+        guard let tab = targetTab(sender), let url = tab.webView?.url ?? tab.url,
               let index = tabs.firstIndex(where: { $0 === tab }) else { return }
         let copy = insertTab(url: url, at: index + 1, activate: true)
         copy.zoom = tab.zoom
-        copy.content?.setZoom(tab.zoom)
+        copy.webView?.pageZoom = tab.zoom
     }
 
     @objc func reloadTabAction(_ sender: Any?) {
         guard let tab = targetTab(sender) else { return }
-        if let web = tab.content { web.reload() } else { activate(tab: tab) }
+        if let web = tab.webView { web.reload() } else { activate(tab: tab) }
     }
 
     @objc func closeTargetTabAction(_ sender: Any?) {
@@ -1630,13 +1540,13 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
 
     @objc func newTabAction(_ sender: Any?) { openBlankTab() }
     @objc func closeTabAction(_ sender: Any?) { closeTab(at: activeIndex) }
-    @objc func backAction(_ sender: Any?) { activeTab?.content?.goBack() }
-    @objc func forwardAction(_ sender: Any?) { activeTab?.content?.goForward() }
+    @objc func backAction(_ sender: Any?) { activeTab?.webView?.goBack() }
+    @objc func forwardAction(_ sender: Any?) { activeTab?.webView?.goForward() }
     @objc private func homeAction(_ sender: Any?) { load(services.homeURL) }
 
     /// Data for the Tab menu: open tabs only.
     var tabMenuEntries: [(title: String, isActive: Bool, isSleeping: Bool)] {
-        tabs.enumerated().map { ($1.title, $0 == activeIndex, $1.content == nil) }
+        tabs.enumerated().map { ($1.title, $0 == activeIndex, $1.webView == nil) }
     }
 
     @objc func selectTabFromMenu(_ sender: NSMenuItem) { activate(index: sender.tag) }
@@ -1648,7 +1558,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     }
 
     @objc func reloadAction(_ sender: Any?) {
-        guard let web = activeTab?.content else { return }
+        guard let web = activeTab?.webView else { return }
         if web.isLoading { web.stopLoading() } else { web.reload() }
     }
 
@@ -1733,7 +1643,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     /// ⌘D / star: adds the page and shows a popover to rename or pick a folder, like Chrome.
     /// Already bookmarked: the popover opens for editing (Remove is there).
     @objc func toggleBookmarkAction(_ sender: Any?) {
-        guard let tab = activeTab, let url = tab.content?.url ?? tab.url else { return }
+        guard let tab = activeTab, let url = tab.webView?.url ?? tab.url else { return }
         let existing = profile.bookmarks.node(for: url)
         let id = existing?.id ?? profile.editBookmarks { $0.add(url: url, title: tab.title)?.id }
         guard let id else { return }
@@ -1780,6 +1690,12 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         showToast(String(localized: "Address copied"), duration: 1.5)
     }
 
+    @objc func copyContextValue(_ sender: NSMenuItem) {
+        guard let value = sender.representedObject as? String else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(value, forType: .string)
+    }
+
     // MARK: - Actions: Develop
 
     @objc func showWebInspectorAction(_ sender: Any?) { openDevTools(.inspector) }
@@ -1795,8 +1711,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     }
 
     @objc func viewSourceAction(_ sender: Any?) {
-        guard let url = activeTab?.webView?.url, ["http", "https"].contains(url.scheme ?? "") else { return }
-        activeTab?.webView?.evaluateJavaScript("document.documentElement.outerHTML") { [weak self] result, _ in
+        guard let tab = activeTab, let url = tab.webView?.url, ["http", "https"].contains(url.scheme ?? "") else { return }
+        tab.webView?.evaluateJavaScript("document.documentElement.outerHTML") { [weak self] result, _ in
             guard let self, let html = result as? String else { return }
             SourceWindow.show(html: html, url: url, relativeTo: self.window)
         }
@@ -1806,7 +1722,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
 
     @objc private func showPrivacyDashboard(_ sender: NSButton) {
         guard let host = activeSiteHost else { return NSSound.beep() }
-        let secure = (activeTab?.content?.url ?? activeTab?.url)?.scheme?.lowercased() == "https"
+        let secure = (activeTab?.webView?.url ?? activeTab?.url)?.scheme?.lowercased() == "https"
         let popover = NSPopover()
         popover.behavior = .transient
         popover.contentSize = NSSize(width: 360, height: 220)
@@ -1859,7 +1775,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
 
     /// Host of the active page, for per-site settings. nil on non-web pages.
     var activeSiteHost: String? {
-        guard let url = activeTab?.content?.url ?? activeTab?.url, ["http", "https"].contains(url.scheme ?? ""),
+        guard let url = activeTab?.webView?.url ?? activeTab?.url, ["http", "https"].contains(url.scheme ?? ""),
               let host = url.host, !host.isEmpty else { return nil }
         return host
     }
@@ -1878,9 +1794,9 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
 
     func reloadTabs(relatedTo host: String) {
         for tab in tabs {
-            guard let content = tab.content, let tabHost = content.url?.host,
+            guard let webView = tab.webView, let tabHost = webView.url?.host,
                   SiteSettings.isRelated(tabHost, host) else { continue }
-            content.reload()
+            webView.reload()
         }
     }
 
@@ -1901,9 +1817,9 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     /// CSS updates live; JavaScript only runs again on reload (re-running it could double its effects).
     func siteCodeChanged(host: String, reload: Bool) {
         for tab in tabs {
-            guard let content = tab.content, let tabHost = content.url?.host,
+            guard let webView = tab.webView, let tabHost = webView.url?.host,
                   SiteSettings.isRelated(tabHost, host) else { continue }
-            if reload { content.reload() } else { applySiteCSS(to: content, url: content.url) }
+            if reload { webView.reload() } else { applySiteCSS(to: webView, url: webView.url) }
         }
     }
 
@@ -1912,19 +1828,19 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         return services.siteSettings.customizations(matching: host)
     }
 
-    private func applySiteCSS(to content: any TabContent, url: URL?) {
+    private func applySiteCSS(to webView: WKWebView, url: URL?) {
         guard let list = siteCustomizations(for: url) else { return }
         let css = list.map(\.css).joined(separator: "\n")
         // Removing also covers CSS deleted in the editor while the page is open.
-        content.executeJavaScript(SiteCodeScript.css(css) ?? SiteCodeScript.removeCSS, completion: nil)
+        webView.evaluateJavaScript(SiteCodeScript.css(css) ?? SiteCodeScript.removeCSS)
     }
 
-    private func applySiteJavaScript(to content: any TabContent, url: URL?) {
+    private func applySiteJavaScript(to webView: WKWebView, url: URL?) {
         guard let list = siteCustomizations(for: url) else { return }
         for code in list.map(\.javaScript) where !code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            content.executeJavaScript(SiteCodeScript.javaScript(code)) { [weak self, weak content] error in
+            webView.evaluateJavaScript(SiteCodeScript.javaScript(code)) { [weak self, weak webView] _, error in
                 // Syntax errors land here; runtime errors are logged to the page console.
-                guard let self, let error, let content, content === self.activeTab?.content else { return }
+                guard let self, let error, let webView, webView === self.activeTab?.webView else { return }
                 let message = (error as NSError).userInfo["WKJavaScriptExceptionMessage"] as? String
                     ?? error.localizedDescription
                 self.showToast(String(localized: "Custom JavaScript error: \(message)"), duration: 5)
@@ -1967,13 +1883,6 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     /// Full size normally. In Device Mode: the device's size, centered, scaled down to fit the window.
     /// `pageZoom` is scaled by the same factor, so the page still lays out at the device's CSS width.
     private func layoutWebView(of tab: Tab) {
-        // Other engines have no Device Mode: always fill the content area.
-        if tab.webView == nil, let view = tab.content?.view, view.superview === contentView {
-            view.autoresizingMask = [.width, .height]
-            view.frame = contentView.bounds
-            contentView.layer?.backgroundColor = nil
-            return
-        }
         guard let web = tab.webView, web.superview === contentView else { return }
         guard let device = tab.device else {
             web.autoresizingMask = [.width, .height]
@@ -2011,7 +1920,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         guard let tab = activeTab else { return }
         tab.zoom = zoom
         // Device Mode combines zoom with its fit-to-window scale.
-        if tab.device != nil { layoutWebView(of: tab) } else { tab.content?.setZoom(zoom) }
+        if tab.device != nil { layoutWebView(of: tab) } else { tab.webView?.pageZoom = zoom }
         showToast(String(localized: "Zoom \(ZoomLevels.label(zoom))"), duration: 1.5)
     }
 
@@ -2094,7 +2003,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         }
         if control === addressField, selector == #selector(NSResponder.cancelOperation(_:)) {
             addressField.stringValue = addressText(for: activeTab)
-            if let web = activeTab?.content?.view { window?.makeFirstResponder(web) }
+            if let web = activeTab?.webView { window?.makeFirstResponder(web) }
             return true
         }
         return false
@@ -2129,9 +2038,9 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     // MARK: - Menu validation
 
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
-        // WebKit-only features validate against `web`; engine-neutral ones against `content`.
+        // Some actions need the WKWebView API; basic navigation uses the tab wrapper.
         let web = activeTab?.webView
-        let content = activeTab?.content
+        let content = activeTab?.webView
         switch item.action {
         case #selector(backAction(_:)): return content?.canGoBack ?? false
         case #selector(forwardAction(_:)): return content?.canGoForward ?? false
@@ -2146,13 +2055,20 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
             guard let url = activeTab?.url else { return false }
             item.title = profile.bookmarks.contains(url) ? String(localized: "Remove Bookmark") : String(localized: "Add Bookmark")
             return true
+        case #selector(printPageAction(_:)), #selector(showFindBar(_:)), #selector(hideFindBar(_:)):
+            return content != nil
         case #selector(findNextAction(_:)), #selector(findPreviousAction(_:)):
-            return web != nil && !findField.stringValue.isEmpty
-        case #selector(printPageAction(_:)), #selector(showFindBar(_:)),
+            return content != nil && !findField.stringValue.isEmpty
+        case #selector(viewSourceAction(_:)):
+            return ["http", "https"].contains(content?.url?.scheme ?? "")
+        case
              #selector(showWebInspectorAction(_:)), #selector(showConsoleAction(_:)),
              #selector(showResourcesAction(_:)), #selector(selectElementAction(_:)),
              #selector(reloadIgnoringCacheAction(_:)):
-            return web != nil
+            if item.action == #selector(reloadIgnoringCacheAction(_:)) { return web != nil }
+            return content != nil
+        case #selector(togglePictureInPicture(_:)):
+            return activeTab?.pictureInPictureEligible == true
         case #selector(toggleSiteJavaScriptAction(_:)):
             guard let host = activeSiteHost else {
                 item.title = String(localized: "Block JavaScript on This Site")
@@ -2176,10 +2092,10 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
             let schemes: [NSAppearance.Name?] = [nil, .aqua, .darkAqua]
             item.state = schemes.indices.contains(item.tag) && schemes[item.tag] == activeTab?.colorScheme ? .on : .off
             return web != nil
-        case #selector(viewSourceAction(_:)):
-            return ["http", "https"].contains(web?.url?.scheme ?? "")
         case #selector(copyPageAddress(_:)):
             return activeTab?.url != nil
+        case #selector(copyContextValue(_:)):
+            return item.representedObject is String
         case #selector(openInSafariAction(_:)):
             return activeTab?.url != nil
         case #selector(selectTabNumberAction(_:)):
@@ -2303,17 +2219,13 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         tab.pictureInPictureFrame = nil
         if tab === activeTab { updateToolbar() }
         // As early as possible so the page doesn't flash without the custom CSS.
-        if let content = tabs.first(where: { $0.webView === webView })?.content {
-            applySiteCSS(to: content, url: webView.url)
-            applySiteJavaScript(to: content, url: webView.url)
-        }
+        applySiteCSS(to: webView, url: webView.url)
+        applySiteJavaScript(to: webView, url: webView.url)
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         // Again once loaded: at commit time the document can still be too empty to take the CSS.
-        if let content = tabs.first(where: { $0.webView === webView })?.content {
-            applySiteCSS(to: content, url: webView.url)
-        }
+        applySiteCSS(to: webView, url: webView.url)
         pageSettled(webView)
         if let tab = tabs.first(where: { $0.webView === webView }), tab.refocusAddressAfterLoad {
             // After the page's own autofocus scripts have run.
@@ -2418,15 +2330,11 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
             if response == .alertSecondButtonReturn {
                 // Allowed until Askara quits, like Chrome.
                 self.services.httpAllowedHosts.insert(SitePermissions.key(for: host))
-                self.services.windows.forEach {
-                    $0.applyBlinkBlockList(domains: self.services.blockListDomains,
-                                           exceptions: self.services.siteSettings.adBlockExceptions)
-                }
                 self.load(url, in: tab)
-            } else if tab.content?.canGoBack == true {
-                tab.content?.goBack()
+            } else if tab.webView?.canGoBack == true {
+                tab.webView?.goBack()
             } else {
-                tab.displayURL = tab.content?.url ?? tab.displayURL
+                tab.displayURL = tab.webView?.url ?? tab.displayURL
                 self.updateToolbar()
             }
         }
@@ -2526,10 +2434,9 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
 
     /// Uses the saved choice, or asks. Private windows ask every time and don't remember "Always".
     private func decidePermission(_ kinds: [PermissionKind], host: String, for tab: Tab,
-                                  blinkRequestID: UInt64? = nil,
                                   completion: @escaping @MainActor (Bool) -> Void) {
         guard !host.isEmpty else { return completion(false) }
-        guard tab === activeTab, tab.content != nil else { return completion(false) }
+        guard tab === activeTab, tab.webView != nil else { return completion(false) }
         if !isPrivate, let saved = profile.permissions.decision(for: kinds, host: host) {
             return completion(saved == .allow)
         }
@@ -2557,14 +2464,12 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
             alert.suppressionButton?.title = String(localized: "Remember for this site")
             alert.suppressionButton?.state = .on
         }
-        if let blinkRequestID { blinkPermissionAlerts[blinkRequestID] = alert }
         alert.beginSheetModal(for: window) { [weak self] response in
-            if let blinkRequestID { self?.blinkPermissionAlerts[blinkRequestID] = nil }
             guard response == .alertFirstButtonReturn || response == .alertSecondButtonReturn else {
                 return completion(false)
             }
             let allowed = response == .alertFirstButtonReturn
-            if let self, tab === self.activeTab, tab.content != nil,
+            if let self, tab === self.activeTab, tab.webView != nil,
                !self.isPrivate, alert.suppressionButton?.state == .on {
                 kinds.forEach { self.profile.setPermission(allowed ? .allow : .block, for: $0, host: host) }
             }
@@ -2622,7 +2527,6 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         // Popup tabs can retain script access to their opener. Close children/newest tabs first.
         tabs.reversed().forEach(dropWebView(of:))
         tabs.removeAll()
-        if isPrivate { profile.engineRuntime.endPrivateSession(privateSessionID) }
         if let controller = extensionController {
             closing.forEach { controller.didCloseTab($0, windowIsClosing: true) }
             controller.didCloseWindow(self)
@@ -2641,9 +2545,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
             view.removeFromSuperview()
         }
         pinnedExtensionButtons.removeAll()
-        // Hidden where extensions can't run, so the WebKit extension manager never starts there.
-        extensionsButton.isHidden = isPrivate || !supportsExtensions
-        guard !isPrivate, supportsExtensions else { return }
+        extensionsButton.isHidden = isPrivate
+        guard !isPrivate else { return }
         let manager = profile.extensions
         for (index, entry) in manager.loaded.enumerated() where manager.isPinned(entry.item) {
             let action = entry.context.action(for: activeTab)

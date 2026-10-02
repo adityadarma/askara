@@ -9,31 +9,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var homeURL: URL { services.homeURL }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        CEFHost.start()
-        // The smoke test uses its own throwaway storage: never open or touch the user's profiles.
-        guard !CEFHost.isSmokeTest else { return }
         NSApp.mainMenu = MainMenu.make(delegate: self)
         services.compileBlockList()
         // Retry removing website data of deleted profiles that was still in use last time.
         services.removeDataStores()
         services.sync.start()
-        // The last used profile restores all its windows. Background tabs stay asleep.
-        // with its first window, and session login cookies are restored before the tab loads.
+        // Start with one fresh home-page tab. Profile cookies remain available, but prior windows
+        // and tabs are not restored automatically.
         services.openProfile(services.profileList.lastUsedID)
         watchMemoryPressure()
         services.startHibernationTimer()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        // The smoke test closes windows between phases and quits by itself.
-        !services.isRestartingProfile && !CEFHost.isSmokeTest
+        true
     }
 
     /// Save session cookies before quitting (cookie reads are asynchronous).
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        if CEFHost.isSmokeTest {
-            return .terminateNow
-        }
         services.saveAll()
         var replied = false
         let finish = {
@@ -41,7 +34,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             replied = true
             NSApp.reply(toApplicationShouldTerminate: true)
         }
-        services.saveSessionCookies { finish() }
+        let storageWrites = DispatchGroup()
+        storageWrites.enter()
+        services.saveSessionCookies { storageWrites.leave() }
+        storageWrites.notify(queue: .main) { finish() }
         // Ensure the app can still quit if WebKit never responds.
         let timer = Timer(timeInterval: 2, repeats: false) { _ in MainActor.assumeIsolated { finish() } }
         RunLoop.main.add(timer, forMode: .common)
@@ -49,7 +45,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        guard !CEFHost.isSmokeTest else { return }
         services.saveAll()
         CrashReporter.shared.finishCleanly()
     }
@@ -93,7 +88,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc func newPrivateWindowAction(_ sender: Any?) {
-        services.makeWindow(profile: services.currentProfile, isPrivate: true).openBlankTab()
+        services.makeWindow(profile: services.currentProfile, isPrivate: true).newTab(url: homeURL)
     }
 
     /// Profile chosen in File > Profiles or the toolbar profile menu: go to its window, or open it.
@@ -132,22 +127,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     @objc func showDownloadsAction(_ sender: Any?) { LibraryWindowController.shared.show(.downloads) }
     @objc func showTaskManagerAction(_ sender: Any?) { TaskManagerWindowController.shared.show() }
-
-    @objc func showPasswordManagersAction(_ sender: Any?) {
-        let manager = services.currentProfile.extensions
-        let alert = NSAlert()
-        alert.messageText = String(localized: "Password Managers")
-        if manager.installed.isEmpty {
-            alert.informativeText = String(localized: "No Safari Web Extension password manager was found. Install one such as Bitwarden, then enable it from the Extensions menu. Askara cannot read passwords from Apple Passwords directly.")
-        } else {
-            let rows = manager.installed.map { item in
-                "\(manager.isEnabled(item) ? "✓" : "○") \(item.name)"
-            }.joined(separator: "\n")
-            alert.informativeText = rows + "\n\n" + String(localized: "Enable or disable these Safari Web Extensions from the Extensions menu. Password vaults remain managed by their own apps.")
-        }
-        alert.addButton(withTitle: String(localized: "OK"))
-        alert.runModal()
-    }
 
     @objc func exportCrashReportAction(_ sender: Any?) {
         CrashReporter.shared.exportReport(relativeTo: NSApp.keyWindow)
@@ -429,7 +408,6 @@ enum MainMenu {
             .separator(),
             blockStatus,
             item(String(localized: "Update Ad Block List"), #selector(A.updateBlockListAction(_:))),
-            item(String(localized: "Password Managers…"), #selector(A.showPasswordManagersAction(_:))),
             item(String(localized: "Export Previous Session Report…"), #selector(A.exportCrashReportAction(_:))),
             item(String(localized: "Delete Previous Session Report"), #selector(A.deleteCrashReportAction(_:))),
             .separator(),

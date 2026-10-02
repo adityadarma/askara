@@ -137,29 +137,6 @@ import Testing
         #expect(legacy.interactionData == nil)
     }
 
-    @Test func engineChangeKeepsPortableSessionStateOnly() {
-        let tabs = [
-            SessionState.SavedTab(url: URL(string: "https://a.com")!, title: "A", isPinned: true,
-                                  interactionData: Data([1, 2, 3])),
-            SessionState.SavedTab(url: URL(string: "https://b.com")!, title: "B", isMuted: true,
-                                  interactionData: Data([4, 5, 6])),
-        ]
-        let frame = SessionState.SavedFrame(x: 10, y: 20, width: 900, height: 700)
-        let state = SessionState(windows: [
-            .init(tabs: tabs, activeIndex: 1, frame: frame, isFullScreen: true),
-        ])
-
-        let portable = state.portableForEngineChange
-
-        #expect(portable.windows.count == 1)
-        #expect(portable.windows[0].tabs.map(\.url) == tabs.map(\.url))
-        #expect(portable.windows[0].tabs[0].isPinned == true)
-        #expect(portable.windows[0].tabs[1].isMuted == true)
-        #expect(portable.windows[0].tabs.allSatisfy { $0.interactionData == nil })
-        #expect(portable.windows[0].activeIndex == 1)
-        #expect(portable.windows[0].frame == frame)
-        #expect(portable.windows[0].isFullScreen == true)
-    }
 }
 
 @Suite struct KeepAwakeHibernationTests {

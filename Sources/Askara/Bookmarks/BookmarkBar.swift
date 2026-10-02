@@ -497,7 +497,7 @@ final class BookmarkBarView: NSView, NSDraggingSource {
     private func draggedURL(_ pasteboard: NSPasteboard) -> (url: URL, title: String)? {
         if let id = pasteboard.string(forType: TabStripView.tabType).flatMap(UUID.init(uuidString:)),
            let tab = BrowserServices.shared.windows.lazy.flatMap(\.allTabs).first(where: { $0.id == id }),
-           let url = tab.content?.url ?? tab.url, HistoryStore.isRecordable(url) {
+           let url = tab.webView?.url ?? tab.url, HistoryStore.isRecordable(url) {
             return (url, tab.title)
         }
         guard let url = NSURL(from: pasteboard) as URL?, HistoryStore.isRecordable(url) else { return nil }

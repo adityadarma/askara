@@ -25,13 +25,7 @@ final class BrowserServices {
     static let shared = BrowserServices()
 
     private(set) var ruleList: WKContentRuleList?
-    var blockListDomains: [String] {
-        var domains = blockListUpdater.currentDomains
-        if let smoke = ProcessInfo.processInfo.environment["ASKARA_CEF_SMOKE_BLOCK_DOMAIN"] {
-            domains.append(smoke)
-        }
-        return domains
-    }
+    var blockListDomains: [String] { blockListUpdater.currentDomains }
     private(set) var windows: [BrowserWindowController] = []
     let downloads: DownloadManager
     lazy var sync = SyncCoordinator(services: self)
@@ -40,26 +34,17 @@ final class BrowserServices {
     private let preferencesFile: JSONFile<BrowserPreferences>
     private let profilesFile: JSONFile<ProfileList>
     private let storageDirectory: URL?
-    private let dataStoreFactory: (UUID) -> WKWebsiteDataStore
     /// Per-site JavaScript blocking and custom CSS/JavaScript. Kept when browsing data is cleared, like Chrome.
     private(set) var siteSettings: SiteSettings
     /// Settings window (⌘,). Shared by all profiles.
     private(set) var preferences: BrowserPreferences
     private(set) var profileList: ProfileList
-    let engineRegistry = BrowserEngineRegistry()
     /// Profiles opened since launch.
     private var profileData: [UUID: ProfileData] = [:]
-    private var restartingProfileIDs: Set<UUID> = []
-    var isRestartingProfile: Bool { !restartingProfileIDs.isEmpty }
 
-    init(storageDirectory: URL? = nil,
-         downloadDirectory: URL? = nil,
-         dataStoreFactory: ((UUID) -> WKWebsiteDataStore)? = nil) {
+    init(storageDirectory: URL? = nil, downloadDirectory: URL? = nil) {
         downloads = DownloadManager(directory: downloadDirectory)
         self.storageDirectory = storageDirectory
-        self.dataStoreFactory = dataStoreFactory ?? { id in
-            id == Profile.defaultID ? .default() : WKWebsiteDataStore(forIdentifier: id)
-        }
         if let storageDirectory {
             siteSettingsFile = JSONFile(url: storageDirectory.appendingPathComponent("site-settings.json"))
             preferencesFile = JSONFile(url: storageDirectory.appendingPathComponent("preferences.json"))
@@ -71,7 +56,15 @@ final class BrowserServices {
         }
         siteSettings = siteSettingsFile.load() ?? SiteSettings()
         preferences = preferencesFile.load() ?? BrowserPreferences()
-        profileList = profilesFile.load() ?? ProfileList(defaultName: String(localized: "Main"))
+        let savedProfiles = profilesFile.load()
+        profileList = savedProfiles ?? ProfileList(defaultName: String(localized: "Main"))
+        // Rewrite old profiles without the removed browserEngineID field.
+        if savedProfiles != nil { try? profilesFile.save(profileList) }
+        // CEF is no longer bundled. Its cache contains no profile metadata worth preserving.
+        if storageDirectory == nil {
+            let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            try? FileManager.default.removeItem(at: support.appendingPathComponent("Askara/Engines/Blink"))
+        }
     }
 
     // MARK: - Preferences
@@ -98,17 +91,11 @@ final class BrowserServices {
     func setJavaScriptBlocked(_ blocked: Bool, host: String) {
         siteSettings.setJavaScriptBlocked(blocked, host: host)
         saveSiteSettings()
-        windows.forEach {
-            $0.applyBlinkBlockList(domains: blockListDomains, exceptions: siteSettings.adBlockExceptions)
-        }
     }
 
     func setAdBlockDisabled(_ disabled: Bool, host: String) {
         siteSettings.setAdBlockDisabled(disabled, host: host)
         saveSiteSettings()
-        windows.forEach {
-            $0.applyBlinkBlockList(domains: blockListDomains, exceptions: siteSettings.adBlockExceptions)
-        }
         blockListUpdater.recompile()
         windows.forEach { $0.reloadTabs(relatedTo: host) }
     }
@@ -130,7 +117,9 @@ final class BrowserServices {
         let resolvedID = profileList.profile(id) != nil ? id : Profile.defaultID
         let profileDirectory = storageDirectory?.appendingPathComponent(Profile.folder(for: resolvedID),
                                                                          isDirectory: true)
-        let data = ProfileData(id: resolvedID, services: self, dataStore: dataStoreFactory(resolvedID),
+        let dataStore = resolvedID == Profile.defaultID ? WKWebsiteDataStore.default()
+            : WKWebsiteDataStore(forIdentifier: resolvedID)
+        let data = ProfileData(id: resolvedID, services: self, dataStore: dataStore,
                                storageDirectory: profileDirectory)
         profileData[data.id] = data
         return data
@@ -139,63 +128,21 @@ final class BrowserServices {
     /// Profile of the window in use, or the last used profile when no window is open.
     var currentProfile: ProfileData { keyBrowserWindow?.profile ?? data(for: profileList.lastUsedID) }
 
-    /// Engine held by this profile's currently loaded runtime, or nil if it has not loaded this launch.
-    func loadedEngine(for id: UUID) -> BrowserEngine? { profileData[id]?.browserEngine }
-
     /// A normal window of this profile became active: it opens at next launch.
     func profileUsed(_ profile: ProfileData) {
         guard profileList.markUsed(profile.id) else { return }
         saveProfiles()
     }
 
-    func addProfile(name: String, browserEngine: BrowserEngine = .webkit) -> Profile? {
-        guard let profile = profileList.add(name: name, browserEngine: browserEngine) else { return nil }
+    func addProfile(name: String) -> Profile? {
+        guard let profile = profileList.add(name: name) else { return nil }
         saveProfiles()
         return profile
     }
 
-    func updateProfile(_ id: UUID, name: String, colorIndex: Int,
-                       browserEngine: BrowserEngine? = nil) {
-        guard profileList.update(id, name: name, colorIndex: colorIndex,
-                                 browserEngine: browserEngine) else { return }
+    func updateProfile(_ id: UUID, name: String, colorIndex: Int) {
+        guard profileList.update(id, name: name, colorIndex: colorIndex) else { return }
         saveProfiles()
-    }
-
-    /// Recreates one profile's runtime after its engine changes. Other profiles keep running.
-    /// Normal windows are restored from portable tab metadata; private windows are intentionally closed.
-    func restartProfile(_ id: UUID, completion: (@MainActor () -> Void)? = nil) {
-        guard !restartingProfileIDs.contains(id), let oldData = profileData[id] else {
-            openProfile(id)
-            completion?()
-            return
-        }
-
-        let normalWindows = oldData.windows.filter { !$0.isPrivate }.sorted { $0.lastFocused > $1.lastFocused }
-        let session = SessionState(windows: normalWindows.map { $0.savedState() }).portableForEngineChange
-        oldData.saveAll()
-        oldData.saveSession(session)
-        oldData.shutDownRuntime()
-        restartingProfileIDs.insert(id)
-
-        // Closing a window normally updates the session. During a runtime restart the snapshot above
-        // is authoritative, so windowWillClose only removes each controller from the window list.
-        oldData.windows.forEach { $0.close() }
-        profileData[id] = nil
-
-        // Give AppKit and the old engine views one run-loop turn to release their runtime objects.
-        DispatchQueue.main.async {
-            let newData = self.data(for: id)
-            newData.prepare {
-                if session.isEmpty {
-                    self.makeWindow(profile: newData).newTab(url: self.homeURL)
-                } else {
-                    newData.restore(session: session)
-                }
-                self.restartingProfileIDs.remove(id)
-                NSApp.activate()
-                completion?()
-            }
-        }
     }
 
     /// Closes the profile's windows and deletes all its data: website data, history, bookmarks, session.
@@ -204,7 +151,6 @@ final class BrowserServices {
         let data = profileData[id]
         data?.windows.forEach { $0.close() }
         data?.discard()
-        CEFHost.scheduleProfileDataRemoval(forProfile: id)
         profileData[id] = nil
         profileList.remove(id)
         saveProfiles()
@@ -239,8 +185,9 @@ final class BrowserServices {
         NotificationCenter.default.post(name: .askaraProfilesChanged, object: nil)
     }
 
-    /// Opens a profile: its existing normal window if one is open, otherwise a new window with
-    /// the tab that was active last time (or the home page).
+    /// Opens a profile: its existing normal window if one is open, otherwise a fresh window with
+    /// exactly one home-page tab. Session state remains a crash-recovery record only; it is not
+    /// restored automatically so each browser launch starts clean.
     func openProfile(_ id: UUID) {
         let profile = data(for: id)
         if let window = profile.windows.filter({ !$0.isPrivate }).max(by: { $0.lastFocused < $1.lastFocused }) {
@@ -248,9 +195,7 @@ final class BrowserServices {
             return
         }
         profile.prepare {
-            if !profile.restoreSession() {
-                self.makeWindow(profile: profile).newTab(url: self.homeURL)
-            }
+            self.makeWindow(profile: profile).newTab(url: self.homeURL)
             NSApp.activate()
         }
     }
@@ -282,7 +227,7 @@ final class BrowserServices {
 
     func windowWillClose(_ controller: BrowserWindowController) {
         let profile = controller.profile
-        if !controller.isPrivate, !restartingProfileIDs.contains(profile.id) {
+        if !controller.isPrivate {
             let remainingNormal = profile.windows.filter { $0 !== controller && !$0.isPrivate }
             if remainingNormal.isEmpty {
                 // Last normal window of this profile: save it so it is restored when the profile reopens.
@@ -383,12 +328,6 @@ final class BrowserServices {
 
     /// Loads the saved blocklist, then updates it automatically once a day.
     func compileBlockList() {
-        blockListUpdater.onDomainsChanged = { [weak self] domains in
-            guard let self else { return }
-            self.windows.forEach {
-                $0.applyBlinkBlockList(domains: domains, exceptions: self.siteSettings.adBlockExceptions)
-            }
-        }
         blockListUpdater.onCompiled = { [weak self] list in
             guard let self else { return }
             self.ruleList = list
@@ -423,4 +362,5 @@ final class BrowserServices {
         }
         group.notify(queue: .main) { MainActor.assumeIsolated { completion() } }
     }
+
 }

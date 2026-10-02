@@ -17,6 +17,7 @@ enum ProcessMemory {
     static func format(_ bytes: UInt64) -> String {
         ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .memory)
     }
+
 }
 
 /// Reads process CPU time (user + system), the same source as Activity Monitor's "% CPU" column.

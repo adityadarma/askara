@@ -60,18 +60,6 @@ public struct SessionState: Codable, Equatable {
 
     public var isEmpty: Bool { windows.isEmpty }
 
-    /// State safe to pass to a different rendering engine. Opaque interaction state belongs to the
-    /// engine that produced it, while URL, title, pin, mute, geometry, and active-tab state are portable.
-    public var portableForEngineChange: SessionState {
-        SessionState(windows: windows.map { window in
-            SavedWindow(tabs: window.tabs.map { tab in
-                SavedTab(url: tab.url, title: tab.title, isPinned: tab.isPinned == true,
-                         isMuted: tab.isMuted == true)
-            }, activeIndex: window.activeIndex, frame: window.frame,
-                        isFullScreen: window.isFullScreen == true)
-        })
-    }
-
     /// The active tab of the most recently used window (saved first). Askara opens only this tab
     /// when a profile opens, so launching doesn't bring back a pile of tabs.
     public var startupTab: SavedTab? {

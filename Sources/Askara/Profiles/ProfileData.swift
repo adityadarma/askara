@@ -8,9 +8,6 @@ import AskaraCore
 @MainActor
 final class ProfileData {
     let id: UUID
-    /// Fixed for this profile runtime. Engine changes recreate the profile runtime and its windows.
-    let browserEngine: BrowserEngine
-    let engineRuntime: any BrowserEngineRuntime
     let dataStore: WKWebsiteDataStore
     let sessionCookies: SessionCookies
 
@@ -35,9 +32,6 @@ final class ProfileData {
          dataStore suppliedDataStore: WKWebsiteDataStore? = nil, storageDirectory: URL? = nil) {
         self.id = id
         self.services = suppliedServices ?? .shared
-        let configuredEngine = self.services.profileList.profile(id)?.browserEngine ?? .webkit
-        engineRuntime = self.services.engineRegistry.makeRuntime(for: configuredEngine, profileID: id)
-        browserEngine = engineRuntime.engine
         let folder = Profile.folder(for: id)
         // The first profile keeps WebKit's default store, so logins from before profiles existed stay.
         dataStore = suppliedDataStore ?? (id == Profile.defaultID ? .default() : WKWebsiteDataStore(forIdentifier: id))
@@ -102,9 +96,7 @@ final class ProfileData {
         if let extensionManager { return extensionManager }
         let manager = ExtensionManager(profile: self)
         extensionManager = manager
-        // Engines without WebKit extension support get an empty, idle manager: menus and
-        // settings still work, but no extension or background page is ever loaded.
-        if engineRuntime.capabilities.supports(.extensions) { manager.start() }
+        manager.start()
         return manager
     }
 
@@ -112,11 +104,6 @@ final class ProfileData {
     func unloadExtensions() {
         extensionManager?.shutDown()
         extensionManager = nil
-    }
-
-    func shutDownRuntime() {
-        unloadExtensions()
-        engineRuntime.shutDown()
     }
 
     // MARK: - Permissions
@@ -153,23 +140,9 @@ final class ProfileData {
         saveHistory()
         sessionCookies.delete()
         FaviconStore.shared.removeAll()
-        // WebKit data and the engine's own data (e.g. Blink cookies/cache) are cleared together.
-        var remaining = 2
-        let done: @MainActor () -> Void = {
-            remaining -= 1
-            guard remaining == 0 else { return }
-            // Blink's API clears cookies/cache immediately. Restarting the profile releases its
-            // request context, consumes the wipe marker, and removes localStorage/IndexedDB too.
-            if self.browserEngine == .blink {
-                self.services.restartProfile(self.id, completion: completion)
-            } else {
-                completion()
-            }
-        }
         dataStore.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast) {
-            MainActor.assumeIsolated { done() }
+            MainActor.assumeIsolated { completion() }
         }
-        engineRuntime.clearWebsiteData(completion: done)
     }
 
     private func historyChanged() {
@@ -281,7 +254,7 @@ final class ProfileData {
         isDiscarded = true
         saveTasks.values.forEach { $0.cancel() }
         saveTasks.removeAll()
-        shutDownRuntime()
+        unloadExtensions()
     }
 
     /// Debounces disk writes so rapid successive changes are written once.

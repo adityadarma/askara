@@ -8,23 +8,19 @@ import Testing
         #expect(list.profiles.count == 1)
         #expect(list.lastUsed.isDefault)
         #expect(list.lastUsed.folder == "")
-        #expect(list.lastUsed.browserEngine == .webkit)
     }
 
-    @Test func engineBelongsToProfileAndOldFilesDefaultToWebKit() throws {
-        var list = ProfileList(defaultName: "Main")
-        let result = list.add(name: "Chromium", browserEngine: .blink)
-        let added = try #require(result)
-        #expect(added.browserEngine == .blink)
-        let updated = list.update(added.id, name: added.name, colorIndex: added.colorIndex,
-                                  browserEngine: .gecko)
-        #expect(updated)
-        #expect(list.profile(added.id)?.browserEngine == .gecko)
-
+    @Test(arguments: ["webkit", "blink", "gecko", "unknown"])
+    func legacyBrowserEngineIsIgnored(_ engine: String) throws {
         let id = UUID()
-        let oldJSON = #"{"id":"\#(id.uuidString)","name":"Old","colorIndex":0}"#
+        let oldJSON = #"{"id":"\#(id.uuidString)","name":"Old","colorIndex":3,"browserEngineID":"\#(engine)"}"#
         let old = try JSONDecoder().decode(Profile.self, from: Data(oldJSON.utf8))
-        #expect(old.browserEngine == .webkit)
+        #expect(old.id == id)
+        #expect(old.name == "Old")
+        #expect(old.colorIndex == 3)
+        let encoded = try JSONEncoder().encode(old)
+        let object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        #expect(object["browserEngineID"] == nil)
     }
 
     @Test func initials() {
@@ -89,23 +85,7 @@ import Testing
         let decoded = try JSONDecoder().decode(ProfileList.self, from: JSONEncoder().encode(list))
         #expect(decoded == list)
         #expect(decoded.profile(work.id)?.colorIndex == ProfileList.colorCount - 1)
-    }
-}
-
-@Suite struct BrowserEngineCapabilityTests {
-    @Test func undeclaredFeaturesAreUnavailable() {
-        let capabilities = BrowserEngineCapabilities([:])
-        for feature in BrowserEngineFeature.allCases {
-            #expect(capabilities[feature].support == .unavailable)
-            #expect(!capabilities.supports(feature))
-        }
-    }
-
-    @Test func unavailableMatrixExplainsEveryFeature() {
-        let capabilities = BrowserEngineCapabilities.unavailable(reason: "Runtime missing")
-        for feature in BrowserEngineFeature.allCases {
-            #expect(capabilities[feature].support == .unavailable)
-            #expect(capabilities[feature].note == "Runtime missing")
-        }
+        let json = String(decoding: try JSONEncoder().encode(list), as: UTF8.self)
+        #expect(!json.contains("browserEngineID"))
     }
 }

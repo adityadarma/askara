@@ -14,7 +14,6 @@ the existing `Askara` and `AskaraCore` modules.
 
 - `App`: process entry point, app lifecycle, and shared application services.
 - `Browser`: tabs, browser window, WebKit view support, and page-level browser behavior.
-- `Engines`: rendering-engine adapters and runtime selection.
 - `Bookmarks`, `Downloads`, `Extensions`, `Profiles`, `Privacy`, `Settings`, `Sync`, `Import`:
   feature-owned UI and services.
 - `DeveloperTools`: source viewer and task manager.
@@ -23,7 +22,7 @@ the existing `Askara` and `AskaraCore` modules.
 
 ## Core Target
 
-- `Browser`: sessions, engine selection, device presets, zoom, and hibernation policy.
+- `Browser`: sessions, device presets, zoom, and hibernation policy.
 - `Navigation`: address parsing and suggestions.
 - `Bookmarks`, `History`, `Downloads`, `Profiles`, `Privacy`, `Preferences`, `Import`:
   platform-independent feature logic.
@@ -32,54 +31,22 @@ the existing `Askara` and `AskaraCore` modules.
 ## Dependency Rules
 
 1. Feature UI talks to shared state through `BrowserServices` or its feature-owned service.
-2. Rendering runtimes implement `BrowserEngineRuntime`; browser UI must not select a concrete
-   runtime directly. Engine selection belongs to a profile; changing it recreates only that profile's
-   windows and runtime while other profiles keep running.
+2. Browser pages use the system `WKWebView`; Apple supplies WebKit with macOS, so no rendering
+   framework is copied into the app bundle.
 3. Put reusable business rules in `AskaraCore`. Keep framework-specific behavior in `Askara`.
 4. Prefer one primary responsibility per file. Split unrelated models instead of creating generic
    `Models`, `Helpers`, or `Utils` files.
 5. Keep controller state private. Split a large controller only when the extracted component can
    expose a narrow interface without widening internal state.
 
-## Engines
+## WebKit
 
-WebKit is the built-in runtime. Each loaded profile owns one `BrowserEngineRuntime` and its
-`BrowserEngineCapabilities`. Feature UI checks capabilities before exposing engine-owned behavior.
+Askara exclusively embeds Apple's `WKWebView`. Normal profile windows use a persistent
+`WKWebsiteDataStore`; private windows use a non-persistent store. `Tab` owns the live `WKWebView`
+directly while awake, and `Tab.interactionState` preserves back/forward history and scroll position
+while Memory Saver releases the view.
 
-Blink runs through a bundled Chromium Embedded Framework (CEF) runtime. It is selectable only in
-CEF builds where `CefInitialize` succeeded; otherwise the registry falls back to WebKit and the
-profile reports `.webkit`, never Blink.
-
-Tabs hold an engine-neutral `TabContent` (`nil` = asleep). `WebKitTabContent` wraps the existing
-`WKWebView`, and WebKit-only features (extensions, PiP, find, print, Device Mode, snapshots,
-process metrics) still reach it through `Tab.webView`, which is `nil` for other engines.
-`BlinkTabContent` wraps a native CEF child view. A Blink profile owns one persistent request context
-under `Engines/Blink/Profiles/<id>`; each private window gets its own in-memory context that is
-dropped when the window closes. What Blink does not support yet is declared in
-`BlinkEngineCapabilities` and hidden or disabled in the UI.
-
-CEF uses Chromium's renderer and network stack, but it is not Google Chrome. Compatibility is not
-guaranteed for Chrome Extension APIs, Google account services, Chrome Sync, Widevine/DRM, native
-messaging, Chrome-specific UI, or every WebAuthn flow. Each capability must be enabled only after an
-integration test proves the behavior in the bundled CEF version. Gecko remains deferred.
-
-### CEF Development Build
-
-Askara pins the official macOS arm64 minimal distribution to CEF
-`154.0.32+g682c378+chromium-154.0.8037.58` (Chromium `154.0.8037.58`). Install and verify it with:
-
-```sh
-scripts/install-cef.sh
-scripts/smoke-cef.sh
-```
-
-The vendor binary is stored under ignored `Vendor/cef/`. `scripts/bundle.sh --cef` enables the
-`CEFBridge` SwiftPM target and bundles the versioned framework plus the macOS helper apps. CEF
-launches each sub-process type from its own helper bundle (`Askara Helper (Renderer).app`, GPU,
-Plugin, Alerts); a missing variant fails silently, e.g. pages never load without the renderer one.
-The default `swift build` and `swift test` remain independent of the large vendor binary.
-
-`scripts/smoke-cef.sh` runs the real tab stack on throwaway storage: a Blink profile, a normal and a
-private window, navigation, release of every browser when windows close, and orderly shutdown.
-
-Work status and remaining steps are tracked in `TASK.md`.
+Profiles created by older multi-engine builds remain compatible. The obsolete `browserEngineID`
+JSON field is ignored and removed on the next profile-file rewrite. The legacy CEF cache under
+`~/Library/Application Support/Askara/Engines/Blink` is deleted without touching history,
+bookmarks, permissions, or session metadata.

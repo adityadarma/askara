@@ -84,11 +84,15 @@ extension BrowserWindowController {
     private func write(_ data: Data, to url: URL) {
         do {
             try data.write(to: url, options: .atomic)
-            showToast(String(localized: "Screenshot saved: \(url.lastPathComponent)"), duration: 3)
-            NSWorkspace.shared.activateFileViewerSelecting([url])
+            writeFile(at: url)
         } catch {
             captureFailed(error)
         }
+    }
+
+    private func writeFile(at url: URL) {
+        showToast(String(localized: "Screenshot saved: \(url.lastPathComponent)"), duration: 3)
+        NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
     private func captureFailed(_ error: Error?) {

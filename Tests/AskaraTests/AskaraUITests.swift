@@ -7,103 +7,6 @@ import AskaraCore
 
 @Suite("AppKit UI components", .serialized)
 struct AskaraUITests {
-    @Test("Engine registry creates isolated runtimes and falls back honestly")
-    @MainActor
-    func browserEngineRegistryFallback() {
-        let registry = BrowserEngineRegistry()
-        let first = registry.makeRuntime(for: .webkit)
-        let second = registry.makeRuntime(for: .webkit)
-
-        #expect(first.engine == .webkit)
-        #expect(second.engine == .webkit)
-        #expect(first !== second)
-        #expect(registry.makeRuntime(for: .blink).engine == .webkit)
-        #expect(registry.makeRuntime(for: .gecko).engine == .webkit)
-        #expect(registry.availability(of: .webkit) == .available)
-        #expect(registry.availability(of: .blink) != .available)
-        #expect(registry.availability(of: .gecko) != .available)
-    }
-
-    @Test("Registry passes the profile ID and uses an available Blink runtime")
-    @MainActor
-    func browserEngineRegistryUsesAvailableBlink() {
-        var requested: [UUID] = []
-        final class FakeBlink: BrowserEngineRuntime {
-            let engine = BrowserEngine.blink
-            let availability = BrowserEngineAvailability.available
-            let capabilities = BlinkEngineCapabilities.declared
-            func makeContent(frame: NSRect, privateSession: UUID?,
-                             webKitConfiguration: () -> WKWebViewConfiguration) throws -> BrowserEngineContent {
-                throw BrowserEngineRuntimeError.shutDown(engine)
-            }
-            func endPrivateSession(_ id: UUID) {}
-            func clearWebsiteData(completion: @escaping @MainActor () -> Void) { completion() }
-            func shutDown() {}
-        }
-        let registry = BrowserEngineRegistry(factories: [
-            .webkit: { _ in WebKitBrowserEngineRuntime() },
-            .blink: { id in requested.append(id); return FakeBlink() },
-        ])
-        let profileID = UUID()
-        let first = registry.makeRuntime(for: .blink, profileID: profileID)
-        let second = registry.makeRuntime(for: .blink, profileID: profileID)
-
-        #expect(first.engine == .blink)
-        #expect(first !== second)
-        #expect(requested == [profileID, profileID])
-        #expect(registry.makeRuntime(for: .gecko).engine == .webkit)
-    }
-
-    @Test("Blink declares every engine capability")
-    func blinkCapabilities() {
-        let capabilities = BlinkEngineCapabilities.declared
-        for feature in BrowserEngineFeature.allCases {
-            #expect(capabilities[feature].note != "Capability is not declared")
-            if capabilities[feature].support != .supported { #expect(capabilities[feature].note != nil) }
-        }
-        #expect(!capabilities.supports(.extensions))
-        #expect(!capabilities.supports(.pictureInPicture))
-        #expect(capabilities.supports(.downloads))
-        #expect(capabilities.supports(.contentBlocking))
-        #expect(capabilities.supports(.permissions))
-        #expect(capabilities.supports(.popupHandling))
-    }
-
-    @Test("WebKit tab content forwards the engine-neutral contract")
-    @MainActor
-    func webKitTabContentContract() {
-        let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 100, height: 100))
-        let content = WebKitTabContent(webView)
-        let tab = Tab(url: nil)
-        tab.content = content
-
-        #expect(content.view === webView)
-        #expect(tab.webView === webView)
-        content.setZoom(1.25)
-        #expect(webView.pageZoom == 1.25)
-        #expect(!content.canGoBack)
-
-        let host = NSView()
-        host.addSubview(content.view)
-        content.close()
-        #expect(webView.superview == nil)
-        tab.content = nil
-        #expect(tab.webView == nil)
-    }
-
-    @Test("WebKit runtime declares engine-specific capability limits")
-    @MainActor
-    func webKitRuntimeCapabilities() {
-        let runtime = WebKitBrowserEngineRuntime(passkeysAvailable: false)
-
-        #expect(runtime.capabilities.supports(.extensions))
-        #expect(runtime.capabilities.supports(.downloads))
-        #expect(runtime.capabilities[.deviceEmulation].support == .limited)
-        #expect(runtime.capabilities[.processManagement].support == .limited)
-        #expect(runtime.capabilities[.webAuthentication].support == .unavailable)
-        #expect(runtime.capabilities[.webAuthentication].note != nil)
-    }
-
     @Test("Loading bar exposes progress and never moves backwards")
     @MainActor
     func loadingBarProgress() {
@@ -312,8 +215,7 @@ struct AskaraUITests {
         _ = NSApplication.shared
         let storage = FileManager.default.temporaryDirectory
             .appendingPathComponent("AskaraUITests-\(UUID().uuidString)", isDirectory: true)
-        let services = BrowserServices(storageDirectory: storage,
-                                       dataStoreFactory: { _ in .nonPersistent() })
+        let services = BrowserServices(storageDirectory: storage)
         let profile = ProfileData(id: UUID(), services: services, dataStore: .nonPersistent(),
                                   storageDirectory: storage.appendingPathComponent("profile", isDirectory: true))
         let controller = BrowserWindowController(profile: profile, isPrivate: true, services: services)
