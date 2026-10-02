@@ -10,6 +10,7 @@ final class ProfileData {
     let id: UUID
     let dataStore: WKWebsiteDataStore
     let sessionCookies: SessionCookies
+    let passwords: PasswordStore
 
     private(set) var history: HistoryStore
     private(set) var bookmarks: BookmarkStore
@@ -32,6 +33,7 @@ final class ProfileData {
          dataStore suppliedDataStore: WKWebsiteDataStore? = nil, storageDirectory: URL? = nil) {
         self.id = id
         self.services = suppliedServices ?? .shared
+        passwords = PasswordStore(profileID: id)
         let folder = Profile.folder(for: id)
         // The first profile keeps WebKit's default store, so logins from before profiles existed stay.
         dataStore = suppliedDataStore ?? (id == Profile.defaultID ? .default() : WKWebsiteDataStore(forIdentifier: id))

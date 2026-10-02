@@ -11,6 +11,17 @@ import Testing
         #expect(prefs.sleepAfterMinutes == 5)
     }
 
+    @Test func syncFolderBookmarkRoundTripsAndOldFilesDefaultToNil() throws {
+        var preferences = BrowserPreferences()
+        preferences.syncFolderPath = "/tmp/cloud"
+        preferences.syncFolderBookmark = Data([1, 2, 3])
+        let decoded = try JSONDecoder().decode(BrowserPreferences.self, from: JSONEncoder().encode(preferences))
+        #expect(decoded.syncFolderBookmark == Data([1, 2, 3]))
+
+        let old = try JSONDecoder().decode(BrowserPreferences.self, from: Data(#"{"syncFolderPath":"/tmp/cloud"}"#.utf8))
+        #expect(old.syncFolderBookmark == nil)
+    }
+
     @Test func homeURLFallsBackToSearchEngine() {
         var prefs = BrowserPreferences()
         prefs.searchEngineID = "duckduckgo"

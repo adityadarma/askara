@@ -663,6 +663,11 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         add(String(localized: "History"), "clock.arrow.circlepath", #selector(AppDelegate.showHistoryAction(_:)), target: app)
         add(String(localized: "Bookmarks"), "star", #selector(AppDelegate.showBookmarksAction(_:)), target: app)
         add(String(localized: "Downloads"), "arrow.down.circle", #selector(AppDelegate.showDownloadsAction(_:)), target: app)
+        if !isPrivate {
+            add(String(localized: "Fill Saved Password…"), "key", #selector(fillSavedPasswordAction(_:)))
+            add(String(localized: "Save Password…"), "key.fill", #selector(savePasswordAction(_:)))
+            add(String(localized: "Manage Saved Passwords…"), "key.horizontal", #selector(AppDelegate.showSavedPasswordsAction(_:)), target: app)
+        }
         menu.addItem(.separator())
         add(String(localized: "Find…"), "magnifyingglass", #selector(showFindBar(_:)), key: "f")
         add(String(localized: "Zoom In"), "plus.magnifyingglass", #selector(zoomInAction(_:)))
@@ -1694,6 +1699,113 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         guard let value = sender.representedObject as? String else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(value, forType: .string)
+    }
+
+    // MARK: - Passwords
+
+    @objc func savePasswordAction(_ sender: Any?) {
+        guard !isPrivate, let window, let webView = activeTab?.webView,
+              let url = webView.url, let origin = PasswordOrigin(url: url) else {
+            return showToast(String(localized: "Passwords can only be saved on secure HTTPS pages."), duration: 3)
+        }
+        let username = NSTextField()
+        username.placeholderString = String(localized: "Username")
+        username.setAccessibilityLabel(String(localized: "Username"))
+        let password = NSSecureTextField()
+        password.placeholderString = String(localized: "Password")
+        password.setAccessibilityLabel(String(localized: "Password"))
+        let grid = NSGridView(views: [
+            [NSTextField(labelWithString: String(localized: "Site:")),
+             NSTextField(labelWithString: origin.displayName)],
+            [NSTextField(labelWithString: String(localized: "Username:")), username],
+            [NSTextField(labelWithString: String(localized: "Password:")), password],
+        ])
+        grid.rowSpacing = 8
+        grid.column(at: 0).xPlacement = .trailing
+        grid.frame = NSRect(x: 0, y: 0, width: 380, height: 88)
+        username.widthAnchor.constraint(equalToConstant: 240).isActive = true
+        let alert = NSAlert()
+        alert.messageText = String(localized: "Save Password")
+        alert.informativeText = String(localized: "Stored locally in macOS Keychain for this Askara profile.")
+        alert.accessoryView = grid
+        alert.addButton(withTitle: String(localized: "Save"))
+        alert.addButton(withTitle: String(localized: "Cancel"))
+        alert.window.initialFirstResponder = username
+        alert.beginSheetModal(for: window) { [weak self, weak webView] response in
+            guard response == .alertFirstButtonReturn, let self, let webView,
+                  PasswordOrigin(url: webView.url ?? url) == origin else { return }
+            do {
+                try self.profile.passwords.save(origin: origin, username: username.stringValue,
+                                                password: password.stringValue)
+                password.stringValue = ""
+                self.showToast(String(localized: "Password saved in Keychain"), duration: 2)
+            } catch {
+                password.stringValue = ""
+                self.presentPasswordError(error)
+            }
+        }
+    }
+
+    @objc func fillSavedPasswordAction(_ sender: Any?) {
+        guard !isPrivate, let webView = activeTab?.webView, let origin = PasswordOrigin(url: webView.url ?? URL(fileURLWithPath: "")) else {
+            return showToast(String(localized: "Saved passwords can only be filled on secure HTTPS pages."), duration: 3)
+        }
+        do {
+            let credentials = try profile.passwords.credentials(for: origin)
+            guard !credentials.isEmpty else {
+                return showToast(String(localized: "No password is saved for this site."), duration: 3)
+            }
+            if credentials.count == 1 { return fill(credentials[0], origin: origin, in: webView) }
+            let menu = NSMenu()
+            for credential in credentials {
+                let item = NSMenuItem(title: credential.username, action: #selector(fillCredentialMenuItem(_:)),
+                                      keyEquivalent: "")
+                item.target = self
+                item.representedObject = credential.id.uuidString
+                menu.addItem(item)
+            }
+            let point = NSPoint(x: webView.bounds.midX, y: webView.bounds.midY)
+            menu.popUp(positioning: nil, at: point, in: webView)
+        } catch { presentPasswordError(error) }
+    }
+
+    @objc private func fillCredentialMenuItem(_ sender: NSMenuItem) {
+        guard let text = sender.representedObject as? String, let id = UUID(uuidString: text),
+              let webView = activeTab?.webView, let origin = PasswordOrigin(url: webView.url ?? URL(fileURLWithPath: "")),
+              let credential = try? profile.passwords.credentials(for: origin).first(where: { $0.id == id }) else { return }
+        fill(credential, origin: origin, in: webView)
+    }
+
+    private func fill(_ credential: PasswordCredential, origin: PasswordOrigin, in webView: WKWebView) {
+        guard webView === activeTab?.webView, PasswordOrigin(url: webView.url ?? URL(fileURLWithPath: "")) == origin else { return }
+        do {
+            let password = try profile.passwords.password(for: credential.id)
+            Task { @MainActor [weak self, weak webView] in
+                guard let self, let webView else { return }
+                do {
+                    let value = try await webView.callAsyncJavaScript(
+                        PasswordFillScript.source,
+                        arguments: ["inputUsername": credential.username, "inputPassword": password],
+                        in: nil, contentWorld: .page)
+                    guard webView === self.activeTab?.webView,
+                          PasswordOrigin(url: webView.url ?? URL(fileURLWithPath: "")) == origin else { return }
+                    if value as? String == "filled" {
+                        self.showToast(String(localized: "Password filled. Review the page before signing in."), duration: 3)
+                    } else if value as? String == "ambiguous" {
+                        self.showToast(String(localized: "More than one login form was found. Fill it manually."), duration: 4)
+                    } else {
+                        self.showToast(String(localized: "No login form was found on this page."), duration: 3)
+                    }
+                } catch {
+                    self.presentPasswordError(error)
+                }
+            }
+        } catch { presentPasswordError(error) }
+    }
+
+    private func presentPasswordError(_ error: Error) {
+        let alert = NSAlert(error: error)
+        if let window { alert.beginSheetModal(for: window) }
     }
 
     // MARK: - Actions: Develop

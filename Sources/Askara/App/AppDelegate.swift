@@ -11,6 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.mainMenu = MainMenu.make(delegate: self)
         services.compileBlockList()
+        services.downloads.requestNotificationPermission()
         // Retry removing website data of deleted profiles that was still in use last time.
         services.removeDataStores()
         services.sync.start()
@@ -127,6 +128,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     @objc func showDownloadsAction(_ sender: Any?) { LibraryWindowController.shared.show(.downloads) }
     @objc func showTaskManagerAction(_ sender: Any?) { TaskManagerWindowController.shared.show() }
+    @objc func showSavedPasswordsAction(_ sender: Any?) {
+        PasswordVaultWindowController.shared.show(profile: services.currentProfile)
+    }
 
     @objc func exportCrashReportAction(_ sender: Any?) {
         CrashReporter.shared.exportReport(relativeTo: NSApp.keyWindow)

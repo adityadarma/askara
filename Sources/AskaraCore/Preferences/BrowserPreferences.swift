@@ -33,13 +33,15 @@ public struct BrowserPreferences: Codable, Equatable, Sendable {
     public var syncEnabled = false
     /// Local path to a user-selected cloud-drive folder. Never copied into the sync snapshot.
     public var syncFolderPath = ""
+    /// Security-scoped permission for the selected folder. Local to this Mac.
+    public var syncFolderBookmark: Data?
 
     public init() {}
 
     private enum CodingKeys: String, CodingKey {
         case searchEngineID, homePage, sleepAfterMinutes, maxLoadedTabs, httpsOnly, keepAwakeSites, showsBookmarksBar,
              syncEnabled
-        case syncFolderPath, dozeAfterMinutes, memoryBudgetPercent, protectedTabs
+        case syncFolderPath, syncFolderBookmark, dozeAfterMinutes, memoryBudgetPercent, protectedTabs
     }
 
     public init(from decoder: Decoder) throws {
@@ -57,6 +59,7 @@ public struct BrowserPreferences: Codable, Equatable, Sendable {
         showsBookmarksBar = try c.decodeIfPresent(Bool.self, forKey: .showsBookmarksBar) ?? d.showsBookmarksBar
         syncEnabled = try c.decodeIfPresent(Bool.self, forKey: .syncEnabled) ?? d.syncEnabled
         syncFolderPath = try c.decodeIfPresent(String.self, forKey: .syncFolderPath) ?? d.syncFolderPath
+        syncFolderBookmark = try c.decodeIfPresent(Data.self, forKey: .syncFolderBookmark)
     }
 
     public var searchEngine: SearchEngine { SearchEngine.engine(id: searchEngineID) }

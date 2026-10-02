@@ -194,7 +194,7 @@ final class LibraryWindowController: NSWindowController, NSTableViewDataSource, 
         case .downloads:
             rows = services.downloads.items
                 .filter { matches($0.filename, $0.sourceURL?.absoluteString ?? "") }
-                .map { Row(id: $0.id, title: $0.filename, detail: $0.statusText, date: nil, url: $0.destination) }
+                .map { Row(id: $0.id, title: $0.filename, detail: $0.statusText, date: $0.endedAt, url: $0.destination) }
             actionButton.title = String(localized: "Clear List")
             emptyLabel.stringValue = String(localized: "No downloads yet")
         }

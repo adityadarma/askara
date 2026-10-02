@@ -28,6 +28,7 @@ final class SyncCoordinator {
     private var pollTimer: Timer?
     private var applyingRemote = false
     private var lastSeenFileDate: Date?
+    private var accessedFolderURL: URL?
     private(set) var syncedTabs: [SessionState.SavedTab] = []
     private(set) var syncedDeviceName: String?
     private(set) var status = String(localized: "Sync is off")
@@ -35,7 +36,17 @@ final class SyncCoordinator {
 
     init(services: BrowserServices) { self.services = services }
 
+    deinit { accessedFolderURL?.stopAccessingSecurityScopedResource() }
+
     var folderURL: URL? {
+        if let accessedFolderURL { return accessedFolderURL }
+        if let bookmark = services.preferences.syncFolderBookmark {
+            var stale = false
+            if let url = try? URL(resolvingBookmarkData: bookmark, options: [.withSecurityScope],
+                                  relativeTo: nil, bookmarkDataIsStale: &stale), !stale {
+                return url
+            }
+        }
         let path = services.preferences.syncFolderPath
         return path.isEmpty ? nil : URL(fileURLWithPath: path, isDirectory: true)
     }
@@ -46,15 +57,25 @@ final class SyncCoordinator {
 
     func start() {
         guard services.preferences.syncEnabled else { return }
+        guard accessSavedFolder() else {
+            status = String(localized: "Choose the sync folder again")
+            return changed()
+        }
         startPolling()
         loadOrCreateFile()
     }
 
     func setFolder(_ folder: URL) {
+        stopAccessingFolder()
+        let bookmark = try? folder.bookmarkData(options: [.withSecurityScope],
+                                                includingResourceValuesForKeys: nil,
+                                                relativeTo: nil)
         services.updatePreferences {
             $0.syncFolderPath = folder.standardizedFileURL.path
+            $0.syncFolderBookmark = bookmark
             $0.syncEnabled = true
         }
+        _ = accessSavedFolder()
         startPolling()
         loadOrCreateFile()
     }
@@ -63,7 +84,7 @@ final class SyncCoordinator {
         guard enabled != services.preferences.syncEnabled else { return }
         services.updatePreferences { $0.syncEnabled = enabled }
         if enabled {
-            guard folderURL != nil else {
+            guard accessSavedFolder() else {
                 status = String(localized: "Choose a sync folder first")
                 changed()
                 return
@@ -74,6 +95,7 @@ final class SyncCoordinator {
             pending?.cancel()
             pollTimer?.invalidate()
             pollTimer = nil
+            stopAccessingFolder()
             status = String(localized: "Sync is off")
             changed()
         }
@@ -97,6 +119,7 @@ final class SyncCoordinator {
             var preferences = services.preferences
             preferences.syncEnabled = true
             preferences.syncFolderPath = ""
+            preferences.syncFolderBookmark = nil
             let snapshot = SyncSnapshot(modifiedAt: Date(), deviceName: Host.current().localizedName ?? "Mac",
                                         profileID: profile.id, history: profile.history, bookmarks: profile.bookmarks,
                                         preferences: preferences, session: profile.syncedSession())
@@ -130,7 +153,7 @@ final class SyncCoordinator {
     private func startPolling() {
         guard pollTimer == nil else { return }
         let timer = Timer(timeInterval: 10, repeats: true) { _ in
-            MainActor.assumeIsolated { BrowserServices.shared.sync.pullIfChanged() }
+            MainActor.assumeIsolated { [weak self] in self?.pullIfChanged() }
         }
         timer.tolerance = 2
         RunLoop.main.add(timer, forMode: .common)
@@ -155,9 +178,12 @@ final class SyncCoordinator {
             guard snapshot.modifiedAt > (lastSync ?? .distantPast) else { return }
             applyingRemote = true
             services.currentProfile.replaceSyncedData(history: snapshot.history, bookmarks: snapshot.bookmarks)
+            let localPath = services.preferences.syncFolderPath
+            let localBookmark = services.preferences.syncFolderBookmark
             var preferences = snapshot.preferences
             preferences.syncEnabled = true
-            preferences.syncFolderPath = folderURL?.path ?? ""
+            preferences.syncFolderPath = localPath
+            preferences.syncFolderBookmark = localBookmark
             services.applySyncedPreferences(preferences)
             syncedTabs = snapshot.session.windows.flatMap(\.tabs)
             syncedDeviceName = snapshot.deviceName
@@ -176,6 +202,37 @@ final class SyncCoordinator {
 
     private func modificationDate(of url: URL) -> Date? {
         try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+    }
+
+    private func accessSavedFolder() -> Bool {
+        if accessedFolderURL != nil { return true }
+        let preferences = services.preferences
+        if let bookmark = preferences.syncFolderBookmark {
+            var stale = false
+            do {
+                let url = try URL(resolvingBookmarkData: bookmark, options: [.withSecurityScope],
+                                  relativeTo: nil, bookmarkDataIsStale: &stale)
+                if stale, let replacement = try? url.bookmarkData(options: [.withSecurityScope],
+                                                                   includingResourceValuesForKeys: nil,
+                                                                   relativeTo: nil) {
+                    services.updatePreferences { $0.syncFolderBookmark = replacement }
+                }
+                _ = url.startAccessingSecurityScopedResource()
+                accessedFolderURL = url
+                return true
+            } catch {
+                Log.error("Askara: sync folder permission could not be restored: \(error)")
+                return false
+            }
+        }
+        guard !preferences.syncFolderPath.isEmpty else { return false }
+        accessedFolderURL = URL(fileURLWithPath: preferences.syncFolderPath, isDirectory: true)
+        return true
+    }
+
+    private func stopAccessingFolder() {
+        accessedFolderURL?.stopAccessingSecurityScopedResource()
+        accessedFolderURL = nil
     }
 
     private var encoder: JSONEncoder {

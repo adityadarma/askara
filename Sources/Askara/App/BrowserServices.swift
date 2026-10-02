@@ -43,7 +43,9 @@ final class BrowserServices {
     private var profileData: [UUID: ProfileData] = [:]
 
     init(storageDirectory: URL? = nil, downloadDirectory: URL? = nil) {
-        downloads = DownloadManager(directory: downloadDirectory)
+        let downloadsFile = storageDirectory.map { JSONFile<DownloadHistory>(url: $0.appendingPathComponent("downloads.json")) }
+            ?? JSONFile<DownloadHistory>.inAppSupport("downloads.json")
+        downloads = DownloadManager(directory: downloadDirectory, historyFile: downloadsFile)
         self.storageDirectory = storageDirectory
         if let storageDirectory {
             siteSettingsFile = JSONFile(url: storageDirectory.appendingPathComponent("site-settings.json"))
@@ -151,6 +153,8 @@ final class BrowserServices {
         let data = profileData[id]
         data?.windows.forEach { $0.close() }
         data?.discard()
+        do { try PasswordStore(profileID: id).deleteAll() }
+        catch { Log.error("Askara: failed to delete profile passwords: \(error.localizedDescription)") }
         profileData[id] = nil
         profileList.remove(id)
         saveProfiles()

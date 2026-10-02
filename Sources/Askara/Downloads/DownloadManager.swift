@@ -1,5 +1,6 @@
 import AppKit
 import CryptoKit
+import UserNotifications
 import WebKit
 import AskaraCore
 
@@ -16,7 +17,7 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
             case waiting, scanning, complete, failed(String)
         }
 
-        let id = UUID()
+        let id: UUID
         var filename = String(localized: "Waiting…")
         var destination: URL?
         var sourceURL: URL?
@@ -26,8 +27,11 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
         var sha256: String?
         var risks: [DownloadRisk] = []
         var fileSize: Int64?
+        var endedAt: Date?
         weak var download: WKDownload?
         var observation: NSKeyValueObservation?
+
+        init(id: UUID = UUID()) { self.id = id }
 
         var statusText: String {
             switch state {
@@ -68,10 +72,22 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
 
     private(set) var items: [Item] = []   // newest first
     private let downloadDirectory: URL
+    private let historyFile: JSONFile<DownloadHistory>
 
-    init(directory: URL? = nil) {
+    init(directory: URL? = nil, historyFile: JSONFile<DownloadHistory>? = nil) {
         downloadDirectory = directory
             ?? FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
+        self.historyFile = historyFile ?? .inAppSupport("downloads.json")
+        super.init()
+        items = (self.historyFile.load()?.records ?? []).map(Self.item)
+        for item in items where item.state == .finished && item.scanState == .waiting
+            && item.destination.map({ FileManager.default.fileExists(atPath: $0.path) }) == true {
+            scan(item)
+        }
+    }
+
+    func requestNotificationPermission() {
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
     }
 
     var running: [Item] { items.filter { $0.state == .running } }
@@ -120,6 +136,7 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
 
     func removeFromList(_ ids: Set<UUID>) {
         items.removeAll { ids.contains($0.id) && $0.state != .running }
+        saveHistory()
         changed()
     }
 
@@ -144,6 +161,7 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
     private func finish(_ item: Item) {
         guard item.state == .running else { return }
         item.state = .finished
+        item.endedAt = Date()
         item.fraction = 1
         item.observation = nil
         if let path = item.destination?.path {
@@ -151,6 +169,8 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
                 .post(name: .init("com.apple.DownloadFileFinished"), object: path)
         }
         announce(String(localized: "Download finished: \(item.filename)"))
+        notify(title: String(localized: "Download Complete"), body: item.filename, id: item.id)
+        saveHistory()
         changed()
         scan(item)
     }
@@ -158,16 +178,19 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
     private func markCancelled(_ item: Item) {
         guard item.state == .running else { return }
         item.state = .cancelled
+        item.endedAt = Date()
         item.observation = nil
-        changed()
+        saveHistory(); changed()
     }
 
     private func fail(_ item: Item, message: String) {
         guard item.state == .running else { return }
         item.state = .failed(message)
+        item.endedAt = Date()
         item.observation = nil
         announce(String(localized: "Download failed: \(item.filename)"))
-        changed()
+        notify(title: String(localized: "Download Failed"), body: item.filename, id: item.id)
+        saveHistory(); changed()
     }
 
     // MARK: - WKDownloadDelegate
@@ -215,6 +238,7 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
                     item.fileSize = fileSize
                     item.risks = risks
                     item.scanState = .complete
+                    self.saveHistory()
                     self.changed()
                     if risks.contains(where: \.isHighRisk) {
                         self.announce(String(localized: "Download warning: \(item.riskText)"))
@@ -224,6 +248,7 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
                 await MainActor.run { [weak self] in
                     guard let self, let item = self.items.first(where: { $0.id == id }) else { return }
                     item.scanState = .failed(error.localizedDescription)
+                    self.saveHistory()
                     self.changed()
                 }
             }
@@ -233,5 +258,66 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
     func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
         guard let item = item(for: download) else { return }
         fail(item, message: error.localizedDescription)
+    }
+
+    private func notify(title: String, body: String, id: UUID) {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+        UNUserNotificationCenter.current().add(
+            UNNotificationRequest(identifier: "download-\(id.uuidString)", content: content, trigger: nil))
+    }
+
+    private func saveHistory() {
+        let records = items.compactMap(Self.record)
+        do { try historyFile.save(DownloadHistory(records: records)) }
+        catch { Log.error("Askara: failed to save download history: \(error)") }
+    }
+
+    private static func record(_ item: Item) -> DownloadHistory.Record? {
+        guard let endedAt = item.endedAt else { return nil }
+        let outcome: DownloadHistory.Outcome
+        let failure: String?
+        switch item.state {
+        case .running: return nil
+        case .finished: outcome = .finished; failure = nil
+        case .cancelled: outcome = .cancelled; failure = nil
+        case .failed(let message): outcome = .failed; failure = message
+        }
+        let scan: DownloadHistory.ScanOutcome
+        let scanFailure: String?
+        switch item.scanState {
+        case .waiting, .scanning: scan = .waiting; scanFailure = nil
+        case .complete: scan = .complete; scanFailure = nil
+        case .failed(let message): scan = .failed; scanFailure = message
+        }
+        return .init(id: item.id, filename: item.filename, destination: item.destination,
+                     sourceURL: item.sourceURL, endedAt: endedAt, outcome: outcome,
+                     failureMessage: failure, scanOutcome: scan, scanFailureMessage: scanFailure,
+                     sha256: item.sha256, risks: item.risks, fileSize: item.fileSize)
+    }
+
+    private static func item(_ record: DownloadHistory.Record) -> Item {
+        let item = Item(id: record.id)
+        item.filename = record.filename
+        item.destination = record.destination
+        item.sourceURL = record.sourceURL
+        item.endedAt = record.endedAt
+        item.fraction = record.outcome == .finished ? 1 : 0
+        switch record.outcome {
+        case .finished: item.state = .finished
+        case .cancelled: item.state = .cancelled
+        case .failed: item.state = .failed(record.failureMessage ?? String(localized: "Unknown error"))
+        }
+        switch record.scanOutcome {
+        case .waiting: item.scanState = .waiting
+        case .complete: item.scanState = .complete
+        case .failed: item.scanState = .failed(record.scanFailureMessage ?? String(localized: "Unknown error"))
+        }
+        item.sha256 = record.sha256
+        item.risks = record.risks
+        item.fileSize = record.fileSize
+        return item
     }
 }

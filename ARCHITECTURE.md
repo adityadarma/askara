@@ -50,3 +50,18 @@ Profiles created by older multi-engine builds remain compatible. The obsolete `b
 JSON field is ignored and removed on the next profile-file rewrite. The legacy CEF cache under
 `~/Library/Application Support/Askara/Engines/Blink` is deleted without touching history,
 bookmarks, permissions, or session metadata.
+
+## Passwords
+
+Askara can store credentials owned by the app in the macOS Keychain. Records are isolated by
+profile, local to the Mac, available only while unlocked, and matched to an exact HTTPS origin.
+Filling requires an explicit user action, never submits a form, and is disabled in private windows.
+Safari Web Extensions remain available independently for users who prefer an external password
+manager.
+
+## Local Persistence
+
+Completed download history and scan metadata are persisted under Application Support. Download
+completion and failure can produce macOS local notifications after user authorization. The selected
+encrypted-sync folder stores a security-scoped bookmark locally; neither the bookmark nor password
+vault records are copied into the sync snapshot.
