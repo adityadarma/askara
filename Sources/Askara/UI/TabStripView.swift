@@ -43,6 +43,7 @@ protocol TabStripDelegate: AnyObject {
     func tabStrip(_ strip: TabStripView, didSelect index: Int)
     func tabStrip(_ strip: TabStripView, didClose index: Int)
     func tabStripNewTab(_ strip: TabStripView)
+    func tabStripSearchTabs(_ strip: TabStripView)
     /// Called when the cursor rests on a tab; computed on demand to avoid polling.
     func tabStrip(_ strip: TabStripView, tooltipFor index: Int) -> String
     /// Right-click menu for a tab.
@@ -173,6 +174,7 @@ final class TabStripView: NSView, NSDraggingSource {
     private var items: [TabStripItem] = []
     private var activeIndex = -1
     private let newTabButton = NSButton()
+    private let searchTabsButton = NSButton()
     private let privateBadge = NSTextField(labelWithString: String(localized: "Private"))
 
     override init(frame: NSRect) {
@@ -185,6 +187,15 @@ final class TabStripView: NSView, NSDraggingSource {
         newTabButton.setAccessibilityLabel(String(localized: "New tab"))
         newTabButton.setAccessibilityIdentifier("askara.tabs.new")
         addSubview(newTabButton)
+
+        searchTabsButton.image = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: String(localized: "Search tabs"))
+        searchTabsButton.isBordered = false
+        searchTabsButton.target = self
+        searchTabsButton.action = #selector(searchTabsClicked(_:))
+        searchTabsButton.toolTip = String(localized: "Search tabs")
+        searchTabsButton.setAccessibilityLabel(String(localized: "Search tabs"))
+        searchTabsButton.setAccessibilityIdentifier("askara.tabs.search")
+        addSubview(searchTabsButton)
 
         privateBadge.font = .boldSystemFont(ofSize: NSFont.smallSystemFontSize)
         privateBadge.textColor = .systemPurple
@@ -243,19 +254,25 @@ final class TabStripView: NSView, NSDraggingSource {
 
         let pinnedCount = CGFloat(items.filter(\.isPinned).count)
         let normalCount = items.count - Int(pinnedCount)
-        let available = bounds.width - leading - badgeWidth - buttonSize - 16 - pinnedCount * Self.pinnedWidth
+        let available = bounds.width - leading - badgeWidth - buttonSize * 2 - 24 - pinnedCount * Self.pinnedWidth
         let width = floor(max(28, min(240, available / CGFloat(max(normalCount, 1)))))
+        let searchX = bounds.width - badgeWidth - buttonSize - 8
+        let tabsEnd = searchX - buttonSize - 6
 
         var x = leading
         for (index, view) in itemViews.enumerated() {
             let w = items[index].isPinned ? Self.pinnedWidth : width
-            view.frame = NSRect(x: x, y: 0, width: w, height: tabHeight)
+            view.isHidden = x + w > tabsEnd
+            if !view.isHidden { view.frame = NSRect(x: x, y: 0, width: w, height: tabHeight) }
             x += w
         }
-        newTabButton.frame = NSRect(x: x + 6, y: (tabHeight - buttonSize) / 2, width: buttonSize, height: buttonSize)
+        newTabButton.frame = NSRect(x: min(x + 6, tabsEnd), y: (tabHeight - buttonSize) / 2,
+                                    width: buttonSize, height: buttonSize)
         let badgeSize = privateBadge.intrinsicContentSize
         privateBadge.frame = NSRect(x: bounds.width - badgeSize.width - 10, y: (tabHeight - badgeSize.height) / 2,
                                     width: badgeSize.width, height: badgeSize.height)
+        searchTabsButton.frame = NSRect(x: searchX, y: (tabHeight - buttonSize) / 2,
+                                        width: buttonSize, height: buttonSize)
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -296,6 +313,7 @@ final class TabStripView: NSView, NSDraggingSource {
     @objc func _opaqueRectForWindowMoveWhenInTitlebar() -> NSRect { bounds }
 
     @objc private func newTabClicked(_ sender: Any?) { delegate?.tabStripNewTab(self) }
+    @objc private func searchTabsClicked(_ sender: Any?) { delegate?.tabStripSearchTabs(self) }
 
     // MARK: - Dragging tabs
 

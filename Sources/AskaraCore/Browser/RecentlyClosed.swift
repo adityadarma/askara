@@ -12,5 +12,10 @@ public struct RecentlyClosed<Item> {
 
     public mutating func pop() -> Item? { items.popLast() }
 
+    public mutating func pop(where matches: (Item) -> Bool) -> Item? {
+        guard let index = items.lastIndex(where: matches) else { return nil }
+        return items.remove(at: index)
+    }
+
     public var isEmpty: Bool { items.isEmpty }
 }

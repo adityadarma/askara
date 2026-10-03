@@ -15,32 +15,82 @@ final class DeletableTableView: NSTableView {
     }
 }
 
-/// One window for History, Bookmarks, and Downloads (table + search).
+private final class LibraryRowView: NSTableCellView {
+    let siteIcon = NSImageView()
+    let titleLabel = NSTextField(labelWithString: "")
+    let hostLabel = NSTextField(labelWithString: "")
+    let metadataLabel = NSTextField(labelWithString: "")
+    let dateLabel = NSTextField(labelWithString: "")
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        siteIcon.imageScaling = .scaleProportionallyUpOrDown
+        siteIcon.translatesAutoresizingMaskIntoConstraints = false
+        titleLabel.font = .systemFont(ofSize: 11, weight: .medium)
+        titleLabel.lineBreakMode = .byTruncatingTail
+        hostLabel.font = .systemFont(ofSize: 9)
+        hostLabel.textColor = .secondaryLabelColor
+        hostLabel.lineBreakMode = .byTruncatingMiddle
+        metadataLabel.font = .systemFont(ofSize: 9)
+        metadataLabel.textColor = .tertiaryLabelColor
+        dateLabel.font = .systemFont(ofSize: 9)
+        dateLabel.textColor = .tertiaryLabelColor
+        dateLabel.alignment = .right
+
+        let titleLine = NSStackView(views: [titleLabel, NSView(), dateLabel])
+        titleLine.spacing = 8
+        let contextLine = NSStackView(views: [hostLabel, metadataLabel, NSView()])
+        contextLine.spacing = 8
+        let labels = NSStackView(views: [titleLine, contextLine])
+        labels.orientation = .vertical
+        labels.spacing = 0
+        labels.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(siteIcon)
+        addSubview(labels)
+        NSLayoutConstraint.activate([
+            siteIcon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            siteIcon.centerYAnchor.constraint(equalTo: centerYAnchor),
+            siteIcon.widthAnchor.constraint(equalToConstant: 16),
+            siteIcon.heightAnchor.constraint(equalToConstant: 16),
+            labels.leadingAnchor.constraint(equalTo: siteIcon.trailingAnchor, constant: 8),
+            labels.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            labels.centerYAnchor.constraint(equalTo: centerYAnchor),
+            dateLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 90),
+        ])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("not used") }
+}
+
+/// Independent searchable window for either History or Bookmarks.
 @MainActor
 final class LibraryWindowController: NSWindowController, NSTableViewDataSource, NSTableViewDelegate,
                                      NSSearchFieldDelegate, NSMenuItemValidation {
-    enum Mode: Int, CaseIterable {
-        case history, bookmarks, downloads
-        var title: String { [String(localized: "History"), String(localized: "Bookmarks"), String(localized: "Downloads")][rawValue] }
+    enum Mode {
+        case history, bookmarks
+        var title: String { self == .history ? String(localized: "History") : String(localized: "Bookmarks") }
     }
 
     private struct Row {
         let id: AnyHashable
         let title: String
         let detail: String
+        let metadata: String
         let date: Date?
         let url: URL?
     }
 
-    static let shared = LibraryWindowController()
+    static let history = LibraryWindowController(mode: .history)
+    static let bookmarks = LibraryWindowController(mode: .bookmarks)
 
-    private var mode: Mode = .history
+    private let mode: Mode
     private var rows: [Row] = []
     private let table = DeletableTableView()
     private let searchField = NSSearchField()
-    private let picker = NSSegmentedControl()
     private let actionButton = NSButton()
     private let emptyLabel = NSTextField(labelWithString: "")
+    private let summaryLabel = NSTextField(labelWithString: "")
     private var services: BrowserServices { .shared }
     /// History and bookmarks shown are those of the profile in use when the window was opened.
     private var profile: ProfileData = BrowserServices.shared.currentProfile
@@ -52,29 +102,28 @@ final class LibraryWindowController: NSWindowController, NSTableViewDataSource, 
         return f
     }()
 
-    private init() {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 520),
+    private init(mode: Mode) {
+        self.mode = mode
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 460),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable],
                               backing: .buffered, defer: true)
         window.isReleasedWhenClosed = false
-        window.setFrameAutosaveName("AskaraLibrary")
+        window.title = mode.title
+        window.setFrameAutosaveName(mode == .history ? "AskaraHistoryCompact" : "AskaraBookmarksCompact")
         window.minSize = NSSize(width: 480, height: 300)
         super.init(window: window)
         buildUI()
 
         let center = NotificationCenter.default
-        for name in [Notification.Name.askaraHistoryChanged, .askaraBookmarksChanged, .askaraDownloadsChanged] {
-            center.addObserver(self, selector: #selector(dataChanged(_:)), name: name, object: nil)
-        }
+        center.addObserver(self, selector: #selector(dataChanged(_:)),
+                           name: mode == .history ? .askaraHistoryChanged : .askaraBookmarksChanged, object: nil)
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not used") }
 
-    func show(_ mode: Mode) {
+    func show() {
         profile = services.currentProfile
-        self.mode = mode
-        picker.selectedSegment = mode.rawValue
         searchField.stringValue = ""
         reload()
         showWindow(nil)
@@ -84,37 +133,37 @@ final class LibraryWindowController: NSWindowController, NSTableViewDataSource, 
     private func buildUI() {
         guard let root = window?.contentView else { return }
 
-        picker.segmentCount = Mode.allCases.count
-        for mode in Mode.allCases { picker.setLabel(mode.title, forSegment: mode.rawValue) }
-        picker.trackingMode = .selectOne
-        picker.target = self
-        picker.action = #selector(modeChanged(_:))
-        picker.setAccessibilityLabel(String(localized: "Choose list"))
-
         searchField.placeholderString = String(localized: "Search")
         searchField.delegate = self
         searchField.target = self
         searchField.action = #selector(searchChanged(_:))
         searchField.setAccessibilityLabel(String(localized: "Search list"))
+        searchField.widthAnchor.constraint(equalToConstant: 280).isActive = true
+        searchField.setContentCompressionResistancePriority(.required, for: .horizontal)
 
         actionButton.bezelStyle = .rounded
         actionButton.target = self
         actionButton.action = #selector(footerAction(_:))
 
-        let header = NSStackView(views: [picker, searchField])
+        let heading = NSTextField(labelWithString: mode.title)
+        heading.font = .systemFont(ofSize: 16, weight: .semibold)
+        summaryLabel.font = .systemFont(ofSize: 11)
+        summaryLabel.textColor = .secondaryLabelColor
+        let header = NSStackView(views: [heading, summaryLabel, NSView(), searchField])
+        header.alignment = .centerY
         header.spacing = 8
         let footer = NSStackView(views: [NSView(), actionButton])
 
-        for (id, title, width) in [("title", String(localized: "Title"), 300.0), ("detail", String(localized: "Address / Status"), 280), ("date", String(localized: "Date"), 140)] {
-            let column = NSTableColumn(identifier: .init(id))
-            column.title = title
-            column.width = width
-            table.addTableColumn(column)
-        }
+        let column = NSTableColumn(identifier: .init("library-row"))
+        column.resizingMask = .autoresizingMask
+        table.addTableColumn(column)
+        table.headerView = nil
+        table.rowHeight = 24
+        table.intercellSpacing = NSSize(width: 0, height: 1)
         table.dataSource = self
         table.delegate = self
         table.allowsMultipleSelection = true
-        table.usesAlternatingRowBackgroundColors = true
+        table.usesAlternatingRowBackgroundColors = false
         table.style = .inset
         table.target = self
         table.doubleAction = #selector(openSelected(_:))
@@ -125,8 +174,6 @@ final class LibraryWindowController: NSWindowController, NSTableViewDataSource, 
         menu.addItem(withTitle: String(localized: "Open in New Tab"), action: #selector(openSelectedInNewTabs(_:)), keyEquivalent: "")
         menu.addItem(withTitle: String(localized: "Copy Address"), action: #selector(copyAddress(_:)), keyEquivalent: "")
         menu.addItem(withTitle: String(localized: "Rename…"), action: #selector(renameSelected(_:)), keyEquivalent: "")
-        menu.addItem(withTitle: String(localized: "Show in Finder"), action: #selector(revealSelected(_:)), keyEquivalent: "")
-        menu.addItem(withTitle: String(localized: "Copy SHA-256"), action: #selector(copySHA256(_:)), keyEquivalent: "")
         menu.addItem(.separator())
         menu.addItem(withTitle: String(localized: "Remove"), action: #selector(delete(_:)), keyEquivalent: "")
         menu.items.forEach { $0.target = self }
@@ -162,7 +209,7 @@ final class LibraryWindowController: NSWindowController, NSTableViewDataSource, 
     // MARK: - Data
 
     @objc private func dataChanged(_ note: Notification) {
-        let relevant: Notification.Name = [.askaraHistoryChanged, .askaraBookmarksChanged, .askaraDownloadsChanged][mode.rawValue]
+        let relevant: Notification.Name = mode == .history ? .askaraHistoryChanged : .askaraBookmarksChanged
         // No need to refresh a table that isn't visible.
         guard note.name == relevant, window?.isVisible == true,
               note.object == nil || note.object as AnyObject === profile else { return }
@@ -181,25 +228,31 @@ final class LibraryWindowController: NSWindowController, NSTableViewDataSource, 
         case .history:
             rows = profile.history.search(query, limit: 1_000).map {
                 Row(id: $0.url, title: $0.title.isEmpty ? ($0.url.host ?? "") : $0.title,
-                    detail: $0.url.absoluteString, date: $0.lastVisited, url: $0.url)
+                    detail: $0.url.absoluteString,
+                    metadata: String(localized: "\($0.visitCount) visits"),
+                    date: $0.lastVisited, url: $0.url)
             }
             actionButton.title = String(localized: "Clear History…")
             emptyLabel.stringValue = String(localized: "No history yet")
         case .bookmarks:
-            rows = profile.bookmarks.bookmarks.reversed()
+            let store = profile.bookmarks
+            rows = store.bookmarks.reversed()
                 .filter { matches($0.title, $0.url.absoluteString) }
-                .map { Row(id: $0.id, title: $0.title, detail: $0.url.absoluteString, date: $0.created, url: $0.url) }
+                .map { bookmark in
+                    let container = store.location(of: bookmark.id)?.container
+                    let path = container.map {
+                        store.path(of: $0, barTitle: String(localized: "Bookmarks Bar"),
+                                   otherTitle: String(localized: "Other Bookmarks"))
+                    } ?? String(localized: "Bookmarks")
+                    return Row(id: bookmark.id, title: bookmark.title, detail: bookmark.url.absoluteString,
+                               metadata: path, date: bookmark.created, url: bookmark.url)
+                }
             actionButton.title = String(localized: "Remove Selected")
             emptyLabel.stringValue = String(localized: "No bookmarks yet. Press ⌘D on a page to add one.")
-        case .downloads:
-            rows = services.downloads.items
-                .filter { matches($0.filename, $0.sourceURL?.absoluteString ?? "") }
-                .map { Row(id: $0.id, title: $0.filename, detail: $0.statusText, date: $0.endedAt, url: $0.destination) }
-            actionButton.title = String(localized: "Clear List")
-            emptyLabel.stringValue = String(localized: "No downloads yet")
         }
         // Profile name only once there is more than one profile.
         window?.title = services.profileList.profiles.count > 1 ? "\(mode.title) – \(profile.profile.name)" : mode.title
+        summaryLabel.stringValue = String(localized: "\(rows.count) items")
         emptyLabel.isHidden = !rows.isEmpty
         table.reloadData()
     }
@@ -213,49 +266,13 @@ final class LibraryWindowController: NSWindowController, NSTableViewDataSource, 
 
     // MARK: - Actions
 
-    @objc private func modeChanged(_ sender: NSSegmentedControl) {
-        mode = Mode(rawValue: sender.selectedSegment) ?? .history
-        reload()
-    }
-
     @objc private func searchChanged(_ sender: Any?) { reload() }
+    func controlTextDidChange(_ obj: Notification) { reload() }
 
     @objc private func openSelected(_ sender: Any?) {
-        let selected = selectedRows
-        if mode == .downloads {
-            for row in selected {
-                guard let url = row.url, FileManager.default.fileExists(atPath: url.path),
-                      let id = row.id.base as? UUID,
-                      let item = services.downloads.items.first(where: { $0.id == id }) else { continue }
-                if item.requiresOpenConfirmation, !confirmOpen(item) { continue }
-                NSWorkspace.shared.open(url)
-            }
-            return
-        }
-        for (index, row) in selected.enumerated() {
+        for (index, row) in selectedRows.enumerated() {
             if let url = row.url { services.open(url, newTab: index > 0, profile: profile) }
         }
-    }
-
-    private func confirmOpen(_ item: DownloadManager.Item) -> Bool {
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        alert.messageText = String(localized: "Open this download?")
-        let finding = item.riskText.isEmpty ? item.statusText : item.riskText
-        alert.informativeText = String(localized: "Local scan result: \(finding). This scan cannot determine whether a file is malware. Only open files you trust.")
-        alert.addButton(withTitle: String(localized: "Open Anyway"))
-        alert.addButton(withTitle: String(localized: "Cancel"))
-        return alert.runModal() == .alertFirstButtonReturn
-    }
-
-    @objc private func copySHA256(_ sender: Any?) {
-        let hashes = selectedRows.compactMap { row -> String? in
-            guard let id = row.id.base as? UUID else { return nil }
-            return services.downloads.items.first { $0.id == id }?.sha256
-        }
-        guard !hashes.isEmpty else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(hashes.joined(separator: "\n"), forType: .string)
     }
 
     @objc private func openSelectedInNewTabs(_ sender: Any?) {
@@ -263,15 +280,10 @@ final class LibraryWindowController: NSWindowController, NSTableViewDataSource, 
     }
 
     @objc private func copyAddress(_ sender: Any?) {
-        let text = selectedRows.compactMap { mode == .downloads ? $0.url?.path : $0.url?.absoluteString }
+        let text = selectedRows.compactMap { $0.url?.absoluteString }
             .joined(separator: "\n")
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
-    }
-
-    @objc private func revealSelected(_ sender: Any?) {
-        let urls = selectedRows.compactMap(\.url).filter { FileManager.default.fileExists(atPath: $0.path) }
-        NSWorkspace.shared.activateFileViewerSelecting(urls)
     }
 
     @objc private func renameSelected(_ sender: Any?) {
@@ -299,11 +311,6 @@ final class LibraryWindowController: NSWindowController, NSTableViewDataSource, 
         switch mode {
         case .history: profile.removeHistory(urls: selected.compactMap { $0.id.base as? URL })
         case .bookmarks: profile.removeBookmarks(ids: selected.compactMap { $0.id.base as? UUID })
-        case .downloads:
-            let ids = Set(selected.compactMap { $0.id.base as? UUID })
-            // Removing from the list cancels it if still running. Finished files are not deleted.
-            services.downloads.items.filter { ids.contains($0.id) }.forEach(services.downloads.cancel)
-            services.downloads.removeFromList(ids)
         }
     }
 
@@ -311,9 +318,6 @@ final class LibraryWindowController: NSWindowController, NSTableViewDataSource, 
         switch mode {
         case .history: confirmClearBrowsingData()
         case .bookmarks: delete(sender)
-        case .downloads:
-            let done = services.downloads.items.filter { $0.state != .running }.map(\.id)
-            services.downloads.removeFromList(Set(done))
         }
     }
 
@@ -338,17 +342,7 @@ final class LibraryWindowController: NSWindowController, NSTableViewDataSource, 
         case #selector(renameSelected(_:)):
             item.isHidden = mode != .bookmarks
             return selected.count == 1
-        case #selector(revealSelected(_:)):
-            item.isHidden = mode != .downloads
-            return selected.contains { $0.url.map { FileManager.default.fileExists(atPath: $0.path) } ?? false }
-        case #selector(copySHA256(_:)):
-            item.isHidden = mode != .downloads
-            return selected.contains { row in
-                guard let id = row.id.base as? UUID else { return false }
-                return services.downloads.items.first { $0.id == id }?.sha256 != nil
-            }
         case #selector(openSelectedInNewTabs(_:)):
-            item.isHidden = mode == .downloads
             return !selected.isEmpty
         default:
             return !selected.isEmpty
@@ -362,29 +356,20 @@ final class LibraryWindowController: NSWindowController, NSTableViewDataSource, 
     func tableView(_ tableView: NSTableView, viewFor column: NSTableColumn?, row: Int) -> NSView? {
         guard let column, rows.indices.contains(row) else { return nil }
         let id = column.identifier
-        let cell = (tableView.makeView(withIdentifier: id, owner: self) as? NSTableCellView) ?? {
-            let cell = NSTableCellView()
-            cell.identifier = id
-            let text = NSTextField(labelWithString: "")
-            text.lineBreakMode = .byTruncatingTail
-            text.translatesAutoresizingMaskIntoConstraints = false
-            cell.addSubview(text)
-            cell.textField = text
-            NSLayoutConstraint.activate([
-                text.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 2),
-                text.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -2),
-                text.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-            ])
-            return cell
+        let cell = (tableView.makeView(withIdentifier: id, owner: self) as? LibraryRowView) ?? {
+            let value = LibraryRowView()
+            value.identifier = id
+            return value
         }()
         let item = rows[row]
-        switch id.rawValue {
-        case "title": cell.textField?.stringValue = item.title
-        case "detail":
-            cell.textField?.stringValue = item.detail
-            cell.textField?.textColor = .secondaryLabelColor
-        default: cell.textField?.stringValue = item.date.map(dateFormatter.string(from:)) ?? ""
-        }
+        cell.siteIcon.image = FaviconStore.shared.icon(for: item.url)
+            ?? NSImage(systemSymbolName: mode == .history ? "clock" : "bookmark.fill", accessibilityDescription: nil)
+        cell.siteIcon.contentTintColor = cell.siteIcon.image?.isTemplate == true ? .secondaryLabelColor : nil
+        cell.titleLabel.stringValue = item.title
+        cell.hostLabel.stringValue = item.url?.host ?? String(localized: "Unknown site")
+        cell.metadataLabel.stringValue = "·  \(item.metadata)"
+        cell.dateLabel.stringValue = item.date.map(dateFormatter.string(from:)) ?? ""
+        cell.toolTip = item.detail
         return cell
     }
 }

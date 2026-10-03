@@ -218,32 +218,66 @@ final class BookmarkPopover: NSViewController {
 
     override func loadView() {
         let node = profile.bookmarks.node(id)
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: 380, height: 178))
+        let icon = NSImageView(image: NSImage(systemSymbolName: "star.fill", accessibilityDescription: nil) ?? NSImage())
+        icon.contentTintColor = .systemYellow
         let title = NSTextField(labelWithString: String(localized: "Bookmark added"))
-        title.font = .boldSystemFont(ofSize: NSFont.systemFontSize)
+        title.font = .systemFont(ofSize: 15, weight: .semibold)
+        let site = NSTextField(labelWithString: node?.url?.host ?? node?.url?.absoluteString ?? "")
+        site.font = .systemFont(ofSize: 11)
+        site.textColor = .secondaryLabelColor
+        site.lineBreakMode = .byTruncatingMiddle
         name.stringValue = node?.title ?? ""
         name.setAccessibilityLabel(String(localized: "Name"))
-        name.widthAnchor.constraint(equalToConstant: 240).isActive = true
+        name.placeholderString = String(localized: "Bookmark name")
         folder.setAccessibilityLabel(String(localized: "Folder"))
         BookmarkMenus.fillFolderPopup(folder, store: profile.bookmarks,
                                       selected: profile.bookmarks.location(of: id)?.container ?? .bar)
         let remove = NSButton(title: String(localized: "Remove"), target: self, action: #selector(removeBookmark(_:)))
         let done = NSButton(title: String(localized: "Done"), target: self, action: #selector(done(_:)))
         done.keyEquivalent = "\r"
+        done.bezelColor = .controlAccentColor
         [remove, done].forEach { $0.bezelStyle = .rounded }
+        remove.hasDestructiveAction = true
+        let nameLabel = NSTextField(labelWithString: String(localized: "Name"))
+        let folderLabel = NSTextField(labelWithString: String(localized: "Folder"))
+        [nameLabel, folderLabel].forEach {
+            $0.font = .systemFont(ofSize: 11, weight: .medium)
+            $0.textColor = .secondaryLabelColor
+        }
         let grid = NSGridView(views: [
-            [NSTextField(labelWithString: String(localized: "Name:")), name],
-            [NSTextField(labelWithString: String(localized: "Folder:")), folder],
+            [nameLabel, name],
+            [folderLabel, folder],
         ])
         grid.column(at: 0).xPlacement = .trailing
-        grid.rowSpacing = 8
+        grid.columnSpacing = 10
+        grid.rowSpacing = 10
         let buttons = NSStackView(views: [NSView(), remove, done])
-        let stack = NSStackView(views: [title, grid, buttons])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 12
-        stack.edgeInsets = NSEdgeInsets(top: 14, left: 16, bottom: 14, right: 16)
-        buttons.widthAnchor.constraint(equalTo: grid.widthAnchor).isActive = true
-        view = stack
+        let titleStack = NSStackView(views: [icon, title])
+        titleStack.spacing = 8
+        for item in [titleStack, site, grid, buttons] as [NSView] {
+            item.translatesAutoresizingMaskIntoConstraints = false
+            root.addSubview(item)
+        }
+        NSLayoutConstraint.activate([
+            icon.widthAnchor.constraint(equalToConstant: 18),
+            icon.heightAnchor.constraint(equalToConstant: 18),
+            titleStack.topAnchor.constraint(equalTo: root.topAnchor, constant: 16),
+            titleStack.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 18),
+            site.topAnchor.constraint(equalTo: titleStack.bottomAnchor, constant: 2),
+            site.leadingAnchor.constraint(equalTo: titleStack.leadingAnchor),
+            site.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -18),
+            grid.topAnchor.constraint(equalTo: site.bottomAnchor, constant: 12),
+            grid.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 18),
+            grid.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -18),
+            name.widthAnchor.constraint(equalToConstant: 276),
+            folder.widthAnchor.constraint(equalTo: name.widthAnchor),
+            buttons.topAnchor.constraint(equalTo: grid.bottomAnchor, constant: 12),
+            buttons.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 18),
+            buttons.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -18),
+            buttons.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -14),
+        ])
+        view = root
     }
 
     /// Closing the popover (click outside, Esc) keeps edits too, like Chrome.

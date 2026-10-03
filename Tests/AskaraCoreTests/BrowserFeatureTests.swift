@@ -103,8 +103,8 @@ import Testing
     @Test func recentlyClosedIsBoundedLIFO() {
         var r = RecentlyClosed<Int>(capacity: 2)
         [1, 2, 3].forEach { r.push($0) }
+        #expect(r.pop(where: { $0 == 2 }) == 2)
         #expect(r.pop() == 3)
-        #expect(r.pop() == 2)
         #expect(r.pop() == nil)
     }
 

@@ -13,9 +13,15 @@ extension Notification.Name {
     static let askaraSyncChanged = Notification.Name("AskaraSyncChanged")
 }
 
-struct ClosedTab {
-    let url: URL
-    let title: String
+enum RecentlyClosedEntry {
+    case tab(id: UUID, closedAt: Date, tab: SessionState.SavedTab)
+    case window(id: UUID, closedAt: Date, window: SessionState.SavedWindow)
+
+    var id: UUID {
+        switch self {
+        case .tab(let id, _, _), .window(let id, _, _): id
+        }
+    }
 }
 
 /// App-wide shared state: profiles, settings, downloads, ad blocker, and the window list.
@@ -41,6 +47,8 @@ final class BrowserServices {
     private(set) var profileList: ProfileList
     /// Profiles opened since launch.
     private var profileData: [UUID: ProfileData] = [:]
+    private var isTerminating = false
+    private var suppressCloseRecording = false
 
     init(storageDirectory: URL? = nil, downloadDirectory: URL? = nil) {
         let downloadsFile = storageDirectory.map { JSONFile<DownloadHistory>(url: $0.appendingPathComponent("downloads.json")) }
@@ -151,7 +159,9 @@ final class BrowserServices {
     func removeProfile(_ id: UUID) {
         guard profileList.canRemove(id) else { return }
         let data = profileData[id]
+        suppressCloseRecording = true
         data?.windows.forEach { $0.close() }
+        suppressCloseRecording = false
         data?.discard()
         do { try PasswordStore(profileID: id).deleteAll() }
         catch { Log.error("Askara: failed to delete profile passwords: \(error.localizedDescription)") }
@@ -231,20 +241,14 @@ final class BrowserServices {
 
     func windowWillClose(_ controller: BrowserWindowController) {
         let profile = controller.profile
-        if !controller.isPrivate {
-            let remainingNormal = profile.windows.filter { $0 !== controller && !$0.isPrivate }
-            if remainingNormal.isEmpty {
-                // Last normal window of this profile: save it so it is restored when the profile reopens.
-                profile.saveSession(SessionState(windows: [controller.savedState()]))
-            } else {
-                controller.savedState().tabs.forEach {
-                    profile.recentlyClosed.push(ClosedTab(url: $0.url, title: $0.title))
-                }
-                profile.scheduleSessionSave()
+        if !controller.isPrivate, !isTerminating, !suppressCloseRecording {
+            let saved = controller.savedState()
+            if !saved.tabs.isEmpty {
+                profile.recentlyClosed.push(.window(id: UUID(), closedAt: Date(), window: saved))
             }
         }
         windows.removeAll { $0 === controller }
-        if !controller.isPrivate, profile.hasNormalWindows { profile.checkpointSession() }
+        if !controller.isPrivate { profile.saveSession(profile.currentSession()) }
         // No window left for this profile: free its extension background pages.
         if !profile.windows.contains(where: { !$0.isPrivate }) {
             DispatchQueue.main.async {
@@ -275,8 +279,31 @@ final class BrowserServices {
     func reopenClosedTab() {
         let profile = currentProfile
         guard let closed = profile.recentlyClosed.pop() else { return }
-        open(closed.url, newTab: true, nonPrivate: true, profile: profile)
+        restore(closed, profile: profile)
     }
+
+    func reopenRecentlyClosed(_ id: UUID, profile: ProfileData, selectedTab: Int? = nil) {
+        guard let closed = profile.recentlyClosed.pop(where: { $0.id == id }) else { return }
+        restore(closed, profile: profile, selectedTab: selectedTab)
+    }
+
+    private func restore(_ entry: RecentlyClosedEntry, profile: ProfileData, selectedTab: Int? = nil) {
+        switch entry {
+        case .tab(_, _, let saved):
+            let target = profile.windows.filter { !$0.isPrivate }.max { $0.lastFocused < $1.lastFocused }
+                ?? makeWindow(profile: profile, restoring: true)
+            target.restoreTab(saved)
+            target.window?.makeKeyAndOrderFront(nil)
+        case .window(_, _, var saved):
+            if let selectedTab, saved.tabs.indices.contains(selectedTab) { saved.activeIndex = selectedTab }
+            let target = makeWindow(profile: profile, restoring: true)
+            target.restore(saved)
+            target.window?.makeKeyAndOrderFront(nil)
+        }
+        NSApp.activate()
+    }
+
+    func beginTermination() { isTerminating = true }
 
     // MARK: - Hibernation (global, across windows)
 

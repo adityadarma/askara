@@ -106,7 +106,7 @@ final class AddressSuggestionsController {
 }
 
 /// One suggestion: favicon, page title, and address.
-private final class SuggestionRowView: NSView {
+final class SuggestionRowView: NSView {
     var onClick: (() -> Void)?
     var isSelected = false { didSet { updateAppearance() } }
     private var isHovered = false { didSet { needsDisplay = true } }
@@ -134,6 +134,12 @@ private final class SuggestionRowView: NSView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not used") }
 
+    var titleWidthForTesting: CGFloat { titleLabel.frame.width }
+    var titleTextWidthForTesting: CGFloat {
+        ceil((titleLabel.stringValue as NSString).size(
+            withAttributes: [.font: titleLabel.font ?? NSFont.systemFont(ofSize: 13)]).width)
+    }
+
     func configure(_ suggestion: AddressSuggestion) {
         let address = Self.displayAddress(suggestion.url)
         let title = suggestion.title.isEmpty ? address : suggestion.title
@@ -160,9 +166,12 @@ private final class SuggestionRowView: NSView {
         let x: CGFloat = 32
         let available = max(0, bounds.width - x - 10)
         let titleHeight = titleLabel.intrinsicContentSize.height
-        // Title takes what it needs up to 60%; the address fills the rest.
-        let titleWidth = min(titleLabel.intrinsicContentSize.width, addressLabel.stringValue.isEmpty
-                             ? available : available * 0.6)
+        // A truncating NSTextField can report its previous frame as its intrinsic width. Measure
+        // the actual string so short titles never become "S…" or "Goo…" after row reuse.
+        let measuredTitle = ceil((titleLabel.stringValue as NSString).size(
+            withAttributes: [.font: titleLabel.font ?? NSFont.systemFont(ofSize: 13)]).width) + 3
+        let maximumTitle = addressLabel.stringValue.isEmpty ? available : min(420, max(100, available * 0.5))
+        let titleWidth = min(measuredTitle, maximumTitle)
         titleLabel.frame = NSRect(x: x, y: (h - titleHeight) / 2, width: titleWidth, height: titleHeight)
         let addressX = x + titleWidth + 10
         let addressHeight = addressLabel.intrinsicContentSize.height

@@ -23,11 +23,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        true
+        false
     }
 
     /// Save session cookies before quitting (cookie reads are asynchronous).
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        services.beginTermination()
         services.saveAll()
         var replied = false
         let finish = {
@@ -121,12 +122,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
     @objc func showSettingsAction(_ sender: Any?) { services.settingsWindow.show() }
-    @objc func showHistoryAction(_ sender: Any?) { LibraryWindowController.shared.show(.history) }
-    @objc func showBookmarksAction(_ sender: Any?) { LibraryWindowController.shared.show(.bookmarks) }
+    @objc func showHistoryAction(_ sender: Any?) { LibraryWindowController.history.show() }
+    @objc func showBookmarksAction(_ sender: Any?) { LibraryWindowController.bookmarks.show() }
     @objc func importAction(_ sender: Any?) {
         BrowserImporter.run(in: NSApp.keyWindow, profile: services.currentProfile)
     }
-    @objc func showDownloadsAction(_ sender: Any?) { LibraryWindowController.shared.show(.downloads) }
+    @objc func showDownloadsAction(_ sender: Any?) { DownloadsWindowController.shared.show() }
     @objc func showTaskManagerAction(_ sender: Any?) { TaskManagerWindowController.shared.show() }
     @objc func showSavedPasswordsAction(_ sender: Any?) {
         PasswordVaultWindowController.shared.show(profile: services.currentProfile)
@@ -440,7 +441,7 @@ enum MainMenu {
             .separator(),
             item(String(localized: "Close Tab"), #selector(B.closeTabAction(_:)), "w"),
             item(String(localized: "Close Window"), #selector(NSWindow.performClose(_:)), "w", [.command, .shift]),
-            item(String(localized: "Reopen Closed Tab"), #selector(A.reopenClosedTabAction(_:)), "t", [.command, .shift]),
+            item(String(localized: "Reopen Closed Tab or Window"), #selector(A.reopenClosedTabAction(_:)), "t", [.command, .shift]),
             item(String(localized: "Open Synced Tabs"), #selector(A.openSyncedTabsAction(_:))),
             .separator(),
             item(String(localized: "Open This Page in Safari"), #selector(B.openInSafariAction(_:))),
@@ -523,6 +524,7 @@ enum MainMenu {
             item(String(localized: "Pin Tab"), #selector(B.togglePinTabAction(_:))),
             item(String(localized: "Mute Tab"), #selector(B.toggleMuteTabAction(_:)), "m", [.command, .control]),
             item(String(localized: "Duplicate Tab"), #selector(B.duplicateTabAction(_:))),
+            item(String(localized: "Duplicate Tab in Background"), #selector(B.duplicateTabInBackgroundAction(_:))),
         ]
         for n in 1...9 {
             let shortcut = item(String(localized: "Tab \(n)"), #selector(B.selectTabNumberAction(_:)), "\(n)", tag: n)

@@ -271,6 +271,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     private let pictureInPictureButton = NSButton()
     private let pinnedExtensionStack = NSStackView()
     private let extensionsButton = FirstClickButton()
+    private let downloadsButton = FirstClickButton()
     private var privacyPopover: NSPopover?
     /// Profile avatar at the right end of the toolbar, like Chrome.
     private let profileButton = FirstClickButton()
@@ -325,6 +326,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
                            name: .askaraProfilesChanged, object: nil)
         center.addObserver(self, selector: #selector(downloadEvent(_:)),
                            name: .askaraDownloadEvent, object: nil)
+        center.addObserver(self, selector: #selector(downloadsChanged),
+                           name: .askaraDownloadsChanged, object: nil)
         center.addObserver(self, selector: #selector(refreshExtensionButtons),
                            name: .askaraExtensionsChanged, object: profile)
         center.addObserver(self, selector: #selector(preferencesChanged),
@@ -334,6 +337,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         center.addObserver(self, selector: #selector(contentViewResized(_:)),
                            name: NSView.frameDidChangeNotification, object: contentView)
         refreshExtensionButtons()
+        updateDownloadsButton()
         extensionController?.didOpenWindow(self)
     }
 
@@ -378,6 +382,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         moreButton.contentTintColor = .labelColor
         configure(extensionsButton, symbol: "puzzlepiece.extension", label: String(localized: "Extensions"),
                   action: #selector(showExtensionsMenu(_:)))
+        configure(downloadsButton, symbol: "arrow.down.circle", label: String(localized: "Downloads (⌥⌘L)"),
+                  action: #selector(showDownloads(_:)))
         [
             (backButton, "askara.navigation.back"),
             (forwardButton, "askara.navigation.forward"),
@@ -387,6 +393,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
             (privacyButton, "askara.privacy"),
             (pictureInPictureButton, "askara.picture-in-picture"),
             (extensionsButton, "askara.extensions"),
+            (downloadsButton, "askara.downloads"),
             (moreButton, "askara.menu"),
         ].forEach { $0.0.setAccessibilityIdentifier($0.1) }
 
@@ -452,7 +459,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         separator.heightAnchor.constraint(equalToConstant: 24).isActive = true
         separator.widthAnchor.constraint(equalToConstant: 1).isActive = true
         let toolbarStack = NSStackView(views: [backButton, forwardButton, reloadButton, homeButton,
-                                               addressBar, pinnedExtensionStack, extensionsButton, separator,
+                                               addressBar, pinnedExtensionStack, extensionsButton, downloadsButton, separator,
                                                profileButton, moreButton])
         toolbarStack.orientation = .horizontal
         toolbarStack.spacing = 6
@@ -713,11 +720,32 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         showToast(text, duration: 4)
     }
 
+    @objc private func downloadsChanged() { updateDownloadsButton() }
+
+    private func updateDownloadsButton() {
+        let running = services.downloads.running
+        downloadsButton.isHidden = services.downloads.items.isEmpty
+        let active = !running.isEmpty
+        let label = active ? (services.downloads.summary ?? String(localized: "Downloads"))
+            : String(localized: "Downloads (⌥⌘L)")
+        downloadsButton.image = NSImage(systemSymbolName: active ? "arrow.down.circle.fill" : "arrow.down.circle",
+                                        accessibilityDescription: label)?
+            .withSymbolConfiguration(.init(pointSize: 14, weight: .medium))
+        downloadsButton.contentTintColor = active ? .controlAccentColor : .secondaryLabelColor
+        downloadsButton.toolTip = label
+        downloadsButton.setAccessibilityLabel(label)
+    }
+
+    @objc private func showDownloads(_ sender: NSButton) { DownloadsWindowController.shared.show() }
+
     // MARK: - TabStripDelegate
 
     func tabStrip(_ strip: TabStripView, didSelect index: Int) { activate(index: index) }
     func tabStrip(_ strip: TabStripView, didClose index: Int) { closeTab(at: index) }
     func tabStripNewTab(_ strip: TabStripView) { openBlankTab() }
+    func tabStripSearchTabs(_ strip: TabStripView) {
+        TabSearchPopover.show(services: services, profile: profile, isPrivate: isPrivate, relativeTo: strip)
+    }
 
     func tabStrip(_ strip: TabStripView, tooltipFor index: Int) -> String {
         guard tabs.indices.contains(index) else { return "" }
@@ -1016,6 +1044,21 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         for tab in preload { wake(tab) }
         if !preload.isEmpty { refreshTabStrip() }
         if saved.isFullScreen == true { window?.toggleFullScreen(nil) }
+    }
+
+    func restoreTab(_ saved: SessionState.SavedTab) {
+        if tabs.isEmpty {
+            restore(.init(tabs: [saved], activeIndex: 0))
+            return
+        }
+        let tab = insertTab(url: saved.url, at: tabs.count, activate: false)
+        tab.title = saved.title
+        tab.isPinned = saved.isPinned ?? false
+        tab.isMuted = saved.isMuted ?? false
+        tab.interactionState = saved.interactionData
+        normalizeTabOrder()
+        activate(tab: tab)
+        sessionChanged()
     }
 
     static func restoredPinnedTabsToPreload(_ tabs: [Tab], active: Tab?, maxLoadedTabs: Int,
@@ -1384,8 +1427,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     private func closeTab(at index: Int) {
         guard tabs.indices.contains(index) else { return }
         let tab = tabs[index]
-        if !isPrivate, let url = tab.webView?.url ?? tab.url {
-            profile.recentlyClosed.push(ClosedTab(url: url, title: tab.title))
+        if !isPrivate, let saved = savedTab(tab) {
+            profile.recentlyClosed.push(.tab(id: UUID(), closedAt: Date(), tab: saved))
         }
         dropWebView(of: tab)
         tabs.remove(at: index)
@@ -1405,6 +1448,13 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
             refreshTabStrip()
         }
         sessionChanged()
+    }
+
+    private func savedTab(_ tab: Tab) -> SessionState.SavedTab? {
+        guard let url = tab.webView?.url ?? tab.url, url.scheme != "webkit-extension" else { return nil }
+        let interactionData = (tab.webView?.interactionState ?? tab.interactionState) as? Data
+        return .init(url: url, title: tab.title, isPinned: tab.isPinned, isMuted: tab.isMuted,
+                     interactionData: interactionData)
     }
 
     // MARK: - Tab order, pinning, muting
@@ -1475,11 +1525,34 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     }
 
     @objc func duplicateTabAction(_ sender: Any?) {
-        guard let tab = targetTab(sender), let url = tab.webView?.url ?? tab.url,
+        guard let tab = targetTab(sender) else { return }
+        duplicate(tab, activate: true)
+    }
+
+    /// Clones navigation history without creating another WebContent process until the tab is selected.
+    @objc func duplicateTabInBackgroundAction(_ sender: Any?) {
+        guard let tab = targetTab(sender) else { return }
+        duplicate(tab, activate: false)
+    }
+
+    private func duplicate(_ tab: Tab, activate: Bool) {
+        guard let url = tab.webView?.url ?? tab.url,
               let index = tabs.firstIndex(where: { $0 === tab }) else { return }
-        let copy = insertTab(url: url, at: index + 1, activate: true)
+        // WebKit restores the copied navigation list and scroll position when this tab wakes.
+        // The WebView itself stays independent, so page JavaScript and forms are never shared.
+        let interactionData = (tab.webView?.interactionState ?? tab.interactionState) as? Data
+        let copy = insertTab(url: url, at: index + 1, activate: false)
+        copy.title = tab.title
         copy.zoom = tab.zoom
-        copy.webView?.pageZoom = tab.zoom
+        copy.interactionState = interactionData.map { Data($0) }
+        copy.device = tab.device
+        copy.deviceLandscape = tab.deviceLandscape
+        copy.colorScheme = tab.colorScheme
+        copy.isMuted = tab.isMuted
+        copy.isPinned = tab.isPinned
+        normalizeTabOrder()
+        if activate { self.activate(tab: copy) } else { refreshTabStrip() }
+        sessionChanged()
     }
 
     @objc func reloadTabAction(_ sender: Any?) {
@@ -1512,6 +1585,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         let menu = NSMenu()
         menu.addItem(menuItem(String(localized: "Reload"), #selector(reloadTabAction(_:)), tab))
         menu.addItem(menuItem(String(localized: "Duplicate Tab"), #selector(duplicateTabAction(_:)), tab))
+        menu.addItem(menuItem(String(localized: "Duplicate Tab in Background"),
+                              #selector(duplicateTabInBackgroundAction(_:)), tab))
         menu.addItem(menuItem(tab.isPinned ? String(localized: "Unpin Tab") : String(localized: "Pin Tab"),
                               #selector(togglePinTabAction(_:)), tab))
         menu.addItem(menuItem(tab.isMuted ? String(localized: "Unmute Tab") : String(localized: "Mute Tab"),

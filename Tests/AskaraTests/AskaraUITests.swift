@@ -86,6 +86,20 @@ struct AskaraUITests {
         parent.close()
     }
 
+    @Test("Short address suggestion titles keep their full width")
+    @MainActor
+    func shortAddressSuggestionTitleWidth() throws {
+        _ = NSApplication.shared
+        let row = SuggestionRowView()
+        row.frame = NSRect(x: 0, y: 0, width: 900, height: 30)
+        row.configure(AddressSuggestion(kind: .history,
+                                        url: try #require(URL(string: "https://sso.example/login")),
+                                        title: "SSO"))
+        row.layoutSubtreeIfNeeded()
+
+        #expect(row.titleWidthForTesting >= row.titleTextWidthForTesting)
+    }
+
     @Test("Restore caps eager pinned tabs to the loaded-tab budget")
     @MainActor
     func restoredPinnedTabBudget() {
@@ -211,7 +225,7 @@ struct AskaraUITests {
 
     @Test("Full browser chrome launches with one isolated WebView")
     @MainActor
-    func browserWindowSmokeTest() {
+    func browserWindowSmokeTest() throws {
         _ = NSApplication.shared
         let storage = FileManager.default.temporaryDirectory
             .appendingPathComponent("AskaraUITests-\(UUID().uuidString)", isDirectory: true)
@@ -234,10 +248,21 @@ struct AskaraUITests {
         #expect(controller.tabMenuEntries.count == 1)
         #expect(identifiers.contains("askara.tabs"))
         #expect(identifiers.contains("askara.tabs.new"))
+        #expect(identifiers.contains("askara.tabs.search"))
         #expect(identifiers.contains("askara.address"))
         #expect(identifiers.contains("askara.navigation.back"))
         #expect(identifiers.contains("askara.navigation.reload"))
+        #expect(identifiers.contains("askara.extensions"))
+        #expect(identifiers.contains("askara.downloads"))
         #expect(!FileManager.default.fileExists(atPath: storage.path))
+
+        let url = try #require(URL(string: "https://example.com"))
+        controller.load(url)
+        controller.duplicateTabInBackgroundAction(nil)
+        #expect(controller.tabMenuEntries.count == 2)
+        #expect(controller.loadedWebViews.count == 1)
+        #expect(controller.allTabs[1].webView == nil)
+        #expect(controller.allTabs[1].url?.host == url.host)
     }
 
     @Test("Source window releases its close observer")

@@ -16,7 +16,7 @@ final class ProfileData {
     private(set) var bookmarks: BookmarkStore
     /// Remembered camera/microphone/location choices.
     private(set) var permissions: SitePermissions
-    var recentlyClosed = RecentlyClosed<ClosedTab>(capacity: 25)
+    var recentlyClosed = RecentlyClosed<RecentlyClosedEntry>(capacity: 25)
 
     private let historyFile: JSONFile<HistoryStore>
     private let bookmarksFile: JSONFile<BookmarkStore>
