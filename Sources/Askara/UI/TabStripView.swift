@@ -160,6 +160,8 @@ final class TabStripView: NSView, NSDraggingSource {
     static let tabType = NSPasteboard.PasteboardType("local.askara.tab")
     private static let topGap: CGFloat = 6
     static let pinnedWidth: CGFloat = 42
+    /// Narrowest the active tab gets when the strip is crowded: icon on the left, close button on the right.
+    static let activeMinWidth: CGFloat = 64
 
     weak var delegate: TabStripDelegate?
     var isPrivate = false {
@@ -257,13 +259,20 @@ final class TabStripView: NSView, NSDraggingSource {
         let pinnedCount = CGFloat(items.filter(\.isPinned).count)
         let normalCount = items.count - Int(pinnedCount)
         let available = bounds.width - leading - badgeWidth - buttonSize * 2 - 24 - pinnedCount * Self.pinnedWidth
-        let width = floor(max(28, min(240, available / CGFloat(max(normalCount, 1)))))
+        var width = floor(max(28, min(240, available / CGFloat(max(normalCount, 1)))))
+        // With many tabs the active one keeps enough room for its icon and close button;
+        // the others share what is left.
+        var activeWidth = width
+        if normalCount > 1, width < Self.activeMinWidth, items.indices.contains(activeIndex), !items[activeIndex].isPinned {
+            activeWidth = Self.activeMinWidth
+            width = floor(max(28, min(240, (available - activeWidth) / CGFloat(normalCount - 1))))
+        }
         let searchX = bounds.width - badgeWidth - buttonSize - 8
         let tabsEnd = searchX - buttonSize - 6
 
         var x = leading
         for (index, view) in itemViews.enumerated() {
-            let w = items[index].isPinned ? Self.pinnedWidth : width
+            let w = items[index].isPinned ? Self.pinnedWidth : (index == activeIndex ? activeWidth : width)
             view.isHidden = x + w > tabsEnd
             if !view.isHidden { view.frame = NSRect(x: x, y: 0, width: w, height: tabHeight) }
             x += w
@@ -285,14 +294,36 @@ final class TabStripView: NSView, NSDraggingSource {
         // The active tab shape is drawn here, not in the tab view, because its bottom flares
         // reach outside the tab's frame into the neighbouring tabs.
         if itemViews.indices.contains(activeIndex), !itemViews[activeIndex].isHidden {
+            let frame = itemViews[activeIndex].frame
             activeTabColor.setFill()
-            Self.activeTabPath(for: itemViews[activeIndex].frame).fill()
+            Self.activeTabPath(for: frame).fill()
+            drawActiveTabAccent(for: frame)
         }
+    }
+
+    /// Accent line that follows the tab's outline: across the top, round the corners, and down both
+    /// sides into the flares, fading out toward the toolbar so the tab still melts into it.
+    private func drawActiveTabAccent(for frame: NSRect) {
+        let lineWidth: CGFloat = 2.5
+        // Stroke centred on the outline and clipped to the tab, so only the inner half shows.
+        let stroke = Self.activeTabPath(for: frame, closed: false).cgPath
+            .copy(strokingWithWidth: lineWidth * 2, lineCap: .butt, lineJoin: .round, miterLimit: 1)
+        let accent = activeTabAccent
+        guard let gradient = NSGradient(colors: [accent, accent, accent.withAlphaComponent(0)],
+                                        atLocations: [0, 0.45, 1], colorSpace: .sRGB) else { return }
+        NSGraphicsContext.saveGraphicsState()
+        Self.activeTabPath(for: frame).addClip()
+        NSBezierPath(cgPath: stroke).addClip()
+        gradient.draw(in: NSRect(x: frame.minX - 16, y: frame.minY, width: frame.width + 32, height: frame.height),
+                      angle: -90)
+        NSGraphicsContext.restoreGraphicsState()
     }
 
     /// Chrome-style tab: rounded top corners, plus concave flares at the bottom that curve
     /// outward and join the toolbar below.
-    static func activeTabPath(for frame: NSRect, cornerRadius r: CGFloat = 10, flareRadius f: CGFloat = 8) -> NSBezierPath {
+    /// `closed: false` leaves the bottom edge out, for stroking just the visible outline.
+    static func activeTabPath(for frame: NSRect, cornerRadius r: CGFloat = 10, flareRadius f: CGFloat = 8,
+                              closed: Bool = true) -> NSBezierPath {
         let x0 = frame.minX, x1 = frame.maxX, y0 = frame.minY, y1 = frame.maxY
         let path = NSBezierPath()
         path.move(to: NSPoint(x: x0 - f, y: y0))
@@ -303,7 +334,7 @@ final class TabStripView: NSView, NSDraggingSource {
         path.appendArc(withCenter: NSPoint(x: x1 - r, y: y1 - r), radius: r, startAngle: 90, endAngle: 0, clockwise: true)
         path.line(to: NSPoint(x: x1, y: y0 + f))
         path.appendArc(withCenter: NSPoint(x: x1 + f, y: y0 + f), radius: f, startAngle: 180, endAngle: 270)
-        path.close()
+        if closed { path.close() }
         return path
     }
 
@@ -545,16 +576,14 @@ final class TabItemView: NSView, NSViewToolTipOwner {
         if isPinned || isCompact {
             label.isHidden = true
             var showIcon = true
-            var iconX = (w - 16) / 2
-            if isCompact, isActive {
-                if w < Self.closeOnlyWidth {
-                    // Too narrow for both: close button alone, centered.
-                    showIcon = false
-                    closeX = (w - 18) / 2
-                } else {
-                    // Icon centered in the space left of the close button.
-                    iconX = max(6, (w - 26 - 16) / 2)
-                }
+            // Pinned tabs center their icon. Crowded tabs keep it on the left, so icons line up
+            // along the strip and the active tab's close button has its own place on the right.
+            var iconX = isCompact ? min(10, max(4, (w - 16) / 2)) : (w - 16) / 2
+            if isCompact, isActive, w < Self.closeOnlyWidth {
+                // Too narrow for both: close button alone, centered.
+                showIcon = false
+                iconX = 0
+                closeX = (w - 18) / 2
             }
             icon.isHidden = !showIcon || isLoading
             spinner.isHidden = !showIcon || !isLoading
@@ -581,12 +610,7 @@ final class TabItemView: NSView, NSViewToolTipOwner {
     override func draw(_ dirtyRect: NSRect) {
         guard let strip else { return }
         if isActive {
-            // The tab shape itself is drawn by the strip (its flares extend past this view).
-            // Thin accent bar along the top edge marks the active tab at a glance.
-            strip.activeTabAccent.setFill()
-            let r: CGFloat = 10
-            NSBezierPath(roundedRect: NSRect(x: r, y: bounds.height - 2.5, width: max(0, bounds.width - r * 2), height: 2.5),
-                         xRadius: 1.25, yRadius: 1.25).fill()
+            // The tab shape and its accent line are drawn by the strip (the flares extend past this view).
         } else if isHovered {
             AskaraColors.hover.setFill()
             NSBezierPath(roundedRect: bounds.insetBy(dx: 2, dy: 4), xRadius: 8, yRadius: 8).fill()

@@ -6,6 +6,10 @@ struct ContextTarget {
     var link: URL?
     var image: URL?
     var selection = ""
+    /// End of a long selection (the start is in `selection`), for Copy Link to Highlight.
+    var selectionTail = ""
+    /// Highlight links only point at the main page; a selection inside an iframe can't be linked.
+    var isMainFrame = true
 }
 
 /// Sends the link/image/selected text under the cursor on right-click. The `contextmenu` event fires
@@ -20,10 +24,12 @@ enum ContextMenuProbe {
       const el = e.target instanceof Element ? e.target : (e.target && e.target.parentElement);
       const link = el && el.closest('a[href]');
       const img = el && el.closest('img');
+      const text = String(window.getSelection() || '').trim();
       handler.postMessage({
         link: link ? link.href : '',
         image: img ? (img.currentSrc || img.src || '') : '',
-        selection: String(window.getSelection() || '').trim().slice(0, 500),
+        selection: text.slice(0, 500),
+        tail: text.length > 500 ? text.slice(-200) : '',
       });
     }, true);
     """
@@ -93,6 +99,13 @@ final class AskaraWebView: WKWebView {
             // Below "Copy" if present, to match Safari/Chrome.
             let copyIndex = find("WKMenuItemIdentifierCopy").map { $0 + 1 } ?? 0
             menu.insertItem(search, at: copyIndex)
+            if target.isMainFrame,
+               let link = browser.highlightLink(selection: target.selection,
+                                                tail: target.selectionTail.isEmpty ? nil : target.selectionTail) {
+                menu.insertItem(item(String(localized: "Copy Link to Highlight"),
+                                     #selector(BrowserWindowController.copyLinkToHighlight(_:)), link),
+                                at: copyIndex + 1)
+            }
         }
 
         // Page menu (not a link, image, or text): add page actions.

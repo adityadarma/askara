@@ -25,6 +25,12 @@ public struct BrowserPreferences: Codable, Equatable, Sendable {
     public var protectedTabs = 2
     /// Upgrade http:// to https:// and warn before loading a site without HTTPS.
     public var httpsOnly = false
+    /// Remove tracking parameters (utm_*, fbclid, gclid, ...) from opened and copied addresses.
+    public var stripsTrackingParameters = true
+    /// Ask before quitting when several tabs are open or downloads are running.
+    public var confirmsQuit = true
+    /// On launch, bring back the windows and tabs from last time instead of opening a new tab.
+    public var restoresSession = false
     /// Memory Saver exceptions: tabs of these sites (and subdomains) never sleep.
     public private(set) var keepAwakeSites: [String] = []
     /// Bookmarks bar under the toolbar (View > Show Bookmarks Bar, ⇧⌘B).
@@ -42,6 +48,7 @@ public struct BrowserPreferences: Codable, Equatable, Sendable {
         case searchEngineID, homePage, sleepAfterMinutes, maxLoadedTabs, httpsOnly, keepAwakeSites, showsBookmarksBar,
              syncEnabled
         case syncFolderPath, syncFolderBookmark, dozeAfterMinutes, memoryBudgetPercent, protectedTabs
+        case stripsTrackingParameters, confirmsQuit, restoresSession
     }
 
     public init(from decoder: Decoder) throws {
@@ -55,6 +62,10 @@ public struct BrowserPreferences: Codable, Equatable, Sendable {
         memoryBudgetPercent = try c.decodeIfPresent(Int.self, forKey: .memoryBudgetPercent) ?? d.memoryBudgetPercent
         protectedTabs = try c.decodeIfPresent(Int.self, forKey: .protectedTabs) ?? d.protectedTabs
         httpsOnly = try c.decodeIfPresent(Bool.self, forKey: .httpsOnly) ?? d.httpsOnly
+        stripsTrackingParameters = try c.decodeIfPresent(Bool.self, forKey: .stripsTrackingParameters)
+            ?? d.stripsTrackingParameters
+        confirmsQuit = try c.decodeIfPresent(Bool.self, forKey: .confirmsQuit) ?? d.confirmsQuit
+        restoresSession = try c.decodeIfPresent(Bool.self, forKey: .restoresSession) ?? d.restoresSession
         keepAwakeSites = try c.decodeIfPresent([String].self, forKey: .keepAwakeSites) ?? d.keepAwakeSites
         showsBookmarksBar = try c.decodeIfPresent(Bool.self, forKey: .showsBookmarksBar) ?? d.showsBookmarksBar
         syncEnabled = try c.decodeIfPresent(Bool.self, forKey: .syncEnabled) ?? d.syncEnabled

@@ -23,6 +23,8 @@ final class Tab: NSObject {
     var refocusAddressAfterLoad = false
     var title: String
     var zoom: Double = 1
+    /// Host whose page the zoom was last set for, so a new site starts at its own zoom.
+    var zoomHost: String?
     var lastActive = Date()
     /// Shown at least once. Background tabs (⌘+click) start false so Memory Saver evicts them
     /// before tabs the user actually switched between.
@@ -172,6 +174,42 @@ final class AddressField: NSTextField {
         return accepted
     }
 
+    /// Builds the "Paste and Go / Paste and Search" item for the right-click menu (nil = clipboard empty).
+    var pasteAndGoItem: (() -> NSMenuItem?)?
+
+    /// Right-click while not editing.
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let menu = super.menu(for: event)
+        if let menu { addPasteAndGo(to: menu) }
+        return menu
+    }
+
+    /// Right-click while editing: the menu comes from the field editor, whose delegate is this field.
+    @objc func textView(_ textView: NSTextView, menu: NSMenu, for event: NSEvent, at charIndex: Int) -> NSMenu? {
+        addPasteAndGo(to: menu)
+        return menu
+    }
+
+    private func addPasteAndGo(to menu: NSMenu) {
+        guard let item = pasteAndGoItem?(), !menu.items.contains(where: { $0.action == item.action }) else { return }
+        // Right below Paste, like Safari and Chrome.
+        let index = menu.items.firstIndex { $0.action == #selector(NSText.paste(_:)) }.map { $0 + 1 } ?? 0
+        menu.insertItem(item, at: index)
+    }
+
+    /// ⇧⌘V while editing the address: Paste and Go. Only here, so web pages still get ⇧⌘V.
+    var onPasteAndGo: (() -> Void)?
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if currentEditor() != nil, mods == [.command, .shift], event.charactersIgnoringModifiers?.lowercased() == "v",
+           let onPasteAndGo {
+            onPasteAndGo()
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+
     override func mouseDown(with event: NSEvent) {
         let selectAll = justFocused
         justFocused = false
@@ -214,7 +252,9 @@ private final class WeakScriptHandler: NSObject, WKScriptMessageHandler {
                     return URL(string: text)
                 }
                 web.contextTarget = ContextTarget(link: url("link"), image: url("image"),
-                                                  selection: body["selection"] as? String ?? "")
+                                                  selection: body["selection"] as? String ?? "",
+                                                  selectionTail: body["tail"] as? String ?? "",
+                                                  isMainFrame: message.frameInfo.isMainFrame)
             case PictureInPictureScript.handlerName:
                 guard let body = message.body as? [String: Any], let frameID = body["frame"] as? String else { return }
                 target?.pictureInPictureState(in: message.webView, frameID: frameID, frame: message.frameInfo,
@@ -267,6 +307,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     private let reloadButton = NSButton()
     private let homeButton = NSButton()
     private let bookmarkButton = NSButton()
+    /// Magnifier with the page zoom ("125%"), shown in the address bar while the zoom isn't 100%.
+    private let zoomButton = NSButton()
     private let privacyButton = NSButton()
     private let pictureInPictureButton = NSButton()
     private let pinnedExtensionStack = NSStackView()
@@ -412,6 +454,13 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         addressField.controlSize = .large
         addressField.font = .systemFont(ofSize: 14)
         addressField.cell?.sendsActionOnEndEditing = false
+        addressField.onPasteAndGo = { [weak self] in self?.pasteAndGoAction(nil) }
+        addressField.pasteAndGoItem = { [weak self] in
+            guard let self, let title = self.pasteAndGoTitle() else { return nil }
+            let item = NSMenuItem(title: title, action: #selector(self.pasteAndGoAction(_:)), keyEquivalent: "")
+            item.target = self
+            return item
+        }
         addressField.lineBreakMode = .byTruncatingTail
         addressField.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
@@ -423,7 +472,18 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         let privacySeparator = NSBox()
         privacySeparator.boxType = .separator
         privacySeparator.translatesAutoresizingMaskIntoConstraints = false
-        let addressActions = NSStackView(views: [pictureInPictureButton, bookmarkButton])
+        zoomButton.isBordered = false
+        zoomButton.imagePosition = .imageLeading
+        zoomButton.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 12, weight: .medium))
+        zoomButton.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium)
+        zoomButton.contentTintColor = .secondaryLabelColor
+        zoomButton.target = self
+        zoomButton.action = #selector(showZoomMenu(_:))
+        zoomButton.heightAnchor.constraint(equalToConstant: 28).isActive = true
+        zoomButton.setAccessibilityIdentifier("askara.zoom")
+        zoomButton.isHidden = true
+        let addressActions = NSStackView(views: [zoomButton, pictureInPictureButton, bookmarkButton])
         addressActions.orientation = .horizontal
         addressActions.spacing = 2
         addressActions.translatesAutoresizingMaskIntoConstraints = false
@@ -571,6 +631,17 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     /// View > Show/Hide Bookmarks Bar (⇧⌘B). Applies to all windows.
     @objc func toggleBookmarksBarAction(_ sender: Any?) {
         services.updatePreferences { $0.showsBookmarksBar.toggle() }
+        // The bar only appears when it has something on it; say why nothing changed otherwise.
+        guard services.preferences.showsBookmarksBar else {
+            return showToast(String(localized: "Bookmarks bar hidden"), duration: 1.5)
+        }
+        if isPrivate {
+            showToast(String(localized: "Private windows don't show the bookmarks bar"), duration: 2.5)
+        } else if profile.bookmarks.bar.isEmpty {
+            showToast(String(localized: "Bookmarks bar is on. It appears once you bookmark a page (⌘D)."), duration: 3)
+        } else {
+            showToast(String(localized: "Bookmarks bar shown"), duration: 1.5)
+        }
     }
 
     private func updateToolbar() {
@@ -603,6 +674,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         privacyButton.toolTip = privacyLabel
         privacyButton.setAccessibilityLabel(privacyLabel)
         privacyButton.isEnabled = isWeb
+        updateZoomIndicator()
         pictureInPictureButton.isEnabled = tab?.pictureInPictureEligible == true
         pictureInPictureButton.isHidden = tab?.pictureInPictureEligible != true
         pictureInPictureButton.contentTintColor = tab?.isPictureInPicture == true ? .controlAccentColor : .secondaryLabelColor
@@ -671,10 +743,13 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         add(String(localized: "Bookmarks"), "star", #selector(AppDelegate.showBookmarksAction(_:)), target: app)
         add(String(localized: "Downloads"), "arrow.down.circle", #selector(AppDelegate.showDownloadsAction(_:)), target: app)
         menu.addItem(.separator())
+        add(services.preferences.showsBookmarksBar ? String(localized: "Hide Bookmarks Bar") : String(localized: "Show Bookmarks Bar"),
+            "bookmark", #selector(toggleBookmarksBarAction(_:)))
+        menu.addItem(.separator())
         add(String(localized: "Find…"), "magnifyingglass", #selector(showFindBar(_:)), key: "f")
-        add(String(localized: "Zoom In"), "plus.magnifyingglass", #selector(zoomInAction(_:)))
-        add(String(localized: "Zoom Out"), "minus.magnifyingglass", #selector(zoomOutAction(_:)))
-        add(String(localized: "Actual Size"), "1.magnifyingglass", #selector(zoomResetAction(_:)))
+        add(String(localized: "Zoom In"), "plus.magnifyingglass", #selector(zoomInAction(_:)), key: "+")
+        add(String(localized: "Zoom Out"), "minus.magnifyingglass", #selector(zoomOutAction(_:)), key: "-")
+        add(String(localized: "Actual Size"), "1.magnifyingglass", #selector(zoomResetAction(_:)), key: "0")
         add(String(localized: "Print…"), "printer", #selector(printPageAction(_:)), key: "p")
         menu.addItem(.separator())
         add(String(localized: "Task Manager"), "gauge.with.dots.needle.67percent", #selector(AppDelegate.showTaskManagerAction(_:)), target: app)
@@ -991,6 +1066,12 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     }
 
     var allTabs: [Tab] { tabs }
+
+    /// A normal window with one tab still on the home page it opened with (no navigation yet).
+    func isUntouchedNewTab(home: URL) -> Bool {
+        guard !isPrivate, tabs.count == 1, let tab = tabs.first, let web = tab.webView else { return false }
+        return web.backForwardList.backList.isEmpty && tab.url?.host == home.host
+    }
     /// WebKit pages only (process metrics and sharing are WebKit-specific).
     var loadedWebViews: [WKWebView] { tabs.compactMap(\.webView) }
     /// Awake tabs of any engine, for the loaded-tab budget.
@@ -1616,6 +1697,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         menu.addItem(.separator())
         menu.addItem(menuItem(String(localized: "Close Tab"), #selector(closeTargetTabAction(_:)), tab))
         menu.addItem(menuItem(String(localized: "Close Other Tabs"), #selector(closeOtherTabsAction(_:)), tab))
+        menu.addItem(menuItem(String(localized: "Close Tabs to the Right"), #selector(closeTabsToRightAction(_:)), tab))
+        menu.addItem(menuItem(String(localized: "Close Duplicate Tabs"), #selector(closeDuplicateTabsAction(_:)), tab))
         return menu
     }
 
@@ -1786,7 +1869,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     }
 
     @objc func copyPageAddress(_ sender: Any?) {
-        guard let url = activeTab?.displayURL ?? activeTab?.url else { return }
+        guard let url = shareablePageURL else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(url.absoluteString, forType: .string)
         showToast(String(localized: "Address copied"), duration: 1.5)
@@ -1796,6 +1879,98 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         guard let value = sender.representedObject as? String else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(value, forType: .string)
+    }
+
+    /// Address to share for the active page: tracking parameters removed when that setting is on.
+    private var shareablePageURL: URL? {
+        guard let url = activeTab?.displayURL ?? activeTab?.url else { return nil }
+        return services.preferences.stripsTrackingParameters ? URLCleaner.clean(url) : url
+    }
+
+    /// ⌃⇧⌘C: `[Title](URL)`, for notes and chats.
+    @objc func copyMarkdownLinkAction(_ sender: Any?) {
+        guard let url = shareablePageURL else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(LinkFormat.markdown(title: activeTab?.title ?? "", url: url), forType: .string)
+        showToast(String(localized: "Markdown link copied"), duration: 1.5)
+    }
+
+    /// Right-click on selected text: a link that scrolls to and highlights the selection.
+    @objc func copyLinkToHighlight(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(url.absoluteString, forType: .string)
+        showToast(String(localized: "Link to highlight copied"), duration: 1.5)
+    }
+
+    /// Link to the selection on the active page, or nil when the page isn't a web page.
+    func highlightLink(selection: String, tail: String?) -> URL? {
+        guard let page = activeTab?.webView?.url, ["http", "https"].contains(page.scheme ?? "") else { return nil }
+        let base = services.preferences.stripsTrackingParameters ? URLCleaner.clean(page) : page
+        return TextFragment.url(for: base, selection: selection, tail: tail)
+    }
+
+    // MARK: - Actions: Paste and Go
+
+    /// Clipboard text as a single line, or nil if there's nothing usable.
+    private var clipboardAddressText: String? {
+        guard let raw = NSPasteboard.general.string(forType: .string) else { return nil }
+        let text = raw.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }.joined(separator: " ")
+        return text.isEmpty || text.count > 2048 ? nil : text
+    }
+
+    /// "Paste and Go" for an address, "Paste and Search" for other text; nil if the clipboard is empty.
+    func pasteAndGoTitle() -> String? {
+        guard let text = clipboardAddressText else { return nil }
+        let template = services.searchEngine.searchTemplate
+        let isSearch = AddressParser.url(from: text, searchTemplate: template)
+            == AddressParser.searchURL(for: text, template: template)
+        return isSearch ? String(localized: "Paste and Search") : String(localized: "Paste and Go")
+    }
+
+    /// ⇧⌘V in the address bar / right-click menu: replaces the address with the clipboard and opens it.
+    @objc func pasteAndGoAction(_ sender: Any?) {
+        guard let text = clipboardAddressText,
+              let url = AddressParser.url(from: text, searchTemplate: services.searchEngine.searchTemplate) else {
+            return NSSound.beep()
+        }
+        suggestionTask?.cancel()
+        suggestionTask = nil
+        suggestions.hide()
+        addressField.stringValue = text
+        load(url)
+    }
+
+    // MARK: - Actions: closing tabs in bulk
+
+    /// Closes the tabs after the given one (pinned tabs always come first, so none are affected).
+    @objc func closeTabsToRightAction(_ sender: Any?) {
+        guard let keep = targetTab(sender), let index = tabs.firstIndex(where: { $0 === keep }) else { return }
+        let closing = tabs[(index + 1)...].filter { !$0.isPinned }
+        guard !closing.isEmpty else { return }
+        if let active = activeTab, closing.contains(where: { $0 === active }) { activate(tab: keep) }
+        closing.reversed().forEach { close(tab: $0) }
+    }
+
+    /// Closes tabs showing a page that's already open in another tab. The active tab and pinned tabs stay.
+    @objc func closeDuplicateTabsAction(_ sender: Any?) {
+        let duplicates = duplicateTabs
+        guard !duplicates.isEmpty else { return }
+        duplicates.reversed().forEach { close(tab: $0) }
+        showToast(duplicates.count == 1 ? String(localized: "Closed 1 duplicate tab")
+                                        : String(localized: "Closed \(duplicates.count) duplicate tabs"), duration: 2)
+    }
+
+    private var duplicateTabs: [Tab] {
+        let urls = tabs.map { $0.webView?.url ?? $0.url }
+        return TabCleanup.duplicateIndices(urls: urls, preferring: activeIndex >= 0 ? activeIndex : nil)
+            .map { tabs[$0] }.filter { !$0.isPinned }
+    }
+
+    private func hasTabsToRight(of tab: Tab?) -> Bool {
+        guard let tab, let index = tabs.firstIndex(where: { $0 === tab }) else { return false }
+        return tabs[(index + 1)...].contains { !$0.isPinned }
     }
 
     // MARK: - Actions: Develop
@@ -2020,10 +2195,72 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
 
     private func setZoom(_ zoom: Double) {
         guard let tab = activeTab else { return }
+        apply(zoom: zoom, to: tab)
+        // Remembered for the site and applied to its other open tabs, like Chrome. Private windows
+        // don't save it, so they leave no trace of visited sites.
+        if let host = activeSiteHost {
+            if isPrivate {
+                applySiteZoom(zoom, host: host, privateOnly: true)
+            } else {
+                services.setZoom(zoom, host: host)
+            }
+        }
+        showToast(String(localized: "Zoom \(ZoomLevels.label(zoom))"), duration: 1.5)
+    }
+
+    /// Address-bar zoom indicator: visible only while the active page isn't at 100%.
+    private func updateZoomIndicator() {
+        let zoom = activeTab?.zoom ?? 1
+        zoomButton.isHidden = abs(zoom - 1) < 0.001
+        let label = ZoomLevels.label(zoom)
+        zoomButton.title = label
+        zoomButton.toolTip = String(localized: "Zoom \(label). Click to change.")
+        zoomButton.setAccessibilityLabel(String(localized: "Zoom \(label)"))
+    }
+
+    @objc private func showZoomMenu(_ sender: NSButton) {
+        let menu = NSMenu()
+        menu.minimumWidth = 200
+        for (title, symbol, action, key) in [
+            (String(localized: "Zoom In"), "plus.magnifyingglass", #selector(zoomInAction(_:)), "+"),
+            (String(localized: "Zoom Out"), "minus.magnifyingglass", #selector(zoomOutAction(_:)), "-"),
+            (String(localized: "Actual Size"), "1.magnifyingglass", #selector(zoomResetAction(_:)), "0"),
+        ] {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
+            item.target = self
+            item.image = menuIcon(symbol)
+            menu.addItem(item)
+        }
+        showToolbarMenu(menu, below: sender)
+    }
+
+    private func apply(zoom: Double, to tab: Tab) {
+        guard abs(tab.zoom - zoom) > 0.0001 else { return }
+        defer { if tab === activeTab { updateZoomIndicator() } }
         tab.zoom = zoom
         // Device Mode combines zoom with its fit-to-window scale.
-        if tab.device != nil { layoutWebView(of: tab) } else { tab.webView?.pageZoom = zoom }
-        showToast(String(localized: "Zoom \(ZoomLevels.label(zoom))"), duration: 1.5)
+        if tab.device != nil, tab === activeTab { layoutWebView(of: tab) } else { tab.webView?.pageZoom = zoom }
+    }
+
+    /// Zoom changed for a site: tabs in this window showing that exact site follow.
+    func applySiteZoom(_ zoom: Double, host: String, privateOnly: Bool = false) {
+        guard !privateOnly || isPrivate else { return }
+        let key = SiteSettings.key(for: host)
+        for tab in tabs {
+            guard let tabHost = (tab.webView?.url ?? tab.url)?.host, SiteSettings.key(for: tabHost) == key else { continue }
+            apply(zoom: zoom, to: tab)
+        }
+    }
+
+    /// Zoom for a page that just committed: the site's saved zoom, or 100%. Private windows keep
+    /// each tab's own zoom within the same site.
+    private func siteZoom(for url: URL, tab: Tab) -> Double? {
+        guard ["http", "https"].contains(url.scheme ?? ""), let host = url.host else { return nil }
+        if isPrivate {
+            let previousHost = tab.zoomHost
+            return previousHost.map { SiteSettings.key(for: $0) == SiteSettings.key(for: host) } == true ? nil : 1
+        }
+        return services.siteSettings.zoom(host: host) ?? 1
     }
 
     @objc func printPageAction(_ sender: Any?) {
@@ -2127,9 +2364,17 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         // Once per site per window, to avoid nagging.
         guard passkeyWarnedHosts.insert(host).inserted else { return }
 
+        let site = host.isEmpty ? String(localized: "this site") : host
         let alert = NSAlert()
-        alert.messageText = String(localized: "Passkeys can't be used in Askara yet")
-        alert.informativeText = String(localized: "macOS only lets third-party browsers use passkeys and security keys if the app is signed with a special entitlement from Apple (requires an Apple Developer account). This Askara build doesn't have that entitlement yet, so passkey requests are always rejected by the system.\n\nFor now, sign in to \(host.isEmpty ? String(localized: "this site") : host) through Safari, or use a password.")
+        if !isPrivate, !profile.extensions.loaded.isEmpty {
+            // An extension is active, so passkeys go through it (e.g. Bitwarden). We only get here when
+            // the request fell back to macOS, which rejects it without Apple's entitlement.
+            alert.messageText = String(localized: "Passkey wasn't handled by your extension")
+            alert.informativeText = String(localized: "Askara uses your password manager extension (e.g. Bitwarden) for passkeys, because macOS blocks them for this app. This request reached macOS instead, which always rejects it.\n\nUnlock Bitwarden, turn on \"Ask to save and use passkeys\" in its settings, then reload the page and try again. You can also sign in to \(site) through Safari.")
+        } else {
+            alert.messageText = String(localized: "Passkeys can't be used in Askara yet")
+            alert.informativeText = String(localized: "macOS only lets third-party browsers use passkeys and security keys if the app is signed with a special entitlement from Apple (requires a paid Apple Developer account). Askara can use passkeys through a password manager extension instead: enable Bitwarden in the Extensions menu (not available in private windows), then reload the page.\n\nOtherwise, sign in to \(site) through Safari, or use a password.")
+        }
         alert.addButton(withTitle: String(localized: "Open in Safari"))
         alert.addButton(withTitle: String(localized: "Close"))
         alert.beginSheetModal(for: window) { [weak self] response in
@@ -2194,8 +2439,17 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
             let schemes: [NSAppearance.Name?] = [nil, .aqua, .darkAqua]
             item.state = schemes.indices.contains(item.tag) && schemes[item.tag] == activeTab?.colorScheme ? .on : .off
             return web != nil
-        case #selector(copyPageAddress(_:)):
+        case #selector(copyPageAddress(_:)), #selector(copyMarkdownLinkAction(_:)):
             return activeTab?.url != nil
+        case #selector(pasteAndGoAction(_:)):
+            // Only from the address bar: in a page, ⇧⌘V must never navigate away from a form.
+            guard let title = pasteAndGoTitle() else { return false }
+            item.title = title
+            return true
+        case #selector(closeTabsToRightAction(_:)):
+            return hasTabsToRight(of: targetTab(item))
+        case #selector(closeDuplicateTabsAction(_:)):
+            return !duplicateTabs.isEmpty
         case #selector(copyContextValue(_:)):
             return item.representedObject is String
         case #selector(openInSafariAction(_:)):
@@ -2236,6 +2490,15 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
                 tab.retriableNavigationURL = candidate
                 tab.transientRetryCount = 0
             }
+        }
+        // Tracking parameters (utm_*, fbclid, ...) are removed before the page loads. Only plain GET page
+        // loads, and never back/forward (that would rewrite history entries).
+        if services.preferences.stripsTrackingParameters, action.targetFrame?.isMainFrame ?? true,
+           action.navigationType != .backForward, action.request.httpMethod?.uppercased() ?? "GET" == "GET",
+           let url = action.request.url, case let cleaned = URLCleaner.clean(url), cleaned != url {
+            decisionHandler(.cancel, preferences)
+            webView.load(URLRequest(url: cleaned))
+            return
         }
         // HTTPS-Only Mode: load the https:// version instead; the http:// URL is kept for the fallback prompt.
         if action.targetFrame?.isMainFrame ?? true, let url = action.request.url, let secure = httpsUpgrade(for: url),
@@ -2311,6 +2574,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         guard let tab = tabs.first(where: { $0.webView === webView }), let url = webView.url else { return }
         tab.url = url
         tab.displayURL = url
+        if let zoom = siteZoom(for: url, tab: tab) { apply(zoom: zoom, to: tab) }
+        tab.zoomHost = url.host
         if tab.hidesHomeAddress, tab.homeLandingURL == nil { tab.homeLandingURL = url }
         tab.httpFallbackURL = nil
         // New page: the old page's form input and frame-level media state are gone.

@@ -5,6 +5,22 @@ import WebKit
 import AskaraCore
 @testable import Askara
 
+/// AppKit's window open/close animation keeps an unretained pointer to its window. If a test
+/// releases a window while that animation is still running, the process crashes later in
+/// `_NSWindowTransformAnimation dealloc`. Windows shown by tests are kept for the whole run.
+@MainActor
+enum TestWindows {
+    private static var kept: [AnyObject] = []
+    static func keep(_ window: NSWindow?) {
+        guard let window else { return }
+        window.animationBehavior = .none
+        window.isReleasedWhenClosed = false
+        kept.append(window)
+    }
+    /// Objects that own a window internally (e.g. the suggestions panel).
+    static func keep(owner: AnyObject) { kept.append(owner) }
+}
+
 @Suite("AppKit UI components", .serialized)
 struct AskaraUITests {
     @Test("Responsible footprint includes the process itself")
@@ -53,7 +69,8 @@ struct AskaraUITests {
         }
         let page = try #require(web)
         #expect(page.navigationDelegate == nil) // caller attaches its own delegate
-        #expect(page.title == "Spare")
+        #expect(page.url == url)
+        #expect(!page.isLoading)
         #expect(spare.take(for: url) == nil) // handed over once
 
         spare.prepare(url: url, after: 0)
@@ -113,15 +130,40 @@ struct AskaraUITests {
         #expect(strip.subviews.compactMap { $0 as? TabItemView }.count == 1)
     }
 
+    @Test("Crowded tab strip keeps the active tab wide enough and icons on the left")
+    @MainActor
+    func crowdedTabStripLayout() {
+        let strip = TabStripView(frame: NSRect(x: 0, y: 0, width: 900, height: TabStripView.height))
+        let items = (0..<22).map { TabStripItem(title: "Tab \($0)", isSleeping: false, isPlayingAudio: false) }
+        strip.update(items: items, activeIndex: 12)
+        strip.layoutSubtreeIfNeeded()
+
+        let tabs = strip.subviews.compactMap { $0 as? TabItemView }
+        #expect(tabs.count == 22)
+        #expect(tabs.allSatisfy { !$0.isHidden }) // 22 tabs still fit at the 28 pt minimum
+        #expect(tabs[12].frame.width >= TabStripView.activeMinWidth)
+        #expect(tabs[11].frame.width < TabStripView.activeMinWidth)
+        // No overlap: each tab starts where the previous one ends.
+        for (a, b) in zip(tabs, tabs.dropFirst()) { #expect(abs(a.frame.maxX - b.frame.minX) < 0.5) }
+
+        // Moving the active tab moves the extra room with it.
+        strip.update(items: items, activeIndex: 3)
+        strip.layoutSubtreeIfNeeded()
+        #expect(tabs[3].frame.width >= TabStripView.activeMinWidth)
+        #expect(tabs[12].frame.width < TabStripView.activeMinWidth)
+    }
+
     @Test("Address suggestions cycle back to typed text")
     @MainActor
     func addressSuggestionKeyboardCycle() throws {
         _ = NSApplication.shared
         let parent = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 200),
                               styleMask: [.titled], backing: .buffered, defer: false)
+        TestWindows.keep(parent)
         let field = NSTextField(frame: NSRect(x: 20, y: 120, width: 400, height: 30))
         parent.contentView?.addSubview(field)
         let controller = AddressSuggestionsController()
+        TestWindows.keep(owner: controller)
         let first = AddressSuggestion(kind: .history, url: try #require(URL(string: "https://example.com")),
                                       title: "Example")
         let second = AddressSuggestion(kind: .bookmark, url: try #require(URL(string: "https://swift.org")),
@@ -303,6 +345,7 @@ struct AskaraUITests {
         let profile = ProfileData(id: UUID(), services: services, dataStore: .nonPersistent(),
                                   storageDirectory: storage.appendingPathComponent("profile", isDirectory: true))
         let controller = BrowserWindowController(profile: profile, isPrivate: true, services: services)
+        TestWindows.keep(controller.window)
         controller.showWindow(nil)
         controller.newTab(url: nil)
         defer { controller.window?.close() }
@@ -346,6 +389,7 @@ struct AskaraUITests {
             html: "<html><body>fixture</body></html>",
             url: sourceURL,
             relativeTo: nil))
+        TestWindows.keep(window)
 
         #expect(SourceWindow.openWindowCount == windowsBefore + 1)
         #expect(SourceWindow.closeObserverCount == observersBefore + 1)

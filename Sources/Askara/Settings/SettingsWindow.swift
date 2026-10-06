@@ -30,6 +30,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     // Privacy
     private let httpsOnlyBox = NSButton(checkboxWithTitle: String(localized: "Always use secure connections (HTTPS-Only Mode)"),
                                         target: nil, action: nil)
+    private let stripTrackingBox = NSButton(checkboxWithTitle: String(localized: "Remove tracking parameters from links"),
+                                            target: nil, action: nil)
+    private let restoreBox = NSButton(checkboxWithTitle: String(localized: "Continue where I left off on startup"),
+                                      target: nil, action: nil)
+    private let confirmQuitBox = NSButton(checkboxWithTitle: String(localized: "Ask before quitting with several tabs open"),
+                                          target: nil, action: nil)
     // Permissions
     private let permissionTable = NSTableView()
     private var permissionRows: [(host: String, kind: PermissionKind, choice: PermissionChoice)] = []
@@ -152,6 +158,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         defaultRow.spacing = 8
         barBox.target = self
         barBox.action = #selector(barChanged(_:))
+        confirmQuitBox.target = self
+        confirmQuitBox.action = #selector(confirmQuitChanged(_:))
+        restoreBox.target = self
+        restoreBox.action = #selector(restoreChanged(_:))
         syncBox.target = self
         syncBox.action = #selector(syncChanged(_:))
         syncFolderButton.target = self
@@ -165,6 +175,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
             [label(String(localized: "Home page:")), homeField],
             [NSGridCell.emptyContentView, useCurrent],
             [NSGridCell.emptyContentView, barBox],
+            [NSGridCell.emptyContentView, restoreBox],
+            [NSGridCell.emptyContentView, confirmQuitBox],
             [NSGridCell.emptyContentView, syncBox],
             [NSGridCell.emptyContentView, syncFolderButton],
             [NSGridCell.emptyContentView, syncStatus],
@@ -173,7 +185,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         grid.column(at: 0).xPlacement = .trailing
         return stack([
             grid,
-            note(String(localized: "New tabs and windows open the home page. Leave it empty to use the search engine's page.")),
+            note(String(localized: "New tabs and windows open the home page. Leave it empty to use the search engine's page. With \"Continue where I left off\", every window and tab from last time comes back when Askara starts (only the visible tab loads; the rest wait until you click them). Without it, File > Restore Previous Session still brings them back.")),
         ])
     }
 
@@ -269,9 +281,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     private func privacyPage() -> NSView {
         httpsOnlyBox.target = self
         httpsOnlyBox.action = #selector(httpsOnlyChanged(_:))
+        stripTrackingBox.target = self
+        stripTrackingBox.action = #selector(stripTrackingChanged(_:))
         return stack([
             httpsOnlyBox,
             note(String(localized: "Upgrades http:// addresses to https://. If a site doesn't support HTTPS, Askara asks before loading it. Local addresses (localhost, 192.168.x.x, .local) are left alone.")),
+            stripTrackingBox,
+            note(String(localized: "Removes parameters like utm_source, fbclid, and gclid that only exist to track where you came from, before the page loads and when you copy an address.")),
         ])
     }
 
@@ -427,6 +443,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         protectedStepper.integerValue = prefs.protectedTabs
         protectedLabel.stringValue = "\(prefs.protectedTabs)"
         httpsOnlyBox.state = prefs.httpsOnly ? .on : .off
+        stripTrackingBox.state = prefs.stripsTrackingParameters ? .on : .off
+        confirmQuitBox.state = prefs.confirmsQuit ? .on : .off
+        restoreBox.state = prefs.restoresSession ? .on : .off
         let permissions = services.currentProfile.permissions
         permissionRows = permissions.hosts.flatMap { host in
             PermissionKind.allCases.compactMap { kind in
@@ -483,6 +502,21 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         let count = sender.integerValue
         maxTabsLabel.stringValue = "\(count)"
         services.updatePreferences { $0.maxLoadedTabs = count }
+    }
+
+    @objc private func stripTrackingChanged(_ sender: NSButton) {
+        let on = sender.state == .on
+        services.updatePreferences { $0.stripsTrackingParameters = on }
+    }
+
+    @objc private func restoreChanged(_ sender: NSButton) {
+        let on = sender.state == .on
+        services.updatePreferences { $0.restoresSession = on }
+    }
+
+    @objc private func confirmQuitChanged(_ sender: NSButton) {
+        let on = sender.state == .on
+        services.updatePreferences { $0.confirmsQuit = on }
     }
 
     @objc private func httpsOnlyChanged(_ sender: NSButton) {

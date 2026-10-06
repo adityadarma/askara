@@ -115,6 +115,16 @@ final class BrowserServices {
         saveSiteSettings()
     }
 
+    /// Remembers a site's zoom and applies it to that site's tabs in every normal window.
+    func setZoom(_ zoom: Double, host: String) {
+        siteSettings.setZoom(zoom, host: host)
+        saveSiteSettings()
+        windows.filter { !$0.isPrivate }.forEach { $0.applySiteZoom(zoom, host: host) }
+    }
+
+    /// Open tabs across all windows, for the quit confirmation.
+    var openTabCount: Int { windows.reduce(0) { $0 + $1.allTabs.count } }
+
     private func saveSiteSettings() {
         do { try siteSettingsFile.save(siteSettings) } catch { Log.error("Askara: failed to save site settings: \(error)") }
     }
@@ -198,18 +208,36 @@ final class BrowserServices {
     }
 
     /// Opens a profile: its existing normal window if one is open, otherwise a fresh window with
-    /// exactly one home-page tab. Session state remains a crash-recovery record only; it is not
-    /// restored automatically so each browser launch starts clean.
-    func openProfile(_ id: UUID) {
+    /// exactly one home-page tab. At launch, "Continue where I left off" (Settings) brings back the
+    /// last session's windows instead. Either way the last session stays available under
+    /// File > Restore Previous Session.
+    func openProfile(_ id: UUID, atLaunch: Bool = false) {
         let profile = data(for: id)
         if let window = profile.windows.filter({ !$0.isPrivate }).max(by: { $0.lastFocused < $1.lastFocused }) {
             window.showWindow(nil)
             return
         }
         profile.prepare {
-            self.makeWindow(profile: profile).newTab(url: self.homeURL)
+            // Must happen before the first window opens: that window overwrites the session file.
+            if atLaunch { profile.rememberPreviousSession(home: self.homeURL) }
+            if !(atLaunch && self.preferences.restoresSession && profile.restoreSession(home: self.homeURL)) {
+                self.makeWindow(profile: profile).newTab(url: self.homeURL)
+            }
             NSApp.activate()
         }
+    }
+
+    /// File > Restore Previous Session: reopens the windows of the last launch next to the current ones.
+    /// Windows that still only show an untouched home page are closed, since they'd just be in the way.
+    func restorePreviousSession() {
+        let profile = currentProfile
+        guard profile.canRestorePreviousSession else { return }
+        let untouched = profile.windows.filter { $0.isUntouchedNewTab(home: homeURL) }
+        guard profile.restorePreviousSession() else { return }
+        suppressCloseRecording = true
+        untouched.forEach { $0.close() }
+        suppressCloseRecording = false
+        NSApp.activate()
     }
 
     // MARK: - Windows
@@ -246,7 +274,8 @@ final class BrowserServices {
             }
         }
         windows.removeAll { $0 === controller }
-        if !controller.isPrivate { profile.saveSession(profile.currentSession()) }
+        // While quitting, saveAll() already wrote the full session; windows closing one by one must not shrink it.
+        if !controller.isPrivate, !isTerminating { profile.saveSession(profile.currentSession()) }
         // No window left for this profile: free its extension background pages.
         if !profile.windows.contains(where: { !$0.isPrivate }) {
             DispatchQueue.main.async {

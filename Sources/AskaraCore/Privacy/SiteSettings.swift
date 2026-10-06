@@ -27,8 +27,23 @@ public struct SiteSettings: Codable, Equatable, Sendable {
     public private(set) var customizations: [String: SiteCustomization] = [:]
     /// Optional keeps files written before this setting backward compatible.
     private var adBlockDisabled: Set<String>?
+    /// Page zoom remembered per site (exact site key, like Chrome). 100% is never stored.
+    private var zoomLevels: [String: Double]?
 
     public init() {}
+
+    // MARK: Zoom
+
+    /// Saved zoom for the host, or nil for the default (100%).
+    public func zoom(host: String) -> Double? { zoomLevels?[Self.key(for: host)] }
+
+    public mutating func setZoom(_ zoom: Double, host: String) {
+        let key = Self.key(for: host)
+        guard !key.isEmpty, zoom.isFinite, zoom > 0 else { return }
+        var levels = zoomLevels ?? [:]
+        levels[key] = abs(zoom - 1) < 0.001 ? nil : zoom
+        zoomLevels = levels.isEmpty ? nil : levels
+    }
 
     /// "WWW.Example.com." → "example.com"
     public static func key(for host: String) -> String {

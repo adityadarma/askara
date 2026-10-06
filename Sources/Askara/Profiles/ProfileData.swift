@@ -20,6 +20,8 @@ final class ProfileData {
     private let historyFile: JSONFile<HistoryStore>
     private let bookmarksFile: JSONFile<BookmarkStore>
     private let sessionFile: JSONFile<SessionState>
+    /// Copy of the last launch's session, kept until a later launch has something worth keeping instead.
+    private let previousSessionFile: JSONFile<SessionState>
     private let permissionsFile: JSONFile<SitePermissions>
     private var saveTasks: [String: Task<Void, Never>] = [:]
     private var cookiesRestored = false
@@ -39,11 +41,13 @@ final class ProfileData {
             historyFile = JSONFile(url: storageDirectory.appendingPathComponent("history.json"))
             bookmarksFile = JSONFile(url: storageDirectory.appendingPathComponent("bookmarks.json"))
             sessionFile = JSONFile(url: storageDirectory.appendingPathComponent("session.json"))
+            previousSessionFile = JSONFile(url: storageDirectory.appendingPathComponent("previous-session.json"))
             permissionsFile = JSONFile(url: storageDirectory.appendingPathComponent("site-permissions.json"))
         } else {
             historyFile = .inAppSupport(folder + "history.json")
             bookmarksFile = .inAppSupport(folder + "bookmarks.json")
             sessionFile = .inAppSupport(folder + "session.json")
+            previousSessionFile = .inAppSupport(folder + "previous-session.json")
             permissionsFile = .inAppSupport(folder + "site-permissions.json")
         }
         let cookieURL = storageDirectory?.appendingPathComponent("session-cookies.plist")
@@ -70,20 +74,51 @@ final class ProfileData {
         sessionCookies.restore(completion: completion)
     }
 
-    /// Restores every normal window. Background tabs remain asleep, so this does not cause a load storm.
-    func restoreSession() -> Bool {
-        guard let session = sessionFile.load(), !session.isEmpty else { return false }
+    /// Set while windows are being rebuilt, so the half-restored state isn't saved over the real one.
+    private var isRestoringSession = false
+    /// The previous session was already brought back in this launch (so the menu doesn't offer it twice).
+    private var previousSessionRestored = false
+
+    /// At launch, before any window exists (a new window would overwrite the session file): keeps a copy
+    /// of the last session for "Restore Previous Session", unless it was just an untouched home page.
+    func rememberPreviousSession(home: URL) {
+        guard let last = sessionFile.load(), !last.isTrivial(homeURL: home) else { return }
+        do { try previousSessionFile.save(last) } catch { Log.error("Askara: failed to keep previous session: \(error)") }
+    }
+
+    var previousSession: SessionState? { previousSessionFile.load().flatMap { $0.isEmpty ? nil : $0 } }
+    var canRestorePreviousSession: Bool { !previousSessionRestored && previousSession != nil }
+
+    /// "Continue where I left off": the last session's windows, unless it was just an untouched home page.
+    func restoreSession(home: URL) -> Bool {
+        guard let session = sessionFile.load(), !session.isTrivial(homeURL: home) else { return false }
         restore(session: session)
+        previousSessionRestored = true
         return true
     }
 
+    func restorePreviousSession() -> Bool {
+        guard let session = previousSession else { return false }
+        restore(session: session)
+        previousSessionRestored = true
+        return true
+    }
+
+    /// Restores every normal window. Background tabs remain asleep, so this does not cause a load storm.
     func restore(session: SessionState) {
+        isRestoringSession = true
+        var restored: [BrowserWindowController] = []
         for (index, saved) in session.windows.enumerated() {
             // Keep one global loaded-tab slot for the active tab of each window still to restore.
             let remainingActiveTabs = session.windows.count - index - 1
-            services.makeWindow(profile: self, restoring: true)
-                .restore(saved, reservedLoadedSlots: remainingActiveTabs)
+            let controller = services.makeWindow(profile: self, restoring: true)
+            controller.restore(saved, reservedLoadedSlots: remainingActiveTabs)
+            restored.append(controller)
         }
+        isRestoringSession = false
+        // The most recently used window (saved first) ends up in front.
+        restored.first?.showWindow(nil)
+        checkpointSession()
     }
 
     // MARK: - Extensions
@@ -230,7 +265,7 @@ final class ProfileData {
 
     func saveSession(_ state: SessionState) {
         saveTasks["session"]?.cancel()
-        guard !isDiscarded else { return }
+        guard !isDiscarded, !isRestoringSession else { return }
         do { try sessionFile.save(state) } catch { Log.error("Askara: failed to save session: \(error)") }
     }
 

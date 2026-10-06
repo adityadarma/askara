@@ -142,6 +142,7 @@
 "Opened in background tab (sleeping until clicked)" = "Dibuka di tab latar belakang (tidur sampai diklik)";
 "Page source" = "Sumber halaman";
 "Passkeys can't be used in Askara yet" = "Passkey belum bisa dipakai di Askara";
+"Passkey wasn't handled by your extension" = "Passkey tidak ditangani ekstensi Anda";
 "Paste" = "Tempel";
 "Previous match (⇧⌘G)" = "Hasil sebelumnya (⇧⌘G)";
 "Print…" = "Cetak…";
@@ -214,7 +215,8 @@
 "Zoom %@" = "Zoom %@";
 "Zoom In" = "Perbesar";
 "Zoom Out" = "Perkecil";
-"macOS only lets third-party browsers use passkeys and security keys if the app is signed with a special entitlement from Apple (requires an Apple Developer account). This Askara build doesn't have that entitlement yet, so passkey requests are always rejected by the system.\n\nFor now, sign in to %@ through Safari, or use a password." = "macOS hanya mengizinkan browser pihak ketiga memakai passkey dan security key bila aplikasinya ditandatangani dengan izin khusus dari Apple (butuh akun Apple Developer). Build Askara ini belum punya izin tersebut, jadi permintaan passkey selalu ditolak oleh sistem.\n\nUntuk sementara, masuk ke %@ lewat Safari, atau pakai kata sandi.";
+"macOS only lets third-party browsers use passkeys and security keys if the app is signed with a special entitlement from Apple (requires a paid Apple Developer account). Askara can use passkeys through a password manager extension instead: enable Bitwarden in the Extensions menu (not available in private windows), then reload the page.\n\nOtherwise, sign in to %@ through Safari, or use a password." = "macOS hanya mengizinkan browser pihak ketiga memakai passkey dan security key bila aplikasinya ditandatangani dengan izin khusus dari Apple (butuh akun Apple Developer berbayar). Askara bisa memakai passkey lewat ekstensi pengelola kata sandi: aktifkan Bitwarden di menu Ekstensi (tidak tersedia di jendela pribadi), lalu muat ulang halaman.\n\nJika tidak, masuk ke %@ lewat Safari, atau pakai kata sandi.";
+"Askara uses your password manager extension (e.g. Bitwarden) for passkeys, because macOS blocks them for this app. This request reached macOS instead, which always rejects it.\n\nUnlock Bitwarden, turn on \"Ask to save and use passkeys\" in its settings, then reload the page and try again. You can also sign in to %@ through Safari." = "Askara memakai ekstensi pengelola kata sandi Anda (mis. Bitwarden) untuk passkey, karena macOS memblokirnya untuk aplikasi ini. Permintaan ini malah sampai ke macOS, yang selalu menolaknya.\n\nBuka kunci Bitwarden, aktifkan \"Ask to save and use passkeys\" di pengaturannya, lalu muat ulang halaman dan coba lagi. Anda juga bisa masuk ke %@ lewat Safari.";
 "no response" = "tidak ada respons";
 "this site" = "situs ini";
 
@@ -509,3 +511,39 @@
 "Other processes and memory use" = "Proses lain dan pemakaian memori";
 "Processes that aren't a tab: extension background pages, pages WebKit keeps ready for new tabs, and WebKit's shared graphics and network processes." = "Proses yang bukan tab: halaman latar ekstensi, halaman yang disiapkan WebKit untuk tab baru, serta proses grafis dan jaringan WebKit yang dipakai bersama.";
 "%lld processes · %@" = "%1$lld proses · %2$@";
+
+/* Paste and Go, copy links, tab cleanup, quit confirmation, tracking parameters */
+"Paste and Go" = "Tempel dan Buka";
+"Paste and Search" = "Tempel dan Cari";
+"Copy Page as Markdown Link" = "Salin sebagai Link Markdown";
+"Markdown link copied" = "Link Markdown disalin";
+"Copy Link to Highlight" = "Salin Link ke Sorotan";
+"Link to highlight copied" = "Link ke sorotan disalin";
+"Close Tabs to the Right" = "Tutup Tab di Sebelah Kanan";
+"Close Duplicate Tabs" = "Tutup Tab Duplikat";
+"Closed 1 duplicate tab" = "1 tab duplikat ditutup";
+"Closed %lld duplicate tabs" = "%lld tab duplikat ditutup";
+"Quit Askara?" = "Keluar dari Askara?";
+"%lld tabs will be closed." = "%lld tab akan ditutup.";
+"1 download is still in progress and will be cancelled." = "1 unduhan masih berjalan dan akan dibatalkan.";
+"%lld downloads are still in progress and will be cancelled." = "%lld unduhan masih berjalan dan akan dibatalkan.";
+"Quit" = "Keluar";
+"Don't ask again" = "Jangan tanya lagi";
+"Remove tracking parameters from links" = "Hapus parameter pelacak dari link";
+"Removes parameters like utm_source, fbclid, and gclid that only exist to track where you came from, before the page loads and when you copy an address." = "Menghapus parameter seperti utm_source, fbclid, dan gclid yang hanya dipakai untuk melacak asal kunjungan, sebelum halaman dimuat dan saat alamat disalin.";
+"Ask before quitting with several tabs open" = "Tanya sebelum keluar jika ada beberapa tab terbuka";
+"Open Tabs" = "Tab Terbuka";
+
+/* Session restore */
+"Restore Previous Session" = "Pulihkan Sesi Sebelumnya";
+"Continue where I left off on startup" = "Lanjutkan dari terakhir saat Askara dibuka";
+"New tabs and windows open the home page. Leave it empty to use the search engine's page. With \"Continue where I left off\", every window and tab from last time comes back when Askara starts (only the visible tab loads; the rest wait until you click them). Without it, File > Restore Previous Session still brings them back." = "Tab dan window baru membuka halaman utama. Kosongkan untuk memakai halaman search engine. Dengan \"Lanjutkan dari terakhir\", semua window dan tab dari sesi sebelumnya kembali saat Askara dibuka (hanya tab yang terlihat yang dimuat, sisanya menunggu sampai diklik). Tanpa opsi ini, File > Pulihkan Sesi Sebelumnya tetap bisa mengembalikannya.";
+
+/* Bookmarks bar toggle */
+"Bookmarks bar hidden" = "Bookmarks bar disembunyikan";
+"Bookmarks bar shown" = "Bookmarks bar ditampilkan";
+"Private windows don't show the bookmarks bar" = "Window pribadi tidak menampilkan bookmarks bar";
+"Bookmarks bar is on. It appears once you bookmark a page (⌘D)." = "Bookmarks bar aktif. Bar muncul setelah kamu menambah bookmark (⌘D).";
+
+/* Zoom indicator */
+"Zoom %@. Click to change." = "Zoom %@. Klik untuk mengubah.";

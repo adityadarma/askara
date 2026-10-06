@@ -60,6 +60,19 @@ public struct SessionState: Codable, Equatable {
 
     public var isEmpty: Bool { windows.isEmpty }
 
+    /// True for a session that holds nothing worth bringing back: no windows, or a single window
+    /// with a single untouched home-page tab. Such a session never replaces a saved earlier one.
+    public func isTrivial(homeURL: URL) -> Bool {
+        guard let window = windows.first else { return true }
+        guard windows.count == 1, window.tabs.count == 1 else { return false }
+        func key(_ url: URL) -> String {
+            var path = url.path
+            while path.hasSuffix("/") { path.removeLast() }
+            return SiteSettings.key(for: url.host ?? "") + path + "?" + (url.query ?? "")
+        }
+        return key(window.tabs[0].url) == key(homeURL)
+    }
+
     /// The active tab of the most recently used window (saved first). Askara opens only this tab
     /// when a profile opens, so launching doesn't bring back a pile of tabs.
     public var startupTab: SavedTab? {

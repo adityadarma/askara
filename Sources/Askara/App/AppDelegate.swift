@@ -17,7 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         services.sync.start()
         // Start with one fresh home-page tab. Profile cookies remain available, but prior windows
         // and tabs are not restored automatically.
-        services.openProfile(services.profileList.lastUsedID)
+        services.openProfile(services.profileList.lastUsedID, atLaunch: true)
         watchMemoryPressure()
         services.startHibernationTimer()
     }
@@ -28,6 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// Save session cookies before quitting (cookie reads are asynchronous).
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard confirmQuit() else { return .terminateCancel }
         services.beginTermination()
         services.saveAll()
         var replied = false
@@ -44,6 +45,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let timer = Timer(timeInterval: 2, repeats: false) { _ in MainActor.assumeIsolated { finish() } }
         RunLoop.main.add(timer, forMode: .common)
         return .terminateLater
+    }
+
+    /// ⌘Q with several tabs open or downloads running asks first, so a slip doesn't close everything.
+    /// Logout, restart, and shutdown quit without asking.
+    private func confirmQuit() -> Bool {
+        guard services.preferences.confirmsQuit else { return true }
+        if NSAppleEventManager.shared().currentAppleEvent?.attributeDescriptor(forKeyword: kAEQuitReason) != nil {
+            return true
+        }
+        let tabs = services.openTabCount
+        let downloads = services.downloads.running.count
+        guard tabs > 1 || downloads > 0 else { return true }
+
+        let alert = NSAlert()
+        alert.messageText = String(localized: "Quit Askara?")
+        var lines: [String] = []
+        if tabs > 1 { lines.append(String(localized: "\(tabs) tabs will be closed.")) }
+        if downloads > 0 {
+            lines.append(downloads == 1 ? String(localized: "1 download is still in progress and will be cancelled.")
+                                        : String(localized: "\(downloads) downloads are still in progress and will be cancelled."))
+        }
+        alert.informativeText = lines.joined(separator: " ")
+        alert.addButton(withTitle: String(localized: "Quit"))
+        alert.addButton(withTitle: String(localized: "Cancel"))
+        alert.showsSuppressionButton = true
+        alert.suppressionButton?.title = String(localized: "Don't ask again")
+        let quit = alert.runModal() == .alertFirstButtonReturn
+        if quit, alert.suppressionButton?.state == .on {
+            services.updatePreferences { $0.confirmsQuit = false }
+        }
+        return quit
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -108,6 +140,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc func reopenClosedTabAction(_ sender: Any?) { services.reopenClosedTab() }
 
+    @objc func restorePreviousSessionAction(_ sender: Any?) { services.restorePreviousSession() }
+
     @objc func openSyncedTabsAction(_ sender: Any?) {
         let tabs = services.sync.syncedTabs
         guard !tabs.isEmpty else { return }
@@ -148,6 +182,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc func validateMenuItem(_ item: NSMenuItem) -> Bool {
         if item.action == #selector(reopenClosedTabAction(_:)) { return !services.currentProfile.recentlyClosed.isEmpty }
+        if item.action == #selector(restorePreviousSessionAction(_:)) { return services.currentProfile.canRestorePreviousSession }
         if item.action == #selector(openSyncedTabsAction(_:)) { return !services.sync.syncedTabs.isEmpty }
         if item.action == #selector(deleteProfileAction(_:)) {
             return services.profileList.canRemove(services.currentProfile.id)
@@ -232,7 +267,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Only History and Bookmarks are filled below; any other menu is left as built.
         guard menu.identifier == MainMenu.historyMenuID || menu.identifier == MainMenu.bookmarkMenuID else { return }
         let isHistory = menu.identifier == MainMenu.historyMenuID
-        let fixedCount = isHistory ? MainMenu.historyFixedItems : MainMenu.bookmarkFixedItems
+        // History keeps everything up to its "Recently Visited" header; Bookmarks a fixed number of items.
+        let fixedCount = isHistory
+            ? (menu.items.firstIndex { $0.identifier == MainMenu.historyHeaderID }.map { $0 + 1 } ?? menu.items.count)
+            : MainMenu.bookmarkFixedItems
         while menu.items.count > fixedCount { menu.removeItem(at: fixedCount) }
 
         if !isHistory {
@@ -280,7 +318,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 extension AppDelegate {
     /// Open tabs in the active window, with a checkmark on the active tab.
     fileprivate func updateTabMenu(_ menu: NSMenu) {
-        while menu.items.count > MainMenu.tabFixedItems { menu.removeItem(at: MainMenu.tabFixedItems) }
+        // Everything after the "Open Tabs" header is the tab list; the actions above it stay.
+        guard let header = menu.items.firstIndex(where: { $0.identifier == MainMenu.openTabsHeaderID }) else { return }
+        while menu.items.count > header + 1 { menu.removeItem(at: header + 1) }
 
         guard let window = services.keyBrowserWindow, !window.tabMenuEntries.isEmpty else {
             let empty = NSMenuItem(title: String(localized: "No tabs"), action: nil, keyEquivalent: "")
@@ -327,13 +367,13 @@ enum MainMenu {
     static let tabMenuID = NSUserInterfaceItemIdentifier("tabs")
     static let appMenuID = NSUserInterfaceItemIdentifier("app")
     static let blockStatusTag = 7001
-    static let historyFixedItems = 5
+    static let historyHeaderID = NSUserInterfaceItemIdentifier("history.recentlyVisitedHeader")
     static let bookmarkFixedItems = 4
     static let memorySaverStatusTag = 7003
     static let viewMenuID = NSUserInterfaceItemIdentifier("view")
     static let profileMenuID = NSUserInterfaceItemIdentifier("profiles")
-    /// Next, Previous, separator, 3 tab actions, 9 hidden shortcuts, separator.
-    static let tabFixedItems = 16
+    /// Header above the open-tab list in the Tab menu; items after it are rebuilt on open.
+    static let openTabsHeaderID = NSUserInterfaceItemIdentifier("tabs.openTabsHeader")
 
     @MainActor
     static func make(delegate: AppDelegate) -> NSMenu {
@@ -412,7 +452,14 @@ enum MainMenu {
             item(String(localized: "Cut"), #selector(NSText.cut(_:)), "x"),
             item(String(localized: "Copy"), #selector(NSText.copy(_:)), "c"),
             item(String(localized: "Paste"), #selector(NSText.paste(_:)), "v"),
+            // Title switches to "Paste and Search" for plain text. ⇧⌘V is handled by the address bar
+            // itself (AddressField), so pages like Google Docs keep it for "paste without formatting".
+            item(String(localized: "Paste and Go"), #selector(B.pasteAndGoAction(_:))),
             item(String(localized: "Select All"), #selector(NSText.selectAll(_:)), "a"),
+            .separator(),
+            item(String(localized: "Copy Page Address"), #selector(B.copyPageAddress(_:)), "c", [.command, .shift]),
+            item(String(localized: "Copy Page as Markdown Link"), #selector(B.copyMarkdownLinkAction(_:)), "c",
+                 [.command, .shift, .control]),
             .separator(),
             item(String(localized: "Find…"), #selector(B.showFindBar(_:)), "f"),
             item(String(localized: "Find Next"), #selector(B.findNextAction(_:)), "g"),
@@ -452,10 +499,12 @@ enum MainMenu {
             item(String(localized: "Back"), #selector(B.backAction(_:)), "["),
             item(String(localized: "Forward"), #selector(B.forwardAction(_:)), "]"),
             item(String(localized: "Show All History"), #selector(A.showHistoryAction(_:)), "y"),
+            item(String(localized: "Restore Previous Session"), #selector(A.restorePreviousSessionAction(_:))),
             .separator(),
             {
                 let header = NSMenuItem(title: String(localized: "Recently Visited"), action: nil, keyEquivalent: "")
                 header.isEnabled = false
+                header.identifier = historyHeaderID
                 return header
             }(),
         ])
@@ -482,6 +531,7 @@ enum MainMenu {
             item(String(localized: "Mute Tab"), #selector(B.toggleMuteTabAction(_:)), "m", [.command, .control]),
             item(String(localized: "Duplicate Tab"), #selector(B.duplicateTabAction(_:))),
             item(String(localized: "Duplicate Tab in Background"), #selector(B.duplicateTabInBackgroundAction(_:))),
+            item(String(localized: "Close Duplicate Tabs"), #selector(B.closeDuplicateTabsAction(_:))),
         ]
         for n in 1...9 {
             let shortcut = item(String(localized: "Tab \(n)"), #selector(B.selectTabNumberAction(_:)), "\(n)", tag: n)
@@ -490,6 +540,11 @@ enum MainMenu {
             tabItems.append(shortcut)
         }
         tabItems.append(.separator())
+        // Section header, like the "Recently Visited" header in History, so tab names don't read as actions.
+        let openTabsHeader = NSMenuItem(title: String(localized: "Open Tabs"), action: nil, keyEquivalent: "")
+        openTabsHeader.isEnabled = false
+        openTabsHeader.identifier = openTabsHeaderID
+        tabItems.append(openTabsHeader)
         let tabs = submenu(String(localized: "Tab"), tabItems)
         tabs.identifier = tabMenuID
         tabs.delegate = delegate
@@ -500,7 +555,7 @@ enum MainMenu {
             item(String(localized: "Show JavaScript Console"), #selector(B.showConsoleAction(_:)), "c", [.command, .option]),
             item(String(localized: "Show Page Source"), #selector(B.viewSourceAction(_:)), "u", [.command, .option]),
             item(String(localized: "Show Page Resources"), #selector(B.showResourcesAction(_:)), "a", [.command, .option]),
-            item(String(localized: "Start Element Selection"), #selector(B.selectElementAction(_:)), "c", [.command, .shift]),
+            item(String(localized: "Start Element Selection"), #selector(B.selectElementAction(_:)), "c", [.command, .option, .shift]),
             .separator(),
             item(String(localized: "Reload Page From Origin"), #selector(B.reloadIgnoringCacheAction(_:)), "r", [.command, .option]),
             item(String(localized: "Empty Caches"), #selector(A.emptyCachesAction(_:)), "e", [.command, .option]),
