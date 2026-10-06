@@ -149,12 +149,15 @@ final class TabSearchPopover: NSViewController, NSTableViewDataSource, NSTableVi
             image.imageScaling = .scaleProportionallyUpOrDown
             let title = NSTextField(labelWithString: "")
             title.font = .systemFont(ofSize: 12, weight: .medium)
+            title.alignment = .left
             let detail = NSTextField(labelWithString: "")
             detail.font = .systemFont(ofSize: 10)
             detail.textColor = .secondaryLabelColor
+            detail.alignment = .left
             detail.lineBreakMode = .byTruncatingMiddle
             let labels = NSStackView(views: [title, detail])
             labels.orientation = .vertical
+            labels.alignment = .leading
             labels.spacing = 1
             labels.translatesAutoresizingMaskIntoConstraints = false
             cell.imageView = image

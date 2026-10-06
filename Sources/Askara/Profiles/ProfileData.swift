@@ -117,6 +117,13 @@ final class ProfileData {
         NotificationCenter.default.post(name: .askaraPreferencesChanged, object: nil)
     }
 
+    func resetPermissions(host: String) {
+        permissions.removeAll(host: host)
+        guard !isDiscarded else { return }
+        do { try permissionsFile.save(permissions) } catch { Log.error("Askara: failed to save permissions: \(error)") }
+        NotificationCenter.default.post(name: .askaraPreferencesChanged, object: nil)
+    }
+
     // MARK: - History
 
     func recordVisit(url: URL, title: String?) {

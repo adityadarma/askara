@@ -9,6 +9,7 @@ final class PrivacyDashboardController: NSViewController {
     private let secure: Bool
     private let status = NSTextField(wrappingLabelWithString: String(localized: "Checking site data…"))
     private let permissions = NSTextField(wrappingLabelWithString: "")
+    private let resetPermissionsButton = NSButton(title: String(localized: "Reset Permissions"), target: nil, action: nil)
     private let clearButton = NSButton(title: String(localized: "Clear Site Data"), target: nil, action: nil)
     private let blockerBox = NSButton(checkboxWithTitle: String(localized: "Block ads and trackers on this site"),
                                       target: nil, action: nil)
@@ -35,10 +36,13 @@ final class PrivacyDashboardController: NSViewController {
         permissions.textColor = .secondaryLabelColor
         clearButton.target = self
         clearButton.action = #selector(clearSiteData(_:))
+        resetPermissionsButton.target = self
+        resetPermissionsButton.action = #selector(resetPermissions(_:))
         blockerBox.target = self
         blockerBox.action = #selector(toggleBlocker(_:))
         blockerBox.state = BrowserServices.shared.siteSettings.isAdBlockDisabled(host: host) ? .off : .on
-        let stack = NSStackView(views: [title, connection, blockerBox, protection, status, permissions, clearButton])
+        let stack = NSStackView(views: [title, connection, blockerBox, protection, status, permissions,
+                                        resetPermissionsButton, clearButton])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 9
@@ -54,6 +58,8 @@ final class PrivacyDashboardController: NSViewController {
     }
 
     private func refresh() {
+        let hasSavedPermissions = PermissionKind.allCases.contains { profile.permissions.choice($0, host: host) != nil }
+        resetPermissionsButton.isEnabled = hasSavedPermissions
         permissions.stringValue = PermissionKind.allCases.map { kind in
             let name = switch kind {
             case .camera: String(localized: "Camera")
@@ -79,6 +85,11 @@ final class PrivacyDashboardController: NSViewController {
                 }
             }
         }
+    }
+
+    @objc private func resetPermissions(_ sender: Any?) {
+        profile.resetPermissions(host: host)
+        refresh()
     }
 
     @objc private func clearSiteData(_ sender: Any?) {

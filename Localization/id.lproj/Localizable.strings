@@ -448,6 +448,7 @@
 "Ask" = "Tanya";
 "Checking site data…" = "Memeriksa data situs…";
 "Clear Site Data" = "Hapus Data Situs";
+"Reset Permissions" = "Reset Izin";
 "Connecting to iCloud…" = "Menghubungkan ke iCloud…";
 "Connection is not secure" = "Koneksi tidak aman";
 "Couldn't decrypt synced data" = "Data sinkronisasi tidak dapat didekripsi";

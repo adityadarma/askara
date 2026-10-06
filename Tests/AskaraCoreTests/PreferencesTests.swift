@@ -122,6 +122,18 @@ import Testing
         p.set(.block, for: .microphone, host: "a.com")
         #expect(p.decision(for: [.camera, .microphone], host: "a.com") == .block)
     }
+
+    @Test func resetForSiteForgetsEveryPermission() {
+        var p = SitePermissions()
+        p.set(.allow, for: .camera, host: "Meet.Google.com.")
+        p.set(.block, for: .microphone, host: "meet.google.com")
+        p.set(.allow, for: .location, host: "meet.google.com")
+
+        p.removeAll(host: "meet.google.com")
+
+        #expect(p.hosts.isEmpty)
+        #expect(PermissionKind.allCases.allSatisfy { p.choice($0, host: "meet.google.com") == nil })
+    }
 }
 
 @Suite struct SessionTabStateTests {
