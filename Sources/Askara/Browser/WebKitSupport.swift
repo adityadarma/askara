@@ -144,42 +144,6 @@ enum Passkey {
     """
 }
 
-enum PasswordFillScript {
-    static let source = """
-    const visible = (el) => {
-      if (!el || el.disabled || el.readOnly || !el.isConnected) return false;
-      const rect = el.getBoundingClientRect();
-      const style = getComputedStyle(el);
-      return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
-    };
-    const passwords = Array.from(document.querySelectorAll('input[type="password"]')).filter((el) => {
-      const autocomplete = (el.autocomplete || '').toLowerCase();
-      return visible(el) && autocomplete !== 'new-password';
-    });
-    if (passwords.length !== 1) return passwords.length ? 'ambiguous' : 'missing';
-    const passwordField = passwords[0];
-    const scope = passwordField.form || document;
-    const usernames = Array.from(scope.querySelectorAll('input')).filter((el) => {
-      const type = (el.type || 'text').toLowerCase();
-      const autocomplete = (el.autocomplete || '').toLowerCase();
-      return visible(el) && (autocomplete === 'username' || type === 'email' || type === 'text');
-    });
-    const usernameField = usernames.find((el) => (el.autocomplete || '').toLowerCase() === 'username')
-      || usernames.find((el) => (el.type || '').toLowerCase() === 'email') || usernames[0];
-    const set = (el, value) => {
-      if (!el) return;
-      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
-      setter.call(el, value);
-      el.dispatchEvent(new Event('input', { bubbles: true }));
-      el.dispatchEvent(new Event('change', { bubbles: true }));
-    };
-    set(usernameField, inputUsername);
-    set(passwordField, inputPassword);
-    passwordField.focus();
-    return 'filled';
-    """
-}
-
 enum PictureInPictureScript {
     static let handlerName = "askaraPiP"
 

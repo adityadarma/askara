@@ -129,9 +129,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     @objc func showDownloadsAction(_ sender: Any?) { DownloadsWindowController.shared.show() }
     @objc func showTaskManagerAction(_ sender: Any?) { TaskManagerWindowController.shared.show() }
-    @objc func showSavedPasswordsAction(_ sender: Any?) {
-        PasswordVaultWindowController.shared.show(profile: services.currentProfile)
-    }
 
     @objc func exportCrashReportAction(_ sender: Any?) {
         CrashReporter.shared.exportReport(relativeTo: NSApp.keyWindow)

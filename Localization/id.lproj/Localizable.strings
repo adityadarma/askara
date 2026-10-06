@@ -1,22 +1,5 @@
 /* Indonesian translations. Keys are the English source strings from String(localized:). */
 
-"Password filled. Review the page before signing in." = "Password telah diisi. Periksa halaman sebelum masuk.";
-"Password saved in Keychain" = "Password disimpan di Keychain";
-"Passwords are stored locally in macOS Keychain and are not synchronized." = "Password disimpan secara lokal di macOS Keychain dan tidak disinkronkan.";
-"Passwords can only be saved on secure HTTPS pages." = "Password hanya dapat disimpan pada halaman HTTPS yang aman.";
-"Saved passwords can only be filled on secure HTTPS pages." = "Password tersimpan hanya dapat diisi pada halaman HTTPS yang aman.";
-"Saved Passwords" = "Password Tersimpan";
-"Saved passwords" = "Password tersimpan";
-"Save Password" = "Simpan Password";
-"Save Password…" = "Simpan Password…";
-"Fill Saved Password…" = "Isi Password Tersimpan…";
-"Manage Saved Passwords…" = "Kelola Password Tersimpan…";
-"Stored locally in macOS Keychain for this Askara profile." = "Disimpan secara lokal di macOS Keychain untuk profil Askara ini.";
-"No password is saved for this site." = "Tidak ada password tersimpan untuk situs ini.";
-"No login form was found on this page." = "Form login tidak ditemukan pada halaman ini.";
-"More than one login form was found. Fill it manually." = "Lebih dari satu form login ditemukan. Isi secara manual.";
-"Delete selected passwords?" = "Hapus password yang dipilih?";
-"Username and password are required." = "Username dan password wajib diisi.";
 
 "%@ (Private)" = "%@ (Pribadi)";
 "%@ disabled" = "%@ dinonaktifkan";

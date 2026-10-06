@@ -163,8 +163,6 @@ final class BrowserServices {
         data?.windows.forEach { $0.close() }
         suppressCloseRecording = false
         data?.discard()
-        do { try PasswordStore(profileID: id).deleteAll() }
-        catch { Log.error("Askara: failed to delete profile passwords: \(error.localizedDescription)") }
         profileData[id] = nil
         profileList.remove(id)
         saveProfiles()
