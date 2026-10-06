@@ -886,12 +886,39 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     /// New tab from ⌘T / the + button: shows the search engine's page (or the home page), with an
     /// empty, focused address bar so the user can type right away.
     func openBlankTab() {
+        let home = services.homeURL
         focusAddressBarOnActivate = true
-        newTab(url: services.homeURL)
-        activeTab?.hidesHomeAddress = true
-        activeTab?.refocusAddressAfterLoad = true
+        if let web = spareNewTab.take(for: home) {
+            // Page already loaded off-screen: it has run its autofocus scripts, so the address bar
+            // keeps the keyboard from the start. Its first commit is already past, so mark it here.
+            let tab = insertTab(url: web.url ?? home, at: tabs.count, activate: true, webView: web)
+            tab.hidesHomeAddress = true
+            tab.homeLandingURL = web.url
+            if let title = web.title, !title.isEmpty { tab.title = title }
+            refreshTabStrip()
+            updateToolbar()
+            // The spare's commit/finish callbacks went to SpareNewTab, so do what they'd have done.
+            applySiteCSS(to: web, url: web.url)
+            applySiteJavaScript(to: web, url: web.url)
+            if !isPrivate, let url = web.url { profile.recordVisit(url: url, title: web.title) }
+            loadFavicon(for: web)
+        } else {
+            newTab(url: home)
+            activeTab?.hidesHomeAddress = true
+            activeTab?.refocusAddressAfterLoad = true
+        }
         addressField.stringValue = ""
+        // Get the next one ready once this tab has settled, so it doesn't compete for the network.
+        spareNewTab.prepare(url: home, after: 2)
     }
+
+    /// One off-screen new-tab page per window (see `SpareNewTab`).
+    private lazy var spareNewTab = SpareNewTab { [unowned self] in
+        AskaraWebView(frame: contentView.bounds, configuration: makeConfiguration())
+    }
+
+    /// Memory pressure: the spare page is the first thing to go.
+    func discardSpareNewTab() { spareNewTab.discard() }
 
     /// The new tab's page has rendered: empty, focused address bar, unless the user already typed
     /// there or clicked into the page.
@@ -2572,6 +2599,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         lastFocused = Date()
         if !isPrivate { services.profileUsed(profile) }
         extensionController?.didFocusWindow(self)
+        // First ⌘T in this window should already be instant. No-op if a spare for this URL exists.
+        spareNewTab.prepare(url: services.homeURL, after: 3)
     }
 
     // In full screen macOS moves the titlebar (with the empty toolbar that sizes it) into its own
@@ -2592,6 +2621,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     func windowWillMove(_ notification: Notification) { suggestions.hide() }
 
     func windowWillClose(_ notification: Notification) {
+        spareNewTab.discard()
         suggestionTask?.cancel()
         suggestionTask = nil
         suggestions.hide()

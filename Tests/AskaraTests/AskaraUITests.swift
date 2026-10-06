@@ -36,6 +36,32 @@ struct AskaraUITests {
         #expect(list.itemsForTesting == items)
     }
 
+    @Test("Spare new tab hands over only a finished page for the same URL")
+    @MainActor
+    func spareNewTabHandover() async throws {
+        let url = try #require(URL(string: "data:text/html,<title>Spare</title><input autofocus>"))
+        let other = try #require(URL(string: "data:text/html,other"))
+        let spare = SpareNewTab { WKWebView(frame: NSRect(x: 0, y: 0, width: 400, height: 300)) }
+
+        #expect(spare.take(for: url) == nil) // nothing prepared yet
+        spare.prepare(url: url, after: 0)
+        var web: WKWebView?
+        for _ in 0..<100 where web == nil {
+            try await Task.sleep(for: .milliseconds(50))
+            #expect(spare.take(for: other) == nil) // different URL is never handed over
+            web = spare.take(for: url)
+        }
+        let page = try #require(web)
+        #expect(page.navigationDelegate == nil) // caller attaches its own delegate
+        #expect(page.title == "Spare")
+        #expect(spare.take(for: url) == nil) // handed over once
+
+        spare.prepare(url: url, after: 0)
+        spare.discard() // cancels the pending load
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(spare.take(for: url) == nil)
+    }
+
     @Test("Loading bar exposes progress and never moves backwards")
     @MainActor
     func loadingBarProgress() {

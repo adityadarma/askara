@@ -1,8 +1,9 @@
 // Generates the Askara app icon: Resources/AppIcon.icns (and a 1024 px preview PNG).
 //
-// "Askara" comes from Sanskrit akṣara: "imperishable, that which does not wear away".
-// The icon shows that meaning: an infinity sign in soft champagne gold on muted indigo. One strand passes over
-// the other at the crossing, so it reads as a single endless ribbon.
+// "Askara" means a ray of light. The icon is a sun rising over still water, drawn like a
+// hand-cut paper print: edges wobble slightly, rays differ in length and angle, the horizon and
+// ripples taper like brush strokes, and a faint grain sits on the ground. Every "imperfection"
+// comes from a fixed seed, so the output is identical on every run.
 //
 // Run: swift scripts/make-icon.swift
 import AppKit
@@ -18,6 +19,75 @@ func color(_ hex: UInt32, _ alpha: CGFloat = 1) -> CGColor {
             blue: CGFloat(hex & 0xFF) / 255, alpha: alpha)
 }
 
+// Muted earth palette: dusk olive ground, a pale ochre sun, sand-colored rays, bone horizon.
+let paperTop: UInt32 = 0x535A4B
+let paperBottom: UInt32 = 0x40463A
+let sunColor: UInt32 = 0xD6B36F
+let rayColor: UInt32 = 0xB9A27A
+let ink: UInt32 = 0xE6DDC8
+
+/// Small deterministic PRNG so the hand-made jitter is stable between runs.
+struct Seeded {
+    var state: UInt64
+    mutating func next() -> CGFloat {
+        state = state &* 6364136223846793005 &+ 1442695040888963407
+        return CGFloat(state >> 33) / CGFloat(UInt64(1) << 31)
+    }
+    mutating func range(_ lo: CGFloat, _ hi: CGFloat) -> CGFloat { lo + (hi - lo) * next() }
+}
+
+/// A circle whose radius drifts a little, like a shape cut out with scissors.
+func wobblyCircle(center: CGPoint, radius: CGFloat) -> CGPath {
+    let path = CGMutablePath()
+    let steps = 360
+    for i in 0...steps {
+        let t = CGFloat(i) / CGFloat(steps) * 2 * .pi
+        let r = radius * (1 + 0.012 * sin(3 * t + 0.7) + 0.008 * sin(5 * t + 2.1) + 0.004 * sin(11 * t))
+        let p = CGPoint(x: center.x + r * cos(t), y: center.y + r * sin(t))
+        if i == 0 { path.move(to: p) } else { path.addLine(to: p) }
+    }
+    path.closeSubpath()
+    return path
+}
+
+/// A ray: wide at the base, narrowing to a rounded tip, with a slight bend along its length.
+func ray(from base: CGPoint, angle: CGFloat, length: CGFloat, width: CGFloat, bend: CGFloat) -> CGPath {
+    let dir = CGPoint(x: cos(angle), y: sin(angle))
+    let normal = CGPoint(x: -dir.y, y: dir.x)
+    let tip = CGPoint(x: base.x + dir.x * length, y: base.y + dir.y * length)
+    let mid = CGPoint(x: base.x + dir.x * length * 0.5 + normal.x * bend,
+                      y: base.y + dir.y * length * 0.5 + normal.y * bend)
+    let baseHalf = width / 2, tipHalf = width * 0.22
+    func offset(_ p: CGPoint, _ d: CGFloat) -> CGPoint { CGPoint(x: p.x + normal.x * d, y: p.y + normal.y * d) }
+
+    let path = CGMutablePath()
+    path.move(to: offset(base, baseHalf))
+    path.addQuadCurve(to: offset(tip, tipHalf), control: offset(mid, baseHalf * 0.62))
+    path.addArc(center: tip, radius: tipHalf, startAngle: angle + .pi / 2, endAngle: angle - .pi / 2,
+                clockwise: true)
+    path.addQuadCurve(to: offset(base, -baseHalf), control: offset(mid, -baseHalf * 0.62))
+    path.closeSubpath()
+    return path
+}
+
+/// A horizontal brush stroke: thickest in the middle, tapering at both ends, with a gentle wave.
+func brushStroke(fromX x0: CGFloat, toX x1: CGFloat, y: CGFloat, thickness: CGFloat, phase: CGFloat) -> CGPath {
+    let steps = 200
+    var top: [CGPoint] = [], bottom: [CGPoint] = []
+    for i in 0...steps {
+        let t = CGFloat(i) / CGFloat(steps)
+        let x = x0 + (x1 - x0) * t
+        let half = thickness / 2 * pow(sin(.pi * t), 0.45) * (1 + 0.06 * sin(7 * t + phase))
+        let cy = y + 3.5 * sin(2.3 * .pi * t + phase)
+        top.append(CGPoint(x: x, y: cy + half))
+        bottom.append(CGPoint(x: x, y: cy - half * 0.85))
+    }
+    let path = CGMutablePath()
+    path.addLines(between: top + bottom.reversed())
+    path.closeSubpath()
+    return path
+}
+
 func render() -> CGImage {
     let space = CGColorSpace(name: CGColorSpace.sRGB)!
     let ctx = CGContext(data: nil, width: Int(canvas), height: Int(canvas), bitsPerComponent: 8, bytesPerRow: 0,
@@ -27,117 +97,74 @@ func render() -> CGImage {
     let body = CGRect(x: 100, y: 100, width: 824, height: 824)
     let shape = CGPath(roundedRect: body, cornerWidth: 186, cornerHeight: 186, transform: nil)
 
-    // Drop shadow under the body.
     ctx.saveGState()
-    ctx.setShadow(offset: CGSize(width: 0, height: -12), blur: 28, color: color(0x000000, 0.35))
+    ctx.setShadow(offset: CGSize(width: 0, height: -10), blur: 24, color: color(0x000000, 0.28))
     ctx.addPath(shape)
-    ctx.setFillColor(color(0x23213F))
+    ctx.setFillColor(color(paperBottom))
     ctx.fillPath()
     ctx.restoreGState()
 
-    // Body: deep indigo, lighter at the top.
     ctx.saveGState()
     ctx.addPath(shape)
     ctx.clip()
-    let background = CGGradient(colorsSpace: space, colors: [color(0x3B3668), color(0x23213F)] as CFArray,
-                                locations: [0, 1])!
-    ctx.drawLinearGradient(background, start: CGPoint(x: 512, y: body.maxY), end: CGPoint(x: 512, y: body.minY),
+
+    // Warm paper.
+    let paper = CGGradient(colorsSpace: space, colors: [color(paperTop), color(paperBottom)] as CFArray,
+                           locations: [0, 1])!
+    ctx.drawLinearGradient(paper, start: CGPoint(x: 512, y: body.maxY), end: CGPoint(x: 512, y: body.minY),
                            options: [])
-    // Soft warm glow behind the letter.
-    let glow = CGGradient(colorsSpace: space, colors: [color(0xE8C890, 0.14), color(0xE8C890, 0)] as CFArray,
-                          locations: [0, 1])!
-    ctx.drawRadialGradient(glow, startCenter: CGPoint(x: 512, y: 520), startRadius: 0,
-                           endCenter: CGPoint(x: 512, y: 520), endRadius: 400, options: [])
-    ctx.restoreGState()
 
-    let center = CGPoint(x: 512, y: 512)
-    let gold = CGGradient(colorsSpace: space, colors: [color(0xF3E1BC), color(0xDDBA83), color(0xB88F5A)] as CFArray,
-                          locations: [0, 0.55, 1])!
+    var rng = Seeded(state: 0xA5CA_2A)
+    let horizonY: CGFloat = 404
+    let sunCenter = CGPoint(x: 512, y: horizonY)
+    let sunRadius: CGFloat = 168
 
-    // Lemniscate of Bernoulli, stretched vertically so the loops are rounder.
-    let a: CGFloat = 300, stretch: CGFloat = 1.4, width: CGFloat = 92
-    func point(_ t: CGFloat) -> CGPoint {
-        let d = 1 + sin(t) * sin(t)
-        return CGPoint(x: center.x + a * cos(t) / d, y: center.y + stretch * a * sin(t) * cos(t) / d)
-    }
-    func curve(from start: CGFloat, to end: CGFloat, closed: Bool) -> CGPath {
-        let path = CGMutablePath()
-        let steps = 600
-        for i in 0...steps {
-            let p = point(start + (end - start) * CGFloat(i) / CGFloat(steps))
-            if i == 0 { path.move(to: p) } else { path.addLine(to: p) }
-        }
-        if closed { path.closeSubpath() }
-        return path
-    }
-    func fillGold(_ shape: CGPath) {
-        ctx.saveGState()
-        ctx.addPath(shape)
-        ctx.clip()
-        // Same gradient everywhere, so the over-strand joins the rest without a seam.
-        ctx.drawLinearGradient(gold, start: CGPoint(x: 512, y: 700), end: CGPoint(x: 512, y: 324),
-                               options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
-        ctx.restoreGState()
+    // Rays fan out above the horizon; lengths alternate long/short with a little jitter.
+    let rayCount = 9
+    for i in 0..<rayCount {
+        let t = CGFloat(i) / CGFloat(rayCount - 1)
+        let angle = (.pi * (0.06 + 0.88 * t)) + rng.range(-0.025, 0.025)
+        let long = i % 2 == 0
+        let length = (long ? 150 : 96) + rng.range(-12, 12)
+        let start = sunRadius + 34 + rng.range(-5, 5)
+        let base = CGPoint(x: sunCenter.x + cos(angle) * start, y: sunCenter.y + sin(angle) * start)
+        let path = ray(from: base, angle: angle, length: length, width: long ? 50 : 40, bend: rng.range(-7, 7))
+        ctx.addPath(path)
+        ctx.setFillColor(color(rayColor))
+        ctx.fillPath()
     }
 
-    let full = curve(from: 0, to: 2 * .pi, closed: true)
-        .copy(strokingWithWidth: width, lineCap: .round, lineJoin: .round, miterLimit: 1)
-    // The strand that passes over the crossing (the curve crosses itself at t = π/2 and 3π/2).
-    let over = curve(from: .pi / 2 - 0.5, to: .pi / 2 + 0.5, closed: false)
-    let overBand = over.copy(strokingWithWidth: width, lineCap: .butt, lineJoin: .round, miterLimit: 1)
-
-    // Whole ribbon with a soft drop shadow.
+    // Sun: only the half above the horizon is visible.
     ctx.saveGState()
-    ctx.setShadow(offset: CGSize(width: 0, height: -10), blur: 24, color: color(0x0E0C24, 0.45))
-    ctx.addPath(full)
-    ctx.setFillColor(color(0xCFA873))
+    ctx.clip(to: CGRect(x: 0, y: horizonY, width: canvas, height: canvas))
+    ctx.addPath(wobblyCircle(center: sunCenter, radius: sunRadius))
+    ctx.setFillColor(color(sunColor))
     ctx.fillPath()
     ctx.restoreGState()
-    fillGold(full)
 
-    // Crossing: a soft shadow cast by the over-strand onto the strand beneath. Limited to a small
-    // circle around the crossing so no straight edges show elsewhere on the ribbon.
-    let crossing = CGPath(ellipseIn: CGRect(x: center.x - width * 1.1, y: center.y - width * 1.1,
-                                            width: width * 2.2, height: width * 2.2), transform: nil)
-    ctx.saveGState()
-    ctx.addPath(full)
-    ctx.clip()
-    ctx.addPath(crossing)
-    ctx.clip()
-    ctx.setShadow(offset: .zero, blur: 22, color: color(0x3A2A18, 0.5))
-    ctx.addPath(overBand)
-    ctx.setFillColor(color(0xCFA873))
+    // Horizon and reflections on the water, each a little shorter and offset like real brush marks.
+    ctx.setFillColor(color(ink))
+    ctx.addPath(brushStroke(fromX: 236, toX: 788, y: horizonY - 4, thickness: 30, phase: 0.4))
     ctx.fillPath()
-    ctx.restoreGState()
-    fillGold(overBand)
+    ctx.setFillColor(color(sunColor, 0.9))
+    ctx.addPath(brushStroke(fromX: 372, toX: 664, y: horizonY - 74, thickness: 24, phase: 1.9))
+    ctx.fillPath()
+    ctx.setFillColor(color(sunColor, 0.65))
+    ctx.addPath(brushStroke(fromX: 444, toX: 592, y: horizonY - 134, thickness: 20, phase: 3.1))
+    ctx.fillPath()
 
-    // Soft highlight along the ribbon's centerline for a rounded, metallic look. Skipped where the
-    // under-strand passes the crossing, so the highlight follows only the visible strand there.
-    func drawShine(_ path: CGPath) {
-        let band = path.copy(strokingWithWidth: width * 0.24, lineCap: .round, lineJoin: .round, miterLimit: 1)
-        ctx.saveGState()
-        ctx.addPath(band)
-        ctx.clip()
-        let highlight = CGGradient(colorsSpace: space, colors: [color(0xFFFFFF, 0.22), color(0xFFFFFF, 0)] as CFArray,
-                                   locations: [0, 1])!
-        ctx.drawLinearGradient(highlight, start: CGPoint(x: 512, y: 720), end: CGPoint(x: 512, y: 470), options: [])
-        ctx.restoreGState()
+    // Paper grain: sparse light and dark specks.
+    for _ in 0..<5200 {
+        let x = rng.range(body.minX, body.maxX), y = rng.range(body.minY, body.maxY)
+        let dark = rng.next() < 0.55
+        ctx.setFillColor(color(dark ? 0x5A4630 : 0xFFFFFF, rng.range(0.03, 0.08)))
+        let s = rng.range(1.2, 2.6)
+        ctx.fillEllipse(in: CGRect(x: x, y: y, width: s, height: s))
     }
-    // Loops only (away from the crossing), then the over-strand.
-    ctx.saveGState()
-    let outside = CGMutablePath()
-    outside.addRect(CGRect(x: 0, y: 0, width: canvas, height: canvas))
-    outside.addPath(crossing)
-    ctx.addPath(outside)
-    ctx.clip(using: .evenOdd)
-    drawShine(curve(from: 0, to: 2 * .pi, closed: true))
-    ctx.restoreGState()
-    drawShine(over)
 
-    // Thin highlight along the body's top edge.
-    ctx.saveGState()
+    // Hairline edge so the light body separates from light wallpapers.
     ctx.addPath(shape)
-    ctx.setStrokeColor(color(0xFFFFFF, 0.10))
+    ctx.setStrokeColor(color(0x000000, 0.08))
     ctx.setLineWidth(4)
     ctx.strokePath()
     ctx.restoreGState()

@@ -328,6 +328,7 @@ final class BrowserServices {
     }
 
     func enforceHibernation(pressure: MemoryPressure = .normal) {
+        if pressure != .normal { windows.forEach { $0.discardSpareNewTab() } }
         var seen = Set<pid_t>()
         let snapshots = windows.flatMap { $0.hibernationSnapshots(seenProcesses: &seen) }
         let policy = hibernationPolicy

@@ -8,7 +8,7 @@ enum AskaraColors {
     }
 
     /// Tab strip background (darker), like Chrome.
-    static let strip = dynamic(dark: NSColor(white: 0.10, alpha: 1), light: NSColor(white: 0.86, alpha: 1))
+    static let strip = dynamic(dark: NSColor(white: 0.07, alpha: 1), light: NSColor(white: 0.84, alpha: 1))
     static let privateStrip = NSColor(srgbRed: 0.15, green: 0.11, blue: 0.24, alpha: 1)
     /// Active tab and toolbar share one color so they blend.
     static let toolbar = dynamic(dark: NSColor(white: 0.20, alpha: 1), light: NSColor(white: 0.98, alpha: 1))
@@ -229,7 +229,9 @@ final class TabStripView: NSView, NSDraggingSource {
             guard itemChanged || activeChanged else { continue }
             itemViews[index].configure(index: index, item: item, isActive: index == activeIndex)
         }
-        if previousItems != items || previousActiveIndex != activeIndex { needsLayout = true }
+        if previousItems != items || previousActiveIndex != activeIndex { needsLayout = true; needsDisplay = true }
+        // Separators depend on which tab is active, so neighbours of the old/new active tab redraw too.
+        if previousActiveIndex != activeIndex { itemViews.forEach { $0.needsDisplay = true } }
     }
 
     override func viewDidMoveToWindow() {
@@ -273,14 +275,41 @@ final class TabStripView: NSView, NSDraggingSource {
                                     width: badgeSize.width, height: badgeSize.height)
         searchTabsButton.frame = NSRect(x: searchX, y: (tabHeight - buttonSize) / 2,
                                         width: buttonSize, height: buttonSize)
+        // Tab frames moved, so the active tab shape (drawn by the strip) must follow.
+        needsDisplay = true
     }
 
     override func draw(_ dirtyRect: NSRect) {
         (isPrivate ? AskaraColors.privateStrip : AskaraColors.strip).setFill()
         bounds.fill()
+        // The active tab shape is drawn here, not in the tab view, because its bottom flares
+        // reach outside the tab's frame into the neighbouring tabs.
+        if itemViews.indices.contains(activeIndex), !itemViews[activeIndex].isHidden {
+            activeTabColor.setFill()
+            Self.activeTabPath(for: itemViews[activeIndex].frame).fill()
+        }
+    }
+
+    /// Chrome-style tab: rounded top corners, plus concave flares at the bottom that curve
+    /// outward and join the toolbar below.
+    static func activeTabPath(for frame: NSRect, cornerRadius r: CGFloat = 10, flareRadius f: CGFloat = 8) -> NSBezierPath {
+        let x0 = frame.minX, x1 = frame.maxX, y0 = frame.minY, y1 = frame.maxY
+        let path = NSBezierPath()
+        path.move(to: NSPoint(x: x0 - f, y: y0))
+        path.appendArc(withCenter: NSPoint(x: x0 - f, y: y0 + f), radius: f, startAngle: 270, endAngle: 360)
+        path.line(to: NSPoint(x: x0, y: y1 - r))
+        path.appendArc(withCenter: NSPoint(x: x0 + r, y: y1 - r), radius: r, startAngle: 180, endAngle: 90, clockwise: true)
+        path.line(to: NSPoint(x: x1 - r, y: y1))
+        path.appendArc(withCenter: NSPoint(x: x1 - r, y: y1 - r), radius: r, startAngle: 90, endAngle: 0, clockwise: true)
+        path.line(to: NSPoint(x: x1, y: y0 + f))
+        path.appendArc(withCenter: NSPoint(x: x1 + f, y: y0 + f), radius: f, startAngle: 180, endAngle: 270)
+        path.close()
+        return path
     }
 
     var activeTabColor: NSColor { isPrivate ? AskaraColors.privateToolbar : AskaraColors.toolbar }
+    var currentActiveIndex: Int { activeIndex }
+    var activeTabAccent: NSColor { isPrivate ? NSColor(srgbRed: 0.68, green: 0.58, blue: 0.92, alpha: 1) : .controlAccentColor }
 
     // Empty tab strip area acts like a titlebar: drag to move, double-click to zoom.
     // The second click is handled on mouse-up: after the first click's performDrag the window
@@ -357,10 +386,15 @@ final class TabStripView: NSView, NSDraggingSource {
         let item = NSPasteboardItem()
         item.setString(id, forType: Self.tabType)
         let dragItem = NSDraggingItem(pasteboardWriter: item)
-        let image = NSImage(size: view.bounds.size)
-        if let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
-            view.cacheDisplay(in: view.bounds, to: rep)
-            image.addRepresentation(rep)
+        // The tab background is drawn by the strip, so paint it under the tab's own snapshot.
+        let image = NSImage(size: view.bounds.size, flipped: false) { [weak self] rect in
+            (self?.activeTabColor ?? AskaraColors.toolbar).setFill()
+            NSBezierPath(roundedRect: rect, xRadius: 10, yRadius: 10).fill()
+            if let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+                view.cacheDisplay(in: view.bounds, to: rep)
+                rep.draw(in: rect)
+            }
+            return true
         }
         dragItem.setDraggingFrame(view.frame, contents: image)
         let session = beginDraggingSession(with: [dragItem], event: event, source: self)
@@ -451,7 +485,10 @@ final class TabItemView: NSView, NSViewToolTipOwner {
         self.isPinned = item.isPinned
         title = item.title
         label.stringValue = item.title
-        label.textColor = item.isSleeping ? .secondaryLabelColor : .labelColor
+        // Active tab: full-contrast, medium-weight title. Inactive titles step back so the active one stands out.
+        label.font = .systemFont(ofSize: 12, weight: isActive ? .medium : .regular)
+        if isActive { label.textColor = .labelColor }
+        else { label.textColor = item.isSleeping ? .tertiaryLabelColor : .secondaryLabelColor }
         hasAudioIcon = item.isMuted || item.isPlayingAudio
         if item.isMuted {
             icon.image = NSImage(systemSymbolName: "speaker.slash.fill", accessibilityDescription: String(localized: "Muted"))
@@ -544,22 +581,17 @@ final class TabItemView: NSView, NSViewToolTipOwner {
     override func draw(_ dirtyRect: NSRect) {
         guard let strip else { return }
         if isActive {
-            // Active tab: rounded top corners, blending into the toolbar below.
-            strip.activeTabColor.setFill()
-            let r: CGFloat = 8
-            let path = NSBezierPath()
-            path.move(to: NSPoint(x: 0, y: 0))
-            path.line(to: NSPoint(x: 0, y: bounds.height - r))
-            path.appendArc(withCenter: NSPoint(x: r, y: bounds.height - r), radius: r, startAngle: 180, endAngle: 90, clockwise: true)
-            path.line(to: NSPoint(x: bounds.width - r, y: bounds.height))
-            path.appendArc(withCenter: NSPoint(x: bounds.width - r, y: bounds.height - r), radius: r, startAngle: 90, endAngle: 0, clockwise: true)
-            path.line(to: NSPoint(x: bounds.width, y: 0))
-            path.close()
-            path.fill()
+            // The tab shape itself is drawn by the strip (its flares extend past this view).
+            // Thin accent bar along the top edge marks the active tab at a glance.
+            strip.activeTabAccent.setFill()
+            let r: CGFloat = 10
+            NSBezierPath(roundedRect: NSRect(x: r, y: bounds.height - 2.5, width: max(0, bounds.width - r * 2), height: 2.5),
+                         xRadius: 1.25, yRadius: 1.25).fill()
         } else if isHovered {
             AskaraColors.hover.setFill()
             NSBezierPath(roundedRect: bounds.insetBy(dx: 2, dy: 4), xRadius: 8, yRadius: 8).fill()
-        } else {
+        } else if index + 1 != strip.currentActiveIndex {
+            // Separator, hidden next to the active tab so it doesn't cut through the flare.
             NSColor.separatorColor.setFill()
             NSRect(x: bounds.width - 1, y: 10, width: 1, height: max(0, bounds.height - 20)).fill()
         }
