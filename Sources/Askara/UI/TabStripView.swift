@@ -160,8 +160,9 @@ final class TabStripView: NSView, NSDraggingSource {
     static let tabType = NSPasteboard.PasteboardType("local.askara.tab")
     private static let topGap: CGFloat = 6
     static let pinnedWidth: CGFloat = 42
-    /// Narrowest the active tab gets when the strip is crowded: icon on the left, close button on the right.
-    static let activeMinWidth: CGFloat = 64
+    /// Narrowest the active tab gets when the strip is crowded: icon, a few letters of the title, and
+    /// the close button on the right.
+    static let activeMinWidth: CGFloat = 88
 
     weak var delegate: TabStripDelegate?
     var isPrivate = false {
@@ -554,52 +555,67 @@ final class TabItemView: NSView, NSViewToolTipOwner {
         needsDisplay = true
     }
 
-    /// Below this width a title can't show more than a couple of letters, so tabs show only the icon.
+    /// Below this width a tab is "narrow": only the active tab has a close button, and titles are clipped
+    /// (a few letters, like Chrome) instead of truncated with an ellipsis.
     static let compactWidth: CGFloat = 100
-    /// Below this width the active compact tab has room for only the close button, like Chrome.
+    /// Below this width the active tab has room for only the close button.
     private static let closeOnlyWidth: CGFloat = 52
+    /// A title is shown only if at least this much width is left for it (about two letters).
+    private static let minTitleWidth: CGFloat = 12
+    /// Space reserved on the right for the close button, or for a small margin when there is none.
+    private static let closeSlotWidth: CGFloat = 28
+    private static let plainTrailing: CGFloat = 4
 
-    private var isCompact: Bool { !isPinned && bounds.width < Self.compactWidth }
+    private var isNarrow: Bool { !isPinned && bounds.width < Self.compactWidth }
+
+    /// Narrow tabs give the close button room only on the active tab.
+    private var hasCloseSlot: Bool { !isPinned && (isActive || !isNarrow) }
+
+    /// Test hooks.
+    var showsTitleForTesting: Bool { !label.isHidden }
+    var showsCloseButtonForTesting: Bool { !closeButton.isHidden }
 
     private func updateCloseVisibility() {
-        // Compact tabs: only the active one gets a close button (hover would cover the icon).
-        // Otherwise, like Chrome: narrow tabs show it only on the active tab / on hover.
-        if isCompact { closeButton.isHidden = !isActive }
-        else { closeButton.isHidden = isPinned || !(isActive || isHovered || bounds.width > 110) }
+        // Narrow tabs: only the active one gets a close button (hover would cover the title or icon).
+        // Otherwise, like Chrome: it shows on the active tab / on hover.
+        closeButton.isHidden = !hasCloseSlot || !(isActive || isHovered || bounds.width > 110)
     }
 
     override func layout() {
         super.layout()
         let h = bounds.height
         let w = bounds.width
-        var closeX = w - 26
-        if isPinned || isCompact {
+        var closeX = w - 24
+        var showIcon = true
+        if isPinned {
+            // Pinned tabs center their icon and have no title.
             label.isHidden = true
-            var showIcon = true
-            // Pinned tabs center their icon. Crowded tabs keep it on the left, so icons line up
-            // along the strip and the active tab's close button has its own place on the right.
-            var iconX = isCompact ? min(10, max(4, (w - 16) / 2)) : (w - 16) / 2
-            if isCompact, isActive, w < Self.closeOnlyWidth {
+            icon.frame = NSRect(x: (w - 16) / 2, y: (h - 16) / 2, width: 16, height: 16)
+        } else {
+            // Narrow tabs keep the icon on the left, so icons line up along the strip and the
+            // active tab's close button has its own place on the right.
+            let iconX: CGFloat = isNarrow ? min(10, max(4, (w - 16) / 2)) : 12
+            let labelX = iconX + (isNarrow ? 20 : 22)
+            let trailing = hasCloseSlot ? Self.closeSlotWidth : Self.plainTrailing
+            let labelWidth = w - labelX - trailing
+            if isActive, w < Self.closeOnlyWidth {
                 // Too narrow for both: close button alone, centered.
                 showIcon = false
-                iconX = 0
                 closeX = (w - 18) / 2
+                label.isHidden = true
+                icon.frame = NSRect(x: 0, y: (h - 16) / 2, width: 16, height: 16)
+            } else {
+                icon.frame = NSRect(x: iconX, y: (h - 16) / 2, width: 16, height: 16)
+                label.isHidden = labelWidth < Self.minTitleWidth
+                label.lineBreakMode = isNarrow ? .byClipping : .byTruncatingTail
+                let labelHeight = label.intrinsicContentSize.height
+                label.frame = NSRect(x: labelX, y: (h - labelHeight) / 2,
+                                     width: max(0, labelWidth), height: labelHeight)
             }
-            icon.isHidden = !showIcon || isLoading
-            spinner.isHidden = !showIcon || !isLoading
-            icon.frame = NSRect(x: iconX, y: (h - 16) / 2, width: 16, height: 16)
-            spinner.frame = icon.frame
-        } else {
-            label.isHidden = false
-            icon.isHidden = isLoading
-            spinner.isHidden = !isLoading
-            icon.frame = NSRect(x: 12, y: (h - 16) / 2, width: 16, height: 16)
-            spinner.frame = icon.frame
-            let labelX: CGFloat = 34
-            let labelHeight = label.intrinsicContentSize.height
-            label.frame = NSRect(x: labelX, y: (h - labelHeight) / 2,
-                                 width: max(0, w - labelX - 30), height: labelHeight)
         }
+        icon.isHidden = !showIcon || isLoading
+        spinner.isHidden = !showIcon || !isLoading
+        spinner.frame = icon.frame
         closeButton.frame = NSRect(x: closeX, y: (h - 18) / 2, width: 18, height: 18)
         updateCloseVisibility()
 

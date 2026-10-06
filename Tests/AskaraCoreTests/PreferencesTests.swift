@@ -27,9 +27,35 @@ import Testing
         prefs.searchEngineID = "duckduckgo"
         #expect(prefs.homeURL.absoluteString == "https://duckduckgo.com")
         prefs.homePage = "example.com"
-        #expect(prefs.homeURL.absoluteString == "https://example.com")
+        // A home page typed without a scheme starts on http://, like the address bar.
+        #expect(prefs.homeURL.absoluteString == "http://example.com")
         prefs.searchEngineID = "unknown"
         #expect(prefs.searchEngine.id == "google")
+    }
+
+    @Test func zeroTabLimitsMeanNoLimit() {
+        var prefs = BrowserPreferences()
+        prefs.maxLoadedTabs = 0
+        prefs.protectedTabs = 0
+        var policy = prefs.hibernationPolicy(memoryBudget: nil)
+        #expect(policy.maxLoadedTabs == .max)
+        #expect(policy.maxGracedTabs == .max)
+
+        prefs.maxLoadedTabs = 7
+        prefs.protectedTabs = 3
+        policy = prefs.hibernationPolicy(memoryBudget: nil)
+        #expect(policy.maxLoadedTabs == 7)
+        #expect(policy.maxGracedTabs == 3)
+
+        // With no tab-count limit, many idle-but-recent background tabs are not evicted for count.
+        prefs.maxLoadedTabs = 0
+        prefs.sleepAfterMinutes = 0
+        let now = Date()
+        let tabs = (0..<30).map { i in
+            TabSnapshot(id: UUID(), lastActive: now.addingTimeInterval(-Double(i) * 10), isLoaded: true,
+                        isActive: i == 0)
+        }
+        #expect(prefs.hibernationPolicy(memoryBudget: nil).tabsToHibernate(tabs, now: now).isEmpty)
     }
 
     @Test func searchUsesChosenEngine() {

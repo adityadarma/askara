@@ -261,7 +261,9 @@ private final class WeakScriptHandler: NSObject, WKScriptMessageHandler {
                                               eligible: body["eligible"] as? Bool ?? false,
                                               active: body["active"] as? Bool ?? false)
             default:
-                target?.passkeyFailed(in: message.webView)
+                let body = message.body as? [String: Any]
+                let reason = (body?["reason"] as? String).flatMap(Passkey.Failure.init(rawValue:)) ?? .other
+                target?.passkeyFailed(in: message.webView, reason: reason)
             }
         }
     }
@@ -310,6 +312,10 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     /// Magnifier with the page zoom ("125%"), shown in the address bar while the zoom isn't 100%.
     private let zoomButton = NSButton()
     private let privacyButton = NSButton()
+    private let privacySeparator = NSBox()
+    /// Address field start: after the privacy button, or at the edge while the button is hidden.
+    private var addressLeadingWithPrivacy: NSLayoutConstraint?
+    private var addressLeadingAtEdge: NSLayoutConstraint?
     private let pictureInPictureButton = NSButton()
     private let pinnedExtensionStack = NSStackView()
     private let extensionsButton = FirstClickButton()
@@ -469,7 +475,6 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         addressBar.setContentHuggingPriority(.defaultLow, for: .horizontal)
         addressBar.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         privacyButton.translatesAutoresizingMaskIntoConstraints = false
-        let privacySeparator = NSBox()
         privacySeparator.boxType = .separator
         privacySeparator.translatesAutoresizingMaskIntoConstraints = false
         zoomButton.isBordered = false
@@ -492,7 +497,13 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         addressBar.addSubview(addressField)
         addressBar.addSubview(addressActions)
         pictureInPictureButton.isHidden = true
+        let withPrivacy = addressField.leadingAnchor.constraint(equalTo: privacySeparator.trailingAnchor, constant: 7)
+        let atEdge = addressField.leadingAnchor.constraint(equalTo: addressBar.leadingAnchor, constant: 10)
+        addressLeadingWithPrivacy = withPrivacy
+        addressLeadingAtEdge = atEdge
+        atEdge.isActive = false
         NSLayoutConstraint.activate([
+            withPrivacy,
             addressBar.heightAnchor.constraint(equalToConstant: 30),
             addressBar.widthAnchor.constraint(greaterThanOrEqualToConstant: 200),
             privacyButton.leadingAnchor.constraint(equalTo: addressBar.leadingAnchor, constant: 3),
@@ -501,7 +512,6 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
             privacySeparator.centerYAnchor.constraint(equalTo: addressBar.centerYAnchor),
             privacySeparator.widthAnchor.constraint(equalToConstant: 1),
             privacySeparator.heightAnchor.constraint(equalToConstant: 18),
-            addressField.leadingAnchor.constraint(equalTo: privacySeparator.trailingAnchor, constant: 7),
             addressField.centerYAnchor.constraint(equalTo: addressBar.centerYAnchor),
             addressField.trailingAnchor.constraint(equalTo: addressActions.leadingAnchor, constant: -2),
             addressActions.trailingAnchor.constraint(equalTo: addressBar.trailingAnchor, constant: -3),
@@ -674,6 +684,13 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         privacyButton.toolTip = privacyLabel
         privacyButton.setAccessibilityLabel(privacyLabel)
         privacyButton.isEnabled = isWeb
+        // A fresh tab on the home page has an empty address bar: nothing to describe yet, so the
+        // security icon stays hidden until a page address is shown.
+        let showsPrivacy = !addressText(for: tab).isEmpty
+        privacyButton.isHidden = !showsPrivacy
+        privacySeparator.isHidden = !showsPrivacy
+        addressLeadingWithPrivacy?.isActive = showsPrivacy
+        addressLeadingAtEdge?.isActive = !showsPrivacy
         updateZoomIndicator()
         pictureInPictureButton.isEnabled = tab?.pictureInPictureEligible == true
         pictureInPictureButton.isHidden = tab?.pictureInPictureEligible != true
@@ -1166,8 +1183,10 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
 
     static func restoredPinnedTabsToPreload(_ tabs: [Tab], active: Tab?, maxLoadedTabs: Int,
                                             loadedTabCount: Int, reservedLoadedSlots: Int = 0) -> [Tab] {
-        let limit = min(max(maxLoadedTabs, BrowserPreferences.maxLoadedTabRange.lowerBound),
-                        BrowserPreferences.maxLoadedTabRange.upperBound)
+        // 0 = no limit for the running app, but startup still uses the largest setting as a cap so a
+        // session with many pinned tabs doesn't start them all at once.
+        let range = BrowserPreferences.maxLoadedTabRange
+        let limit = maxLoadedTabs <= 0 ? range.upperBound : min(maxLoadedTabs, range.upperBound)
         let available = max(0, limit - loadedTabCount - max(0, reservedLoadedSlots))
         return Array(tabs.lazy.filter { $0.isPinned && $0 !== active && $0.webView == nil }.prefix(available))
     }
@@ -1362,7 +1381,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
             // Without the entitlement, WebKit always rejects passkeys. Detect it so we can explain.
             config.userContentController.add(WeakScriptHandler(self), name: "askaraPasskey")
             config.userContentController.addUserScript(WKUserScript(
-                source: Passkey.detectionScript, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+                source: Passkey.detectionScript, injectionTime: .atDocumentStart, forMainFrameOnly: false))
         }
         return config
     }
@@ -2358,22 +2377,36 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     // MARK: - Passkey
 
     /// Called from the detection script when a page fails to use a passkey (NotAllowedError).
-    func passkeyFailed(in webView: WKWebView?) {
-        guard let webView, webView === activeTab?.webView, let window, window.attachedSheet == nil else { return }
+    func passkeyFailed(in webView: WKWebView?, reason: Passkey.Failure) {
+        Log.notice("passkey: failure reported, reason=\(reason.rawValue)")
+        guard let webView, let window else { return Log.notice("passkey: dropped, no web view or window") }
+        guard webView === activeTab?.webView else { return Log.notice("passkey: dropped, not the active tab") }
+        guard window.attachedSheet == nil else { return Log.notice("passkey: dropped, another sheet is open") }
         let host = webView.url?.host ?? ""
-        // Once per site per window, to avoid nagging.
-        guard passkeyWarnedHosts.insert(host).inserted else { return }
+        // Once per site and reason per window, to avoid nagging.
+        guard passkeyWarnedHosts.insert("\(host)|\(reason.rawValue)").inserted else {
+            return Log.notice("passkey: dropped, already warned for this site")
+        }
 
         let site = host.isEmpty ? String(localized: "this site") : host
+        let hasExtension = !isPrivate && !profile.extensions.loaded.isEmpty
         let alert = NSAlert()
-        if !isPrivate, !profile.extensions.loaded.isEmpty {
-            // An extension is active, so passkeys go through it (e.g. Bitwarden). We only get here when
-            // the request fell back to macOS, which rejects it without Apple's entitlement.
-            alert.messageText = String(localized: "Passkey wasn't handled by your extension")
-            alert.informativeText = String(localized: "Askara uses your password manager extension (e.g. Bitwarden) for passkeys, because macOS blocks them for this app. This request reached macOS instead, which always rejects it.\n\nUnlock Bitwarden, turn on \"Ask to save and use passkeys\" in its settings, then reload the page and try again. You can also sign in to \(site) through Safari.")
-        } else {
-            alert.messageText = String(localized: "Passkeys can't be used in Askara yet")
-            alert.informativeText = String(localized: "macOS only lets third-party browsers use passkeys and security keys if the app is signed with a special entitlement from Apple (requires a paid Apple Developer account). Askara can use passkeys through a password manager extension instead: enable Bitwarden in the Extensions menu (not available in private windows), then reload the page.\n\nOtherwise, sign in to \(site) through Safari, or use a password.")
+        switch reason {
+        case .securityKey:
+            alert.messageText = String(localized: "Security keys can't be used in Askara")
+            alert.informativeText = String(localized: "\(site) asked for a physical security key (USB or NFC). Only macOS can talk to those, and it only allows that for browsers with a special entitlement from Apple (requires a paid Apple Developer account). Password manager extensions like Bitwarden can't replace a physical key.\n\nOpen \(site) in Safari to register or use the key. Keep another sign-in method (such as an authenticator app or backup codes) for Askara.")
+        case .frame where hasExtension:
+            alert.messageText = String(localized: "Bitwarden rejected this passkey request")
+            alert.informativeText = String(localized: "The request came from a frame embedded in the page (for example a pop-up dialog) instead of the page itself. Bitwarden refuses passkey requests from embedded frames for security reasons, so this isn't an Askara setting.\n\nTry the same action from the site's main page, or open \(site) in Safari.")
+        case .frame, .other:
+            if hasExtension {
+                // The extension is active, so we only get here when the request fell back to macOS.
+                alert.messageText = String(localized: "Passkey wasn't handled by your extension")
+                alert.informativeText = String(localized: "Askara uses your password manager extension (e.g. Bitwarden) for passkeys, because macOS blocks them for this app. This request reached macOS instead, which always rejects it.\n\nUnlock Bitwarden, turn on \"Ask to save and use passkeys\" in its settings, then reload the page and try again. You can also sign in to \(site) through Safari.")
+            } else {
+                alert.messageText = String(localized: "Passkeys can't be used in Askara yet")
+                alert.informativeText = String(localized: "macOS only lets third-party browsers use passkeys and security keys if the app is signed with a special entitlement from Apple (requires a paid Apple Developer account). Askara can use passkeys through a password manager extension instead: enable Bitwarden in the Extensions menu (not available in private windows), then reload the page.\n\nOtherwise, sign in to \(site) through Safari, or use a password.")
+            }
         }
         alert.addButton(withTitle: String(localized: "Open in Safari"))
         alert.addButton(withTitle: String(localized: "Close"))

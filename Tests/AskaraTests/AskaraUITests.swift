@@ -21,6 +21,32 @@ enum TestWindows {
     static func keep(owner: AnyObject) { kept.append(owner) }
 }
 
+/// Collects messages the passkey detection script posts, like the real window controller does.
+@MainActor
+private final class PasskeyProbe: NSObject, WKScriptMessageHandler {
+    private(set) var messages: [[String: Any]] = []
+    func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+        if let body = message.body as? [String: Any] { messages.append(body) }
+    }
+}
+
+@MainActor
+private func passkeyWebView(probe: PasskeyProbe, html: String, injectScript: Bool = true) async throws -> WKWebView {
+    let config = WKWebViewConfiguration()
+    config.userContentController.add(probe, name: "askaraPasskey")
+    if injectScript {
+        config.userContentController.addUserScript(WKUserScript(
+            source: Passkey.detectionScript, injectionTime: .atDocumentStart, forMainFrameOnly: false))
+    }
+    let web = WKWebView(frame: NSRect(x: 0, y: 0, width: 400, height: 300), configuration: config)
+    // An https base URL makes the page a secure context, so navigator.credentials exists.
+    web.loadHTMLString(html, baseURL: URL(string: "https://example.com/"))
+    for _ in 0..<100 where web.isLoading || web.url == nil {
+        try await Task.sleep(for: .milliseconds(50))
+    }
+    return web
+}
+
 @Suite("AppKit UI components", .serialized)
 struct AskaraUITests {
     @Test("Responsible footprint includes the process itself")
@@ -153,6 +179,36 @@ struct AskaraUITests {
         #expect(tabs[12].frame.width < TabStripView.activeMinWidth)
     }
 
+    @Test("Crowded tabs still show a few letters of the title; only the active one has a close button")
+    @MainActor
+    func crowdedTabsShowTitlesAndActiveClose() {
+        let strip = TabStripView(frame: NSRect(x: 0, y: 0, width: 1200, height: TabStripView.height))
+        let items = (0..<20).map { TabStripItem(title: "Title \($0)", isSleeping: false, isPlayingAudio: false) }
+        strip.update(items: items, activeIndex: 5)
+        strip.layoutSubtreeIfNeeded()
+        let tabs = strip.subviews.compactMap { $0 as? TabItemView }
+
+        // ~50 pt wide: icon plus a couple of letters, and no close button on inactive tabs.
+        let inactive = tabs[0]
+        #expect(inactive.frame.width < TabItemView.compactWidth)
+        #expect(inactive.frame.width >= 48)
+        #expect(inactive.showsTitleForTesting)
+        #expect(!inactive.showsCloseButtonForTesting)
+
+        // The active tab keeps its title and its close button.
+        #expect(tabs[5].showsTitleForTesting)
+        #expect(tabs[5].showsCloseButtonForTesting)
+
+        // Too narrow for any letters: icon only.
+        let tight = TabStripView(frame: NSRect(x: 0, y: 0, width: 900, height: TabStripView.height))
+        tight.update(items: (0..<30).map { TabStripItem(title: "Tab \($0)", isSleeping: false, isPlayingAudio: false) },
+                     activeIndex: 10)
+        tight.layoutSubtreeIfNeeded()
+        let narrow = tight.subviews.compactMap { $0 as? TabItemView }
+        #expect(!narrow[0].showsTitleForTesting)
+        #expect(narrow[10].showsCloseButtonForTesting)
+    }
+
     @Test("Address suggestions cycle back to typed text")
     @MainActor
     func addressSuggestionKeyboardCycle() throws {
@@ -238,6 +294,11 @@ struct AskaraUITests {
         let reservedForNextWindow = BrowserWindowController.restoredPinnedTabsToPreload(
             all, active: active, maxLoadedTabs: 3, loadedTabCount: 1, reservedLoadedSlots: 1)
         #expect(reservedForNextWindow.count == 1)
+
+        // 0 = no limit, but startup is still capped at the largest setting.
+        let unlimited = BrowserWindowController.restoredPinnedTabsToPreload(
+            all, active: active, maxLoadedTabs: 0, loadedTabCount: 1)
+        #expect(unlimited.count == pinned.count)
 
         let exhaustedByOtherWindows = BrowserWindowController.restoredPinnedTabsToPreload(
             all, active: active, maxLoadedTabs: 2, loadedTabCount: 2)
@@ -396,5 +457,74 @@ struct AskaraUITests {
         window.close()
         #expect(SourceWindow.openWindowCount == windowsBefore)
         #expect(SourceWindow.closeObserverCount == observersBefore)
+    }
+
+    /// Mimics Bitwarden: it replaces navigator.credentials.create and rejects with NotAllowedError.
+    private static let extensionRejects = """
+    navigator.credentials.create = async () => {
+      throw new DOMException("Invalid 'sameOriginWithAncestors' value", "NotAllowedError");
+    };
+    """
+    private static let createCall = """
+    navigator.credentials.create({ publicKey: { challenge: new Uint8Array(4), rp: { name: 'x' },
+      user: { id: new Uint8Array(4), name: 'u', displayName: 'u' },
+      pubKeyCredParams: [{ type: 'public-key', alg: -7 }]%@ } }).catch(() => {}); 1
+    """
+
+    @MainActor
+    private func waitForPasskeyMessage(_ probe: PasskeyProbe) async throws -> [String: Any]? {
+        for _ in 0..<60 where probe.messages.isEmpty { try await Task.sleep(for: .milliseconds(50)) }
+        return probe.messages.first
+    }
+
+    @Test("Passkey detection reports an extension rejecting a request from a frame")
+    @MainActor
+    func passkeyDetectionFrameRejection() async throws {
+        _ = NSApplication.shared
+        let probe = PasskeyProbe()
+        // Extension assigns after the detection script (document start order: detection first).
+        let web = try await passkeyWebView(probe: probe, html: "<script>\(Self.extensionRejects)</script>")
+        _ = try? await web.evaluateJavaScript(String(format: Self.createCall, ""))
+        let message = try #require(try await waitForPasskeyMessage(probe))
+        #expect(message["reason"] as? String == "frame")
+        #expect(message["name"] as? String == "create")
+    }
+
+    @Test("Passkey detection also works when the extension replaced the function first")
+    @MainActor
+    func passkeyDetectionExtensionFirst() async throws {
+        _ = NSApplication.shared
+        let probe = PasskeyProbe()
+        let web = try await passkeyWebView(probe: probe, html: "<script>\(Self.extensionRejects)</script>",
+                                           injectScript: false)
+        _ = try? await web.evaluateJavaScript(Passkey.detectionScript)
+        _ = try? await web.evaluateJavaScript(String(format: Self.createCall, ""))
+        let message = try #require(try await waitForPasskeyMessage(probe))
+        #expect(message["reason"] as? String == "frame")
+    }
+
+    @Test("Passkey detection recognises a request for a physical security key")
+    @MainActor
+    func passkeyDetectionSecurityKey() async throws {
+        _ = NSApplication.shared
+        let probe = PasskeyProbe()
+        let web = try await passkeyWebView(probe: probe, html: "<script>\(Self.extensionRejects)</script>")
+        let extra = ", authenticatorSelection: { authenticatorAttachment: 'cross-platform' }"
+        _ = try? await web.evaluateJavaScript(String(format: Self.createCall, extra))
+        let message = try #require(try await waitForPasskeyMessage(probe))
+        #expect(message["reason"] as? String == "securityKey")
+    }
+
+    @Test("Passkey detection reports a rejection that happens inside an iframe")
+    @MainActor
+    func passkeyDetectionInsideIframe() async throws {
+        _ = NSApplication.shared
+        let probe = PasskeyProbe()
+        let inner = "<script>\(Self.extensionRejects)\(String(format: Self.createCall, ""))</script>"
+            .replacingOccurrences(of: "\"", with: "&quot;")
+        let web = try await passkeyWebView(probe: probe, html: "<iframe srcdoc=\"\(inner)\"></iframe>")
+        _ = web
+        let message = try #require(try await waitForPasskeyMessage(probe))
+        #expect(message["reason"] as? String == "frame")
     }
 }

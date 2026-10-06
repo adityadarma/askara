@@ -438,10 +438,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         if !sleepPopup.selectItem(withTag: prefs.sleepAfterMinutes) { sleepPopup.selectItem(withTag: 5) }
         if !dozePopup.selectItem(withTag: prefs.dozeAfterMinutes) { dozePopup.selectItem(withTag: 1) }
         maxTabsStepper.integerValue = prefs.maxLoadedTabs
-        maxTabsLabel.stringValue = "\(prefs.maxLoadedTabs)"
+        maxTabsLabel.stringValue = Self.countText(prefs.maxLoadedTabs)
         if !memoryBudgetPopup.selectItem(withTag: prefs.memoryBudgetPercent) { memoryBudgetPopup.selectItem(withTag: 25) }
         protectedStepper.integerValue = prefs.protectedTabs
-        protectedLabel.stringValue = "\(prefs.protectedTabs)"
+        protectedLabel.stringValue = Self.countText(prefs.protectedTabs)
         httpsOnlyBox.state = prefs.httpsOnly ? .on : .off
         stripTrackingBox.state = prefs.stripsTrackingParameters ? .on : .off
         confirmQuitBox.state = prefs.confirmsQuit ? .on : .off
@@ -492,15 +492,20 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         services.updatePreferences { $0.memoryBudgetPercent = percent }
     }
 
+    /// Tab-count steppers treat 0 as "no limit".
+    private static func countText(_ count: Int) -> String {
+        count == 0 ? String(localized: "No limit") : "\(count)"
+    }
+
     @objc private func protectedTabsChanged(_ sender: NSStepper) {
         let count = sender.integerValue
-        protectedLabel.stringValue = "\(count)"
+        protectedLabel.stringValue = Self.countText(count)
         services.updatePreferences { $0.protectedTabs = count }
     }
 
     @objc private func maxTabsChanged(_ sender: NSStepper) {
         let count = sender.integerValue
-        maxTabsLabel.stringValue = "\(count)"
+        maxTabsLabel.stringValue = Self.countText(count)
         services.updatePreferences { $0.maxLoadedTabs = count }
     }
 

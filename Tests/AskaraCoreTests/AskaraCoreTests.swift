@@ -17,8 +17,25 @@ import Testing
                 == "https://example.com/a?b=1")
     }
 
-    @Test func bareDomainGetsHTTPS() {
-        #expect(AddressParser.url(from: "  example.com  ")?.absoluteString == "https://example.com")
+    @Test func bareDomainGetsHTTP() {
+        #expect(AddressParser.url(from: "  example.com  ")?.absoluteString == "http://example.com")
+    }
+
+    @Test func privateNamesAndIPsGetHTTP() {
+        for (typed, expected) in [
+            ("portainer.goodponsel.internal", "http://portainer.goodponsel.internal"),
+            ("nas.local:5000/app", "http://nas.local:5000/app"),
+            ("printer.lan", "http://printer.lan"),
+            ("192.168.1.1", "http://192.168.1.1"),
+            ("10.0.0.5:8080", "http://10.0.0.5:8080"),
+        ] {
+            #expect(AddressParser.url(from: typed)?.absoluteString == expected)
+        }
+        // Typed public names also start on HTTP; HTTPS-Only Mode upgrades them when it is on.
+        let typed = AddressParser.url(from: "internal.example.com")
+        #expect(typed?.absoluteString == "http://internal.example.com")
+        #expect(typed.flatMap(HTTPSUpgrade.upgradedURL(for:))?.absoluteString == "https://internal.example.com")
+        #expect(AddressParser.url(from: "portainer.goodponsel.internal").flatMap(HTTPSUpgrade.upgradedURL(for:)) == nil)
     }
 
     @Test func localhostGetsHTTP() {

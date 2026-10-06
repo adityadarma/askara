@@ -120,25 +120,69 @@ enum Passkey {
         return (value as? Bool) == true
     }()
 
+    /// Why a passkey request failed, so Askara can explain it.
+    enum Failure: String {
+        /// The site asked for a physical security key (USB/NFC), which only macOS can handle.
+        case securityKey
+        /// The request came from an embedded frame; Bitwarden only accepts the top-level page.
+        case frame
+        case other
+    }
+
     /// Detects passkey failures to provide an explanation, without changing page behavior.
+    /// Runs in every frame. Two wrappers are used: `viaNative` always calls the system implementation
+    /// (this is what an extension captures as its "native" fallback), and `viaExtension` calls whatever
+    /// an extension assigned later (Bitwarden). Keeping them separate prevents the fallback from
+    /// looping back into the extension.
     static let detectionScript = """
     (() => {
       const c = navigator.credentials;
-      if (!c || !window.webkit || !window.webkit.messageHandlers.askaraPasskey) return;
+      const handler = window.webkit && window.webkit.messageHandlers
+        && window.webkit.messageHandlers.askaraPasskey;
+      if (!c || !handler) return;
+      const hardware = ['usb', 'nfc', 'ble', 'smart-card'];
+      const wantsSecurityKey = (pk) => {
+        if (((pk.authenticatorSelection || {}).authenticatorAttachment) === 'cross-platform') return true;
+        const allowed = pk.allowCredentials || [];
+        return allowed.length > 0 && allowed.every((d) =>
+          Array.isArray(d.transports) && d.transports.length > 0
+          && d.transports.every((t) => hardware.includes(t)));
+      };
+      const observe = (name, options, promise) => {
+        const pk = options && options.publicKey;
+        if (!pk) return;
+        Promise.resolve(promise).catch((e) => {
+          try {
+            if (!e || e.name !== 'NotAllowedError') return;
+            let reason = 'other';
+            if (wantsSecurityKey(pk)) reason = 'securityKey';
+            else if (String(e.message || '').includes('sameOriginWithAncestors')) reason = 'frame';
+            handler.postMessage({ name: name, reason: reason });
+          } catch (_) {}
+        });
+      };
       for (const name of ['get', 'create']) {
-        const original = c[name] && c[name].bind(c);
-        if (!original) continue;
-        c[name] = function (options) {
-          const promise = original(options);
-          if (options && options.publicKey) {
-            promise.catch((e) => {
-              if (e && e.name === 'NotAllowedError') {
-                window.webkit.messageHandlers.askaraPasskey.postMessage(name);
-              }
-            });
-          }
+        const native = c[name];
+        if (typeof native !== 'function') continue;
+        let assigned = null;
+        const viaNative = function (options) {
+          const promise = native.apply(c, arguments);
+          observe(name, options, promise);
           return promise;
         };
+        const viaExtension = function (options) {
+          const promise = assigned.apply(c, arguments);
+          observe(name, options, promise);
+          return promise;
+        };
+        try {
+          Object.defineProperty(c, name, {
+            configurable: true,
+            enumerable: true,
+            get() { return assigned ? viaExtension : viaNative; },
+            set(value) { assigned = typeof value === 'function' ? value : null; },
+          });
+        } catch (_) {}
       }
     })();
     """

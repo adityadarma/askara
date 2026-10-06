@@ -23,14 +23,17 @@ public enum AddressParser {
         let hasSpace = input.contains(" ")
         let lower = input.lowercased()
 
-        // localhost / local IPs usually have no TLS.
+        // localhost usually has no TLS.
         if !hasSpace, lower.hasPrefix("localhost") || lower.hasPrefix("127.0.0.1") {
             return URL(string: "http://" + input)
         }
 
         // Looks like a domain (has a dot, no spaces, not at the ends).
         if !hasSpace, input.contains("."), !input.hasPrefix("."), !input.hasSuffix("."),
-           let url = URL(string: "https://" + input), url.host != nil {
+           let url = URL(string: "http://" + input), url.host != nil {
+            // Typed addresses start on http:// so private hosts (.internal, .local, 192.168.x.x) work.
+            // Public sites normally redirect to https://; with HTTPS-Only Mode on, the browser upgrades
+            // them itself (see HTTPSUpgrade).
             return url
         }
 

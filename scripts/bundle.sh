@@ -42,6 +42,10 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundleAllowMixedLocalizations</key><true/>
     <key>LSMinimumSystemVersion</key><string>15.4</string>
     <key>NSHighResolutionCapable</key><true/>
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsArbitraryLoadsInWebContent</key><true/>
+    </dict>
     <key>NSSupportsAutomaticTermination</key><true/>
     <key>NSSupportsSuddenTermination</key><false/>
     <key>NSCameraUsageDescription</key><string>Websites you allow can use the camera, for example for video calls.</string>

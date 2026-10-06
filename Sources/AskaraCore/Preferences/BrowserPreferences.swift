@@ -7,10 +7,12 @@ public struct BrowserPreferences: Codable, Equatable, Sendable {
     public static let sleepChoices = [0, 1, 5, 15, 30, 60]
     /// Minutes before a background tab dozes (page kept, media paused, caches freed). 0 = off.
     public static let dozeChoices = [0, 1, 2, 5, 10]
-    public static let maxLoadedTabRange = 2...20
+    /// Tabs that may be loaded at once. 0 = no limit.
+    public static let maxLoadedTabRange = 0...20
     /// Share of RAM all loaded tabs may use before the least recently used sleep. 0 = no limit.
     public static let memoryBudgetChoices = [12, 25, 33, 50, 0]
-    /// Recently used background tabs kept awake despite the tab-count and memory limits.
+    /// Recently used background tabs kept awake despite the tab-count and memory limits. 0 = no limit
+    /// (every tab used within `recentGrace` is kept).
     public static let protectedTabRange = 0...10
     /// Background tabs used within this time are spared by the tab-count and memory limits.
     public static let recentGrace: TimeInterval = 5 * 60
@@ -91,15 +93,16 @@ public struct BrowserPreferences: Codable, Equatable, Sendable {
     public func hibernationPolicy(memoryBudget: UInt64?) -> HibernationPolicy {
         let minutes = max(0, sleepAfterMinutes)
         let doze = max(0, dozeAfterMinutes)
+        let loadedLimit = min(max(maxLoadedTabs, Self.maxLoadedTabRange.lowerBound), Self.maxLoadedTabRange.upperBound)
+        let gracedLimit = min(max(protectedTabs, Self.protectedTabRange.lowerBound), Self.protectedTabRange.upperBound)
         return HibernationPolicy(idleTimeout: minutes == 0 ? .infinity : TimeInterval(minutes * 60),
-                                 maxLoadedTabs: min(max(maxLoadedTabs, Self.maxLoadedTabRange.lowerBound),
-                                                    Self.maxLoadedTabRange.upperBound),
+                                 // 0 means no limit for both tab counts.
+                                 maxLoadedTabs: loadedLimit == 0 ? .max : loadedLimit,
                                  memoryBudget: memoryBudget,
                                  // A tab you just left stays loaded, so going straight back doesn't reload it.
                                  recentGrace: Self.recentGrace,
                                  dozeAfter: doze == 0 ? .infinity : TimeInterval(doze * 60),
-                                 maxGracedTabs: min(max(protectedTabs, Self.protectedTabRange.lowerBound),
-                                                    Self.protectedTabRange.upperBound))
+                                 maxGracedTabs: gracedLimit == 0 ? .max : gracedLimit)
     }
 
     // MARK: Memory Saver exceptions
