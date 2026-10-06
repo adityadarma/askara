@@ -208,51 +208,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    /// Opens Web Inspector for an extension's background page.
-    @objc func inspectExtensionAction(_ sender: NSMenuItem) {
-        guard let box = sender.representedObject as? InstalledExtensionBox,
-              let context = services.currentProfile.loadedExtensions?.context(for: box.value) else { return }
-        let open = { (web: WKWebView?) in
-            guard let web, DevTools.open(.console, for: web) else {
-                self.services.keyBrowserWindow?.showToast(String(localized: "Background page for \(box.value.name) isn't running yet"), duration: 3)
-                return
-            }
-        }
-        if let web = DevTools.backgroundWebView(of: context) { return open(web) }
-        context.loadBackgroundContent { _ in
-            MainActor.assumeIsolated { open(DevTools.backgroundWebView(of: context)) }
-        }
-    }
-
-    fileprivate func updateDevelopMenu(_ menu: NSMenu) {
-        guard let header = menu.item(withTag: MainMenu.developExtensionHeaderTag) else { return }
-        let start = menu.index(of: header) + 1
-        while menu.items.count > start { menu.removeItem(at: start) }
-        let loaded = services.currentProfile.loadedExtensions?.loaded ?? []
-        header.isHidden = loaded.isEmpty
-        menu.items[max(0, start - 2)].isHidden = loaded.isEmpty // separator above the header
-        for entry in loaded {
-            let item = NSMenuItem(title: String(localized: "Background Page for \(entry.item.name)"),
-                                  action: #selector(inspectExtensionAction(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = InstalledExtensionBox(entry.item)
-            item.indentationLevel = 1
-            menu.addItem(item)
-        }
-        let popupHint = NSMenuItem(title: String(localized: "Extension popups: right-click in the popup > Inspect Element"),
-                                   action: nil, keyEquivalent: "")
-        popupHint.isEnabled = false
-        popupHint.isHidden = loaded.isEmpty
-        popupHint.indentationLevel = 1
-        menu.addItem(popupHint)
-    }
-
     // MARK: - Dynamic menus (History & Bookmarks)
 
     /// Populated when the menu opens, so there is no cost while it is closed.
     func menuNeedsUpdate(_ menu: NSMenu) {
         if menu.identifier == MainMenu.tabMenuID { return updateTabMenu(menu) }
-        if menu.identifier == MainMenu.developMenuID { return updateDevelopMenu(menu) }
         if menu.identifier == MainMenu.profileMenuID {
             menu.removeAllItems()
             ProfileMenu.fill(menu, current: services.currentProfile.id, target: self)
@@ -269,6 +229,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 : String(localized: "Memory Saver: no tabs slept yet")
             return
         }
+        // Only History and Bookmarks are filled below; any other menu is left as built.
+        guard menu.identifier == MainMenu.historyMenuID || menu.identifier == MainMenu.bookmarkMenuID else { return }
         let isHistory = menu.identifier == MainMenu.historyMenuID
         let fixedCount = isHistory ? MainMenu.historyFixedItems : MainMenu.bookmarkFixedItems
         while menu.items.count > fixedCount { menu.removeItem(at: fixedCount) }
@@ -364,8 +326,6 @@ enum MainMenu {
     static let bookmarkMenuID = NSUserInterfaceItemIdentifier("bookmarks")
     static let tabMenuID = NSUserInterfaceItemIdentifier("tabs")
     static let appMenuID = NSUserInterfaceItemIdentifier("app")
-    static let developMenuID = NSUserInterfaceItemIdentifier("develop")
-    static let developExtensionHeaderTag = 7002
     static let blockStatusTag = 7001
     static let historyFixedItems = 5
     static let bookmarkFixedItems = 4
@@ -535,7 +495,7 @@ enum MainMenu {
         tabs.delegate = delegate
 
         // Same shortcuts as Safari.
-        let develop = submenu(String(localized: "Develop"), [
+        _ = submenu(String(localized: "Develop"), [
             item(String(localized: "Show Web Inspector"), #selector(B.showWebInspectorAction(_:)), "i", [.command, .option]),
             item(String(localized: "Show JavaScript Console"), #selector(B.showConsoleAction(_:)), "c", [.command, .option]),
             item(String(localized: "Show Page Source"), #selector(B.viewSourceAction(_:)), "u", [.command, .option]),
@@ -573,16 +533,7 @@ enum MainMenu {
                 holder.submenu = menu
                 return holder
             }(),
-            .separator(),
-            {
-                let header = NSMenuItem(title: String(localized: "Inspect Extensions"), action: nil, keyEquivalent: "")
-                header.isEnabled = false
-                header.tag = developExtensionHeaderTag
-                return header
-            }(),
         ])
-        develop.identifier = developMenuID
-        develop.delegate = delegate
 
         let windowMenu = submenu(String(localized: "Window"), [
             item(String(localized: "Minimize"), #selector(NSWindow.performMiniaturize(_:)), "m"),

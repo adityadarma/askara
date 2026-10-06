@@ -28,6 +28,9 @@ final class TaskManagerWindowController: NSWindowController, NSWindowDelegate, N
     private let totalLabel = NSTextField(labelWithString: "")
     private let sleepButton = NSButton()
     private let closeButton = NSButton()
+    private let otherButton = NSButton()
+    private let otherPopover = NSPopover()
+    private let otherList = OtherProcessesViewController()
     private var timer: Timer?
     private let cpuTracker = CPUUsageTracker()
     private var services: BrowserServices { .shared }
@@ -88,7 +91,14 @@ final class TaskManagerWindowController: NSWindowController, NSWindowDelegate, N
             button.target = self
             button.action = action
         }
-        let footer = NSStackView(views: [totalLabel, NSView(), sleepButton, closeButton])
+        // Processes that aren't a tab (extensions, WebKit graphics/network), shown in a popover.
+        otherButton.title = String(localized: "Other Processes…")
+        otherButton.bezelStyle = .rounded
+        otherButton.target = self
+        otherButton.action = #selector(showOtherProcesses(_:))
+        otherPopover.behavior = .transient
+        otherPopover.contentViewController = otherList
+        let footer = NSStackView(views: [totalLabel, NSView(), otherButton, sleepButton, closeButton])
         footer.spacing = 8
 
         for v in [scroll, footer] as [NSView] {
@@ -174,8 +184,17 @@ final class TaskManagerWindowController: NSWindowController, NSWindowDelegate, N
         let pages = result.reduce(UInt64(0)) { $0 + $1.bytes }
         let app = ProcessMemory.footprint(pid: getpid()) ?? 0
         let awake = result.filter { !$0.isSleeping }.count
-        totalLabel.stringValue = String(localized: "Askara: \(ProcessMemory.format(app + pages)) (app \(ProcessMemory.format(app)), pages \(ProcessMemory.format(pages))) · \(awake) of \(result.count) tabs awake")
-        totalLabel.toolTip = String(localized: "Extensions and WebKit's shared network and graphics processes aren't included.")
+        // Same total as Activity Monitor: everything macOS attributes to Askara, including
+        // extension background pages and WebKit's GPU and network processes.
+        let tabPIDs = Set(result.compactMap { $0.tab.webView?.askaraProcessID })
+        let processes = ProcessMemory.responsibleProcesses(of: getpid()) ?? []
+        let others = processes.filter { $0.pid != getpid() && !tabPIDs.contains($0.pid) }
+        let total = max(processes.reduce(UInt64(0)) { $0 + $1.bytes }, app + pages)
+        let other = total - app - pages
+        otherList.update(others)
+        otherButton.isEnabled = !others.isEmpty
+        totalLabel.stringValue = String(localized: "Askara: \(ProcessMemory.format(total)) (app \(ProcessMemory.format(app)), tabs \(ProcessMemory.format(pages)), other \(ProcessMemory.format(other))) · \(awake) of \(result.count) tabs awake")
+        totalLabel.toolTip = String(localized: "\"Other\" covers extensions and WebKit's shared graphics and network processes. The total matches Activity Monitor.")
 
         table.reloadData()
         let restore = IndexSet(rows.indices.filter { selectedIDs.contains(rows[$0].tab.id) })
@@ -207,6 +226,11 @@ final class TaskManagerWindowController: NSWindowController, NSWindowDelegate, N
     @objc private func closeSelected(_ sender: Any?) {
         selectedRows.forEach { $0.window.close(tab: $0.tab) }
         reload()
+    }
+
+    @objc private func showOtherProcesses(_ sender: NSButton) {
+        if otherPopover.isShown { return otherPopover.close() }
+        otherPopover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .maxY)
     }
 
     /// Delete key closes the selected tabs.
@@ -295,5 +319,98 @@ final class TaskManagerWindowController: NSWindowController, NSWindowDelegate, N
             ])
         }
         return cell
+    }
+}
+
+/// Popover listing Askara's processes that aren't a tab: extensions, preloaded pages, and WebKit's
+/// graphics and network processes. Updated by the Task Manager's 2 s refresh while open.
+@MainActor
+final class OtherProcessesViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
+    private var items: [ProcessMemory.Usage] = []
+    private let table = NSTableView()
+    private let totalLabel = NSTextField(labelWithString: "")
+
+    var itemsForTesting: [ProcessMemory.Usage] { items }
+
+    override func loadView() {
+        for (id, title, width) in [("name", String(localized: "Process"), 230.0), ("pid", "PID", 60.0),
+                                   ("memory", String(localized: "Memory"), 90.0)] {
+            let column = NSTableColumn(identifier: .init(id))
+            column.title = title
+            column.width = width
+            table.addTableColumn(column)
+        }
+        table.dataSource = self
+        table.delegate = self
+        table.style = .plain
+        table.usesAlternatingRowBackgroundColors = true
+        table.setAccessibilityLabel(String(localized: "Other processes and memory use"))
+        let scroll = NSScrollView()
+        scroll.documentView = table
+        scroll.hasVerticalScroller = true
+        totalLabel.textColor = .secondaryLabelColor
+        let note = NSTextField(wrappingLabelWithString: String(localized:
+            "Processes that aren't a tab: extension background pages, pages WebKit keeps ready for new tabs, and WebKit's shared graphics and network processes."))
+        note.textColor = .secondaryLabelColor
+        note.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: 420, height: 300))
+        for v in [scroll, totalLabel, note] as [NSView] {
+            v.translatesAutoresizingMaskIntoConstraints = false
+            root.addSubview(v)
+        }
+        NSLayoutConstraint.activate([
+            scroll.topAnchor.constraint(equalTo: root.topAnchor, constant: 10),
+            scroll.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 10),
+            scroll.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -10),
+            scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 160),
+            totalLabel.topAnchor.constraint(equalTo: scroll.bottomAnchor, constant: 8),
+            totalLabel.leadingAnchor.constraint(equalTo: scroll.leadingAnchor),
+            totalLabel.trailingAnchor.constraint(equalTo: scroll.trailingAnchor),
+            note.topAnchor.constraint(equalTo: totalLabel.bottomAnchor, constant: 4),
+            note.leadingAnchor.constraint(equalTo: scroll.leadingAnchor),
+            note.trailingAnchor.constraint(equalTo: scroll.trailingAnchor),
+            note.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -10),
+            root.widthAnchor.constraint(equalToConstant: 420),
+        ])
+        view = root
+    }
+
+    func update(_ processes: [ProcessMemory.Usage]) {
+        items = processes
+        guard isViewLoaded else { return }
+        let total = processes.reduce(UInt64(0)) { $0 + $1.bytes }
+        totalLabel.stringValue = String(localized: "\(processes.count) processes · \(ProcessMemory.format(total))")
+        table.reloadData()
+    }
+
+    override func viewWillAppear() {
+        super.viewWillAppear()
+        update(items)
+    }
+
+    func numberOfRows(in tableView: NSTableView) -> Int { items.count }
+
+    func tableView(_ tableView: NSTableView, viewFor column: NSTableColumn?, row: Int) -> NSView? {
+        guard let column, items.indices.contains(row) else { return nil }
+        let item = items[row]
+        let text = (tableView.makeView(withIdentifier: column.identifier, owner: self) as? NSTextField) ?? {
+            let field = NSTextField(labelWithString: "")
+            field.identifier = column.identifier
+            field.lineBreakMode = .byTruncatingTail
+            return field
+        }()
+        switch column.identifier.rawValue {
+        case "name":
+            text.stringValue = item.displayName
+            text.toolTip = item.name
+        case "pid":
+            text.stringValue = "\(item.pid)"
+            text.alignment = .right
+        default:
+            text.stringValue = ProcessMemory.format(item.bytes)
+            text.alignment = .right
+        }
+        return text
     }
 }

@@ -24,8 +24,6 @@
 "Allow" = "Izinkan";
 "Back" = "Kembali";
 "Back (⌘[)" = "Kembali (⌘[)";
-"Background Page for %@" = "Halaman Latar %@";
-"Background page for %@ isn't running yet" = "Halaman latar %@ belum berjalan";
 "Block or modify network requests" = "Memblokir atau mengubah permintaan jaringan";
 "Blocking %lld domains (built-in list)" = "Memblokir %lld domain (daftar bawaan)";
 "Blocking %lld domains · updated %@" = "Memblokir %lld domain · diperbarui %@";
@@ -91,7 +89,6 @@
 "Enable %@?" = "Aktifkan %@?";
 "Enter Full Screen" = "Layar Penuh";
 "Extension" = "Ekstensi";
-"Extension popups: right-click in the popup > Inspect Element" = "Popup ekstensi: klik kanan di popup > Periksa Elemen";
 "Extensions" = "Ekstensi";
 "Extensions don't run in private windows." = "Ekstensi tidak berjalan di jendela pribadi.";
 "Extensions use extra RAM while enabled" = "Ekstensi memakai RAM tambahan selama aktif";
@@ -109,7 +106,6 @@
 "Hide Others" = "Sembunyikan Lainnya";
 "History" = "Riwayat";
 "History, cookies, cache, and website data will be removed. You will be signed out of all websites. Bookmarks and downloaded files are not removed. This can’t be undone." = "Riwayat, cookie, cache, dan data situs akan dihapus. Anda akan keluar dari semua situs. Bookmark dan file unduhan tidak ikut dihapus. Tindakan ini tidak bisa dibatalkan.";
-"Inspect Extensions" = "Periksa Ekstensi";
 "Install an app with a Safari extension (e.g. Bitwarden) from the App Store" = "Pasang aplikasi dengan ekstensi Safari (mis. Bitwarden) dari App Store";
 "List" = "Daftar";
 "Loading page" = "Memuat halaman";
@@ -370,7 +366,7 @@
 "Askara can't read Safari's data" = "Askara tidak bisa membaca data Safari";
 "Askara is your default browser" = "Askara adalah browser default Anda";
 "Askara isn't your default browser" = "Askara bukan browser default Anda";
-"Askara: %@ (app %@, pages %@) · %lld of %lld tabs awake" = "Askara: %1$@ (aplikasi %2$@, halaman %3$@) · %4$lld dari %5$lld tab aktif";
+"Askara: %@ (app %@, tabs %@, other %@) · %lld of %lld tabs awake" = "Askara: %1$@ (aplikasi %2$@, tab %3$@, lainnya %4$@) · %5$lld dari %6$lld tab aktif";
 "Awake" = "Aktif";
 "Bookmark added" = "Bookmark ditambahkan";
 "Bookmarks Bar" = "Bar Bookmark";
@@ -386,7 +382,7 @@
 "Edit Bookmark" = "Edit Bookmark";
 "Edit Folder" = "Edit Folder";
 "Edit…" = "Edit…";
-"Extensions and WebKit's shared network and graphics processes aren't included." = "Ekstensi serta proses jaringan dan grafis WebKit yang dipakai bersama tidak dihitung.";
+"\"Other\" covers extensions and WebKit's shared graphics and network processes. The total matches Activity Monitor." = "\"Lainnya\" mencakup ekstensi serta proses grafis dan jaringan WebKit yang dipakai bersama. Totalnya sama dengan Activity Monitor.";
 "File format" = "Format file";
 "Folder" = "Folder";
 "Folder name" = "Nama folder";
@@ -503,3 +499,13 @@
 "Memory limit for tabs:" = "Batas memori tab:";
 "Recently used tabs kept awake" = "Tab terakhir dipakai yang tetap aktif";
 "Recently used tabs kept awake:" = "Tab terakhir dipakai yang tetap aktif:";
+"Other Processes…" = "Proses Lainnya…";
+"Extension or preloaded page" = "Ekstensi atau halaman siaga";
+"Graphics (WebKit)" = "Grafis (WebKit)";
+"Network (WebKit)" = "Jaringan (WebKit)";
+"Safari platform support" = "Dukungan platform Safari";
+"Audio helper" = "Pembantu audio";
+"Process" = "Proses";
+"Other processes and memory use" = "Proses lain dan pemakaian memori";
+"Processes that aren't a tab: extension background pages, pages WebKit keeps ready for new tabs, and WebKit's shared graphics and network processes." = "Proses yang bukan tab: halaman latar ekstensi, halaman yang disiapkan WebKit untuk tab baru, serta proses grafis dan jaringan WebKit yang dipakai bersama.";
+"%lld processes · %@" = "%1$lld proses · %2$@";

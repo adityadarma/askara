@@ -152,12 +152,6 @@ enum DevTools {
         return true
     }
 
-    /// The extension's background WebView (background page), to inspect like a normal page.
-    static func backgroundWebView(of context: WKWebExtensionContext) -> WKWebView? {
-        guard context.responds(to: Selector(("_backgroundWebView"))) else { return nil }
-        return context.value(forKey: "_backgroundWebView") as? WKWebView
-    }
-
     /// Enables "Inspect Element" in the right-click menu and the inspector shortcuts.
     static func enable(on configuration: WKWebViewConfiguration) {
         let preferences = configuration.preferences

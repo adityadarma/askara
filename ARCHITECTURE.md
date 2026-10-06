@@ -53,15 +53,13 @@ bookmarks, permissions, or session metadata.
 
 ## Passwords
 
-Askara can store credentials owned by the app in the macOS Keychain. Records are isolated by
-profile, local to the Mac, available only while unlocked, and matched to an exact HTTPS origin.
-Filling requires an explicit user action, never submits a form, and is disabled in private windows.
-Safari Web Extensions remain available independently for users who prefer an external password
-manager.
+Askara has no built-in password vault. Password management is delegated to an optional Safari Web
+Extension such as Bitwarden: when the user has installed and enabled it, it is loaded per profile
+through `WKWebExtensionController`; when it is absent, Askara runs without any password features.
 
 ## Local Persistence
 
 Completed download history and scan metadata are persisted under Application Support. Download
 completion and failure can produce macOS local notifications after user authorization. The selected
-encrypted-sync folder stores a security-scoped bookmark locally; neither the bookmark nor password
-vault records are copied into the sync snapshot.
+encrypted-sync folder stores a security-scoped bookmark locally; the bookmark is not copied into the
+sync snapshot.

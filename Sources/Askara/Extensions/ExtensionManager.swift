@@ -65,9 +65,23 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         controller.delegate = self
     }
 
+    /// Scheme for extension pages, matching Safari so extensions that check it work.
+    static let extensionScheme = "safari-web-extension"
+
+    /// Also accepts WebKit's default scheme, e.g. for tabs saved by older versions.
+    static func isExtensionScheme(_ scheme: String?) -> Bool {
+        scheme == extensionScheme || scheme == "webkit-extension"
+    }
+
+    /// Custom base-URL schemes must be registered before any match pattern is used.
+    private static let registerScheme: Void = {
+        WKWebExtension.MatchPattern.registerCustomURLScheme(extensionScheme)
+    }()
+
     // MARK: - Discovery & loading
 
     func start() {
+        _ = Self.registerScheme
         Task { @MainActor in
             // The app folder scan runs off the main thread.
             self.installed = await Task.detached(priority: .utility) { Self.discover() }.value
@@ -171,6 +185,12 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         let context = WKWebExtensionContext(for: ext)
         // Stable ID per extension: extension storage (vault, settings) is tied to this ID.
         context.uniqueIdentifier = stableIdentifier(for: item.bundleID)
+        // Use Safari's scheme instead of WebKit's default `webkit-extension://`. Safari extensions
+        // check it: Bitwarden's inline menu only loads its button/list iframes from
+        // chrome-extension:, moz-extension:, or safari-web-extension: URLs.
+        if let base = URL(string: "\(Self.extensionScheme)://\(context.uniqueIdentifier.lowercased())/") {
+            context.baseURL = base
+        }
         // Permissions were approved when the user enabled the extension.
         for permission in ext.requestedPermissions {
             context.setPermissionStatus(.grantedExplicitly, for: permission)
@@ -226,7 +246,7 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// Extension pages (e.g. Bitwarden's passkey confirmation window) only load with that extension's
     /// WebView configuration; with a normal tab configuration the page is blank.
     func webViewConfiguration(for url: URL?) -> WKWebViewConfiguration? {
-        guard let url, url.scheme == "webkit-extension" else { return nil }
+        guard let url, Self.isExtensionScheme(url.scheme) else { return nil }
         return controller.extensionContext(for: url)?.webViewConfiguration
     }
 

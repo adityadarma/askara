@@ -135,9 +135,17 @@ final class SuggestionRowView: NSView {
     required init?(coder: NSCoder) { fatalError("not used") }
 
     var titleWidthForTesting: CGFloat { titleLabel.frame.width }
-    var titleTextWidthForTesting: CGFloat {
-        ceil((titleLabel.stringValue as NSString).size(
-            withAttributes: [.font: titleLabel.font ?? NSFont.systemFont(ofSize: 13)]).width)
+    /// Width the title needs to draw without truncating, padding included.
+    var titleTextWidthForTesting: CGFloat { ceil(Self.fittingWidth(of: titleLabel)) }
+
+    private static func fittingWidth(of label: NSTextField) -> CGFloat {
+        let unbounded = NSRect(x: 0, y: 0, width: CGFloat.greatestFiniteMagnitude, height: 1000)
+        if let cell = label.cell {
+            // A fresh cell measures the current string only, never the field's previous frame.
+            return cell.cellSize(forBounds: unbounded).width
+        }
+        let font = label.font ?? NSFont.systemFont(ofSize: 13)
+        return (label.stringValue as NSString).size(withAttributes: [.font: font]).width + 4
     }
 
     func configure(_ suggestion: AddressSuggestion) {
@@ -168,8 +176,9 @@ final class SuggestionRowView: NSView {
         let titleHeight = titleLabel.intrinsicContentSize.height
         // A truncating NSTextField can report its previous frame as its intrinsic width. Measure
         // the actual string so short titles never become "S…" or "Goo…" after row reuse.
-        let measuredTitle = ceil((titleLabel.stringValue as NSString).size(
-            withAttributes: [.font: titleLabel.font ?? NSFont.systemFont(ofSize: 13)]).width) + 3
+        // The cell size includes the cell's internal padding; the raw string width alone is a few
+        // points short, which truncated very short titles.
+        let measuredTitle = ceil(Self.fittingWidth(of: titleLabel))
         let maximumTitle = addressLabel.stringValue.isEmpty ? available : min(420, max(100, available * 0.5))
         let titleWidth = min(measuredTitle, maximumTitle)
         titleLabel.frame = NSRect(x: x, y: (h - titleHeight) / 2, width: titleWidth, height: titleHeight)

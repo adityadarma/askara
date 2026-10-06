@@ -10,8 +10,8 @@ Status: selesai dan terverifikasi.
   dan fitur browser lain tetap memakai implementasi WebKit yang sudah ada.
 - `Tab` menyimpan `WKWebView` langsung; wrapper, adapter file, dan factory closure internal dihapus.
 - Safari Web Extension tetap didukung agar password manager eksternal dapat dipasang oleh pengguna.
-- Askara memiliki vault password lokal per profil di macOS Keychain, dengan Save, Fill, dan Manage
-  eksplisit untuk origin HTTPS yang sama. Vault tidak aktif di jendela privat dan tidak disinkronkan.
+- Askara tidak memiliki vault password bawaan. Password dikelola Bitwarden (Safari Web Extension)
+  bila terpasang dan diaktifkan; tanpa Bitwarden, browser tetap berjalan normal.
 - Riwayat download selesai/gagal/dibatalkan disimpan lintas peluncuran, termasuk hasil scan lokal.
 - Notifikasi lokal macOS tersedia untuk download selesai dan gagal setelah pengguna memberi izin.
 - History, Bookmarks, dan Downloads memiliki jendela independen. Downloads memakai daftar visual

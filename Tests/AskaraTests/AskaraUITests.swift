@@ -7,6 +7,35 @@ import AskaraCore
 
 @Suite("AppKit UI components", .serialized)
 struct AskaraUITests {
+    @Test("Responsible footprint includes the process itself")
+    func responsibleFootprintIncludesSelf() throws {
+        let own = try #require(ProcessMemory.footprint(pid: getpid()))
+        let total = try #require(ProcessMemory.responsibleFootprint(of: getpid()))
+        #expect(total >= own)
+        let processes = try #require(ProcessMemory.responsibleProcesses(of: getpid()))
+        #expect(processes.contains { $0.pid == getpid() })
+        #expect(processes == processes.sorted { $0.bytes > $1.bytes })
+    }
+
+    @Test("WebKit helper processes get readable names")
+    func helperProcessNames() {
+        #expect(ProcessMemory.displayName(for: "com.apple.WebKit.GPU") != "com.apple.WebKit.GPU")
+        #expect(ProcessMemory.displayName(for: "com.apple.WebKit.Networking") != "com.apple.WebKit.Networking")
+        #expect(ProcessMemory.displayName(for: "SomethingElse") == "SomethingElse")
+    }
+
+    @Test("Other processes popover lists what it is given")
+    @MainActor
+    func otherProcessesPopover() {
+        _ = NSApplication.shared
+        let list = OtherProcessesViewController()
+        _ = list.view
+        let items = [ProcessMemory.Usage(pid: 10, name: "com.apple.WebKit.GPU", bytes: 20_000_000),
+                     ProcessMemory.Usage(pid: 11, name: "com.apple.WebKit.WebContent", bytes: 300_000_000)]
+        list.update(items)
+        #expect(list.itemsForTesting == items)
+    }
+
     @Test("Loading bar exposes progress and never moves backwards")
     @MainActor
     func loadingBarProgress() {
@@ -98,6 +127,21 @@ struct AskaraUITests {
         row.layoutSubtreeIfNeeded()
 
         #expect(row.titleWidthForTesting >= row.titleTextWidthForTesting)
+        // The raw string width alone is too narrow: the cell adds padding on both sides.
+        let raw = ("SSO" as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 13)]).width
+        #expect(row.titleWidthForTesting >= ceil(raw) + 4)
+
+        // Reusing the row for a long title and back must not keep the old width.
+        row.configure(AddressSuggestion(kind: .history,
+                                        url: try #require(URL(string: "https://example.com/a")),
+                                        title: String(repeating: "Long title ", count: 20)))
+        row.layoutSubtreeIfNeeded()
+        row.configure(AddressSuggestion(kind: .history,
+                                        url: try #require(URL(string: "https://sso.example/login")),
+                                        title: "SSO"))
+        row.layoutSubtreeIfNeeded()
+        #expect(row.titleWidthForTesting >= ceil(raw) + 4)
+        #expect(row.titleWidthForTesting < 100)
     }
 
     @Test("Restore caps eager pinned tabs to the loaded-tab budget")
