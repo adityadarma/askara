@@ -174,16 +174,43 @@ final class ProfileData {
         historyChanged()
     }
 
-    /// Clears this profile's history, closed tabs, cookies, cache, and other website data.
-    func clearBrowsingData(completion: @escaping @MainActor () -> Void) {
-        history.clear()
-        recentlyClosed = RecentlyClosed(capacity: 25)
-        historyChanged()
-        saveHistory()
-        sessionCookies.delete()
-        FaviconStore.shared.removeAll()
-        dataStore.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast) {
-            MainActor.assumeIsolated { completion() }
+    private static let cacheDataTypes: Set<String> = [
+        WKWebsiteDataTypeDiskCache, WKWebsiteDataTypeMemoryCache,
+        WKWebsiteDataTypeFetchCache, WKWebsiteDataTypeOfflineWebApplicationCache,
+    ]
+
+    /// Clears the chosen kinds of data from `range` until now (or everything for `.allTime`).
+    /// Bookmarks and downloaded files are never touched.
+    func clearBrowsingData(range: ClearRange, kinds: BrowsingDataKinds, now: Date = Date(),
+                           completion: @escaping @MainActor () -> Void) {
+        let since = range.startDate(now: now)
+        if kinds.contains(.history) {
+            history.clear(since: since)
+            if let since {
+                let kept = recentlyClosed.items.filter { $0.closedAt < since }
+                var fresh = RecentlyClosed<RecentlyClosedEntry>(capacity: 25)
+                kept.forEach { fresh.push($0) }
+                recentlyClosed = fresh
+            } else {
+                recentlyClosed = RecentlyClosed(capacity: 25)
+                FaviconStore.shared.removeAll()
+            }
+            historyChanged()
+            saveHistory()
+        }
+        var types = Set<String>()
+        if kinds.contains(.cookiesAndSiteData) {
+            types.formUnion(WKWebsiteDataStore.allWebsiteDataTypes().subtracting(Self.cacheDataTypes))
+        }
+        if kinds.contains(.cache) { types.formUnion(Self.cacheDataTypes) }
+        if kinds.contains(.cookiesAndSiteData), since == nil { sessionCookies.delete() }
+        guard !types.isEmpty else { return completion() }
+        dataStore.removeData(ofTypes: types, modifiedSince: since ?? .distantPast) { [weak self] in
+            MainActor.assumeIsolated {
+                // A partial clear keeps some cookies: write the remaining session cookies again.
+                if kinds.contains(.cookiesAndSiteData), since != nil { self?.sessionCookies.save() }
+                completion()
+            }
         }
     }
 

@@ -162,6 +162,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         BrowserImporter.run(in: NSApp.keyWindow, profile: services.currentProfile)
     }
     @objc func showDownloadsAction(_ sender: Any?) { DownloadsWindowController.shared.show() }
+    @objc func clearBrowsingDataAction(_ sender: Any?) {
+        ClearDataDialog.present(for: services.currentProfile, in: NSApp.keyWindow)
+    }
     @objc func showTaskManagerAction(_ sender: Any?) { TaskManagerWindowController.shared.show() }
 
     @objc func exportCrashReportAction(_ sender: Any?) {
@@ -443,6 +446,8 @@ enum MainMenu {
             .separator(),
             item(String(localized: "Open This Page in Safari"), #selector(B.openInSafariAction(_:))),
             item(String(localized: "Print…"), #selector(B.printPageAction(_:)), "p"),
+            item(String(localized: "Save Page as PDF…"), #selector(B.savePageAsPDFAction(_:))),
+            item(String(localized: "Share…"), #selector(B.sharePageAction(_:))),
         ])
         // The Edit menu is required for copy/paste to work in the address bar and web pages.
         submenu(String(localized: "Edit"), [
@@ -470,6 +475,7 @@ enum MainMenu {
             .separator(),
             item(String(localized: "Show Bookmarks Bar"), #selector(B.toggleBookmarksBarAction(_:)), "b", [.command, .shift]),
             item(String(localized: "Take Full-Page Screenshot"), #selector(B.fullPageScreenshotAction(_:)), "s", [.command, .shift]),
+            item(String(localized: "Show Reader"), #selector(B.toggleReaderAction(_:)), "r", [.command, .shift]),
             .separator(),
             item(String(localized: "Zoom In"), #selector(B.zoomInAction(_:)), "+"),
             item(String(localized: "Zoom In"), #selector(B.zoomInAction(_:)), "="), // ⌘= without Shift
@@ -500,6 +506,8 @@ enum MainMenu {
             item(String(localized: "Forward"), #selector(B.forwardAction(_:)), "]"),
             item(String(localized: "Show All History"), #selector(A.showHistoryAction(_:)), "y"),
             item(String(localized: "Restore Previous Session"), #selector(A.restorePreviousSessionAction(_:))),
+            item(String(localized: "Clear Browsing Data…"), #selector(A.clearBrowsingDataAction(_:)), "\u{8}",
+                 [.command, .shift]),
             .separator(),
             {
                 let header = NSMenuItem(title: String(localized: "Recently Visited"), action: nil, keyEquivalent: "")

@@ -527,4 +527,60 @@ struct AskaraUITests {
         let message = try #require(try await waitForPasskeyMessage(probe))
         #expect(message["reason"] as? String == "frame")
     }
+
+    @Test("Reader extracts the article and skips navigation, comments, and scripts")
+    @MainActor
+    func readerExtractsArticle() async throws {
+        _ = NSApplication.shared
+        let paragraph = String(repeating: "This is a sentence of real article text. ", count: 4)
+        let html = """
+        <html><head><title>Big Story</title><meta name="author" content="Ada"></head><body>
+        <nav><ul><li>Home</li><li>About</li></ul></nav>
+        <article>
+          <h1>Big Story</h1>
+          <h2>First part</h2>
+          <p>\(paragraph)</p><p>\(paragraph)</p><p>\(paragraph)</p>
+          <ul><li>Point one</li></ul>
+          <pre>let x = 1\n  let y = 2</pre>
+          <div class="comments"><p>\(paragraph) SPAM COMMENT</p></div>
+          <script>var leaked = 'SCRIPT BODY TEXT'</script>
+        </article>
+        <footer><p>\(paragraph) FOOTER</p></footer>
+        </body></html>
+        """
+        let web = WKWebView(frame: NSRect(x: 0, y: 0, width: 600, height: 400))
+        web.loadHTMLString(html, baseURL: URL(string: "https://news.example/story"))
+        for _ in 0..<100 where web.isLoading || web.url == nil { try await Task.sleep(for: .milliseconds(50)) }
+
+        let payload = try await web.evaluateJavaScript(ReaderMode.extractionScript, in: nil, contentWorld: .defaultClient)
+        let article = try #require(ReaderArticle(payload: payload))
+        #expect(article.isReadable)
+        #expect(article.title == "Big Story")
+        #expect(article.byline == "Ada")
+        let text = article.blocks.map { block -> String in
+            switch block {
+            case let .paragraph(t), let .listItem(t), let .quote(t), let .code(t), let .heading(_, t): return t
+            case let .image(_, alt): return alt
+            }
+        }.joined(separator: "\n")
+        #expect(text.contains("real article text"))
+        #expect(text.contains("Point one"))
+        #expect(text.contains("let y = 2"))
+        #expect(!text.contains("SPAM COMMENT"))
+        #expect(!text.contains("FOOTER"))
+        #expect(!text.contains("Home"))
+        #expect(!text.contains("SCRIPT BODY TEXT"))
+    }
+
+    @Test("Reader reports a page without article text as not readable")
+    @MainActor
+    func readerRejectsThinPage() async throws {
+        _ = NSApplication.shared
+        let web = WKWebView(frame: NSRect(x: 0, y: 0, width: 600, height: 400))
+        web.loadHTMLString("<html><body><h1>Login</h1><form><input></form><p>Short.</p></body></html>",
+                           baseURL: URL(string: "https://app.example/"))
+        for _ in 0..<100 where web.isLoading || web.url == nil { try await Task.sleep(for: .milliseconds(50)) }
+        let payload = try await web.evaluateJavaScript(ReaderMode.extractionScript, in: nil, contentWorld: .defaultClient)
+        if let article = ReaderArticle(payload: payload) { #expect(!article.isReadable) }
+    }
 }

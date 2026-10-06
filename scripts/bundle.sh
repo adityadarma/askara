@@ -42,6 +42,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundleAllowMixedLocalizations</key><true/>
     <key>LSMinimumSystemVersion</key><string>15.4</string>
     <key>NSHighResolutionCapable</key><true/>
+    <key>NSUserActivityTypes</key><array><string>NSUserActivityTypeBrowsingWeb</string></array>
     <key>NSAppTransportSecurity</key>
     <dict>
         <key>NSAllowsArbitraryLoadsInWebContent</key><true/>

@@ -33,6 +33,9 @@ public struct BrowserPreferences: Codable, Equatable, Sendable {
     public var confirmsQuit = true
     /// On launch, bring back the windows and tabs from last time instead of opening a new tab.
     public var restoresSession = false
+    /// Offer the page in the active normal window to the user's other Apple devices (Handoff).
+    /// Never used in private windows.
+    public var handoffEnabled = true
     /// Memory Saver exceptions: tabs of these sites (and subdomains) never sleep.
     public private(set) var keepAwakeSites: [String] = []
     /// Bookmarks bar under the toolbar (View > Show Bookmarks Bar, ⇧⌘B).
@@ -50,7 +53,7 @@ public struct BrowserPreferences: Codable, Equatable, Sendable {
         case searchEngineID, homePage, sleepAfterMinutes, maxLoadedTabs, httpsOnly, keepAwakeSites, showsBookmarksBar,
              syncEnabled
         case syncFolderPath, syncFolderBookmark, dozeAfterMinutes, memoryBudgetPercent, protectedTabs
-        case stripsTrackingParameters, confirmsQuit, restoresSession
+        case stripsTrackingParameters, confirmsQuit, restoresSession, handoffEnabled
     }
 
     public init(from decoder: Decoder) throws {
@@ -68,6 +71,7 @@ public struct BrowserPreferences: Codable, Equatable, Sendable {
             ?? d.stripsTrackingParameters
         confirmsQuit = try c.decodeIfPresent(Bool.self, forKey: .confirmsQuit) ?? d.confirmsQuit
         restoresSession = try c.decodeIfPresent(Bool.self, forKey: .restoresSession) ?? d.restoresSession
+        handoffEnabled = try c.decodeIfPresent(Bool.self, forKey: .handoffEnabled) ?? d.handoffEnabled
         keepAwakeSites = try c.decodeIfPresent([String].self, forKey: .keepAwakeSites) ?? d.keepAwakeSites
         showsBookmarksBar = try c.decodeIfPresent(Bool.self, forKey: .showsBookmarksBar) ?? d.showsBookmarksBar
         syncEnabled = try c.decodeIfPresent(Bool.self, forKey: .syncEnabled) ?? d.syncEnabled

@@ -48,6 +48,10 @@ final class Tab: NSObject {
     var sleepSnapshot: Data?
     /// HTTPS-Only Mode: the original http:// URL while its https:// upgrade is loading.
     var httpFallbackURL: URL?
+    /// Reader mode: the page this Reader view was made from. nil = the tab shows a normal page.
+    var readerOriginalURL: URL?
+    /// Set just before the Reader HTML loads, so that load isn't mistaken for leaving Reader.
+    var readerPending = false
     /// One safe retry for transient WebKit network-process failures. POST/form loads are excluded.
     var retriableNavigationURL: URL?
     var transientRetryCount = 0
@@ -294,6 +298,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     private let toolbar = FillView()
     private let addressField = AddressField()
     private let addressBar = AddressBarView()
+    /// Kept while the share menu is open.
+    private var sharePicker: NSSharingServicePicker?
     /// Created on first keystroke in the address bar.
     private lazy var suggestions: AddressSuggestionsController = {
         let controller = AddressSuggestionsController()
@@ -309,6 +315,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     private let reloadButton = NSButton()
     private let homeButton = NSButton()
     private let bookmarkButton = NSButton()
+    private let shareButton = NSButton()
     /// Magnifier with the page zoom ("125%"), shown in the address bar while the zoom isn't 100%.
     private let zoomButton = NSButton()
     private let privacyButton = NSButton()
@@ -416,6 +423,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         configure(homeButton, symbol: "house.fill", label: String(localized: "Home"), action: #selector(homeAction(_:)))
         configure(bookmarkButton, symbol: "star", label: String(localized: "Add bookmark (⌘D)"),
                   action: #selector(toggleBookmarkAction(_:)))
+        configure(shareButton, symbol: "square.and.arrow.up", label: String(localized: "Share…"),
+                  action: #selector(sharePageAction(_:)))
         configure(privacyButton, symbol: "shield.lefthalf.filled", label: String(localized: "Privacy Dashboard"),
                   action: #selector(showPrivacyDashboard(_:)))
         configure(pictureInPictureButton, symbol: "pip", label: String(localized: "Picture in Picture"),
@@ -438,6 +447,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
             (reloadButton, "askara.navigation.reload"),
             (homeButton, "askara.navigation.home"),
             (bookmarkButton, "askara.bookmark.toggle"),
+            (shareButton, "askara.share"),
             (privacyButton, "askara.privacy"),
             (pictureInPictureButton, "askara.picture-in-picture"),
             (extensionsButton, "askara.extensions"),
@@ -488,7 +498,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         zoomButton.heightAnchor.constraint(equalToConstant: 28).isActive = true
         zoomButton.setAccessibilityIdentifier("askara.zoom")
         zoomButton.isHidden = true
-        let addressActions = NSStackView(views: [zoomButton, pictureInPictureButton, bookmarkButton])
+        let addressActions = NSStackView(views: [zoomButton, pictureInPictureButton, shareButton, bookmarkButton])
         addressActions.orientation = .horizontal
         addressActions.spacing = 2
         addressActions.translatesAutoresizingMaskIntoConstraints = false
@@ -497,6 +507,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         addressBar.addSubview(addressField)
         addressBar.addSubview(addressActions)
         pictureInPictureButton.isHidden = true
+        shareButton.isHidden = true
         let withPrivacy = addressField.leadingAnchor.constraint(equalTo: privacySeparator.trailingAnchor, constant: 7)
         let atEdge = addressField.leadingAnchor.constraint(equalTo: addressBar.leadingAnchor, constant: 10)
         addressLeadingWithPrivacy = withPrivacy
@@ -630,6 +641,29 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     @objc private func preferencesChanged() {
         refreshTabStrip()
         updateBookmarkBarVisibility()
+        updateHandoff()
+    }
+
+    /// Handoff: offers the active page to the user's other Apple devices. Never from private windows, and
+    /// only when the setting is on. The address has tracking parameters removed like a copied one.
+    private func updateHandoff() {
+        guard let window else { return }
+        guard !isPrivate, services.preferences.handoffEnabled, let url = shareablePageURL,
+              ["http", "https"].contains(url.scheme?.lowercased() ?? "") else {
+            window.userActivity?.invalidate()
+            window.userActivity = nil
+            return
+        }
+        if let current = window.userActivity, current.webpageURL == url {
+            current.title = activeTab?.title
+            return
+        }
+        window.userActivity?.invalidate()
+        let activity = NSUserActivity(activityType: NSUserActivityTypeBrowsingWeb)
+        activity.webpageURL = url
+        activity.title = activeTab?.title
+        activity.isEligibleForHandoff = true
+        window.userActivity = activity
     }
 
     /// Shown only when turned on and there's something on it. Private windows never show it
@@ -696,6 +730,10 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         pictureInPictureButton.isHidden = tab?.pictureInPictureEligible != true
         pictureInPictureButton.contentTintColor = tab?.isPictureInPicture == true ? .controlAccentColor : .secondaryLabelColor
         updateBookmarkButton()
+        // Only pages that can be shared (web addresses) get the button, like the privacy icon.
+        shareButton.isHidden = !["http", "https"].contains(shareablePageURL?.scheme?.lowercased() ?? "")
+            || addressText(for: tab).isEmpty
+        updateHandoff()
     }
 
     private func updateBookmarkButton() {
@@ -768,6 +806,10 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         add(String(localized: "Zoom Out"), "minus.magnifyingglass", #selector(zoomOutAction(_:)), key: "-")
         add(String(localized: "Actual Size"), "1.magnifyingglass", #selector(zoomResetAction(_:)), key: "0")
         add(String(localized: "Print…"), "printer", #selector(printPageAction(_:)), key: "p")
+        add(String(localized: "Save Page as PDF…"), "doc.richtext", #selector(savePageAsPDFAction(_:)))
+        add(String(localized: "Share…"), "square.and.arrow.up", #selector(sharePageAction(_:)))
+        add(activeTab?.readerOriginalURL != nil ? String(localized: "Hide Reader") : String(localized: "Show Reader"),
+            "doc.plaintext", #selector(toggleReaderAction(_:)), key: "R")
         menu.addItem(.separator())
         add(String(localized: "Task Manager"), "gauge.with.dots.needle.67percent", #selector(AppDelegate.showTaskManagerAction(_:)), target: app)
         add(String(localized: "Settings…"), "gearshape", #selector(AppDelegate.showSettingsAction(_:)), target: app, key: ",")
@@ -1532,6 +1574,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     /// The active tab's page has rendered (or failed): reveal it.
     private func pageSettled(_ webView: WKWebView) {
         if webView === activeTab?.webView { hideSleepSnapshot(animated: true) }
+        tabs.first(where: { $0.webView === webView })?.readerPending = false
     }
 
     private func dropWebView(of tab: Tab) {
@@ -1539,6 +1582,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         if let url = webView.url { tab.url = url }
         // Keep back/forward history and scroll position so the tab feels intact when woken.
         if let web = tab.webView { tab.interactionState = web.interactionState }
+        tab.readerOriginalURL = nil
+        tab.readerPending = false
         tab.webView = nil
         webView.stopLoading()
         webView.navigationDelegate = nil
@@ -1904,6 +1949,44 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     private var shareablePageURL: URL? {
         guard let url = activeTab?.displayURL ?? activeTab?.url else { return nil }
         return services.preferences.stripsTrackingParameters ? URLCleaner.clean(url) : url
+    }
+
+    /// File > Share…: AirDrop, Messages, Mail, Notes, and other share extensions.
+    @objc func sharePageAction(_ sender: Any?) {
+        guard let url = shareablePageURL, ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { return }
+        let picker = NSSharingServicePicker(items: [url])
+        sharePicker = picker
+        // Opens under the Share button; from the menu bar or the main menu, which have no button of their
+        // own, it still opens there (or under the main menu button while the address bar is empty).
+        let anchor: NSView = shareButton.isHiddenOrHasHiddenAncestor ? moreButton : shareButton
+        picker.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .minY)
+    }
+
+    /// View > Show Reader (⇧⌘R): the article text without menus, ads, and sidebars. Shown in the same tab;
+    /// Back or Hide Reader returns to the page.
+    @objc func toggleReaderAction(_ sender: Any?) {
+        guard let tab = activeTab, let web = tab.webView else { return }
+        if let original = tab.readerOriginalURL {
+            tab.readerOriginalURL = nil
+            web.load(URLRequest(url: original))
+            return
+        }
+        guard let url = web.url, ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { return }
+        web.evaluateJavaScript(ReaderMode.extractionScript, in: nil, in: .defaultClient) { [weak self, weak web, weak tab] result in
+            MainActor.assumeIsolated {
+                guard let self, let web, let tab, tab.webView === web, web.url == url else { return }
+                guard case .success(let payload) = result, let article = ReaderArticle(payload: payload),
+                      article.isReadable else {
+                    return self.showToast(String(localized: "Reader isn't available for this page"), duration: 2.5)
+                }
+                let html = ReaderDocument.html(for: article,
+                                               minutesLabel: String(localized: "\(article.readingMinutes) min read"))
+                tab.readerOriginalURL = url
+                tab.readerPending = true
+                // The original address stays as the base, so the address bar and Hide Reader still point at it.
+                web.loadHTMLString(html, baseURL: url)
+            }
+        }
     }
 
     /// ⌃⇧⌘C: `[Title](URL)`, for notes and chats.
@@ -2431,6 +2514,14 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
             return !isPrivate
         case #selector(fullPageScreenshotAction(_:)):
             return activeTab?.webView?.url != nil
+        case #selector(toggleReaderAction(_:)):
+            let inReader = activeTab?.readerOriginalURL != nil
+            item.title = inReader ? String(localized: "Hide Reader") : String(localized: "Show Reader")
+            return inReader || ["http", "https"].contains(content?.url?.scheme ?? "")
+        case #selector(sharePageAction(_:)):
+            return ["http", "https"].contains(shareablePageURL?.scheme?.lowercased() ?? "")
+        case #selector(savePageAsPDFAction(_:)):
+            return ["http", "https"].contains(content?.url?.scheme ?? "")
         case #selector(toggleBookmarkAction(_:)):
             guard let url = activeTab?.url else { return false }
             item.title = profile.bookmarks.contains(url) ? String(localized: "Remove Bookmark") : String(localized: "Add Bookmark")
@@ -2524,6 +2615,11 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
                 tab.transientRetryCount = 0
             }
         }
+        // The Reader page is built by Askara from the page it replaces: load it unchanged.
+        if action.targetFrame?.isMainFrame ?? true, tabs.first(where: { $0.webView === webView })?.readerPending == true {
+            decisionHandler(.allow, preferences)
+            return
+        }
         // Tracking parameters (utm_*, fbclid, ...) are removed before the page loads. Only plain GET page
         // loads, and never back/forward (that would rewrite history entries).
         if services.preferences.stripsTrackingParameters, action.targetFrame?.isMainFrame ?? true,
@@ -2611,6 +2707,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         tab.zoomHost = url.host
         if tab.hidesHomeAddress, tab.homeLandingURL == nil { tab.homeLandingURL = url }
         tab.httpFallbackURL = nil
+        // The Reader load itself is expected; any other commit means the tab left Reader.
+        if tab.readerPending { tab.readerPending = false } else { tab.readerOriginalURL = nil }
         // New page: the old page's form input and frame-level media state are gone.
         tab.dirtyFrames.removeAll()
         tab.pictureInPictureFrames.removeAll()
@@ -2633,9 +2731,11 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
                 MainActor.assumeIsolated { if let tab { self?.refocusAddressBarIfNeeded(tab) } }
             }
         }
-        if !isPrivate, let url = webView.url { profile.recordVisit(url: url, title: webView.title) }
         if let tab = tabs.first(where: { $0.webView === webView }) {
             tab.transientRetryCount = 0
+        }
+        if !isPrivate, let url = webView.url, tabs.first(where: { $0.webView === webView })?.readerOriginalURL == nil {
+            profile.recordVisit(url: url, title: webView.title)
         }
         sessionChanged(immediate: false)
         loadFavicon(for: webView)

@@ -322,18 +322,7 @@ final class LibraryWindowController: NSWindowController, NSTableViewDataSource, 
     }
 
     private func confirmClearBrowsingData() {
-        guard let window else { return }
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        alert.messageText = String(localized: "Clear all browsing data?")
-        alert.informativeText = String(localized: "History, cookies, cache, and website data will be removed. You will be signed out of all websites. Bookmarks and downloaded files are not removed. This can’t be undone.")
-        alert.addButton(withTitle: String(localized: "Clear"))
-        alert.addButton(withTitle: String(localized: "Cancel"))
-        alert.buttons.first?.hasDestructiveAction = true
-        alert.beginSheetModal(for: window) { [weak self] response in
-            guard response == .alertFirstButtonReturn else { return }
-            self?.profile.clearBrowsingData {}
-        }
+        ClearDataDialog.present(for: profile, in: window)
     }
 
     func validateMenuItem(_ item: NSMenuItem) -> Bool {

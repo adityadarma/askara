@@ -22,6 +22,12 @@ enum RecentlyClosedEntry {
         case .tab(let id, _, _), .window(let id, _, _): id
         }
     }
+
+    var closedAt: Date {
+        switch self {
+        case .tab(_, let date, _), .window(_, let date, _): date
+        }
+    }
 }
 
 /// App-wide shared state: profiles, settings, downloads, ad blocker, and the window list.

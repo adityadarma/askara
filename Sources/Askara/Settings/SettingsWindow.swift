@@ -32,6 +32,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
                                         target: nil, action: nil)
     private let stripTrackingBox = NSButton(checkboxWithTitle: String(localized: "Remove tracking parameters from links"),
                                             target: nil, action: nil)
+    private let handoffBox = NSButton(checkboxWithTitle: String(localized: "Allow Handoff to my other Apple devices"),
+                                       target: nil, action: nil)
     private let restoreBox = NSButton(checkboxWithTitle: String(localized: "Continue where I left off on startup"),
                                       target: nil, action: nil)
     private let confirmQuitBox = NSButton(checkboxWithTitle: String(localized: "Ask before quitting with several tabs open"),
@@ -281,11 +283,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     private func privacyPage() -> NSView {
         httpsOnlyBox.target = self
         httpsOnlyBox.action = #selector(httpsOnlyChanged(_:))
+        handoffBox.target = self
+        handoffBox.action = #selector(handoffChanged(_:))
         stripTrackingBox.target = self
         stripTrackingBox.action = #selector(stripTrackingChanged(_:))
         return stack([
             httpsOnlyBox,
             note(String(localized: "Upgrades http:// addresses to https://. If a site doesn't support HTTPS, Askara asks before loading it. Local addresses (localhost, 192.168.x.x, .local) are left alone.")),
+            handoffBox,
+            note(String(localized: "Lets your iPhone, iPad, or another Mac continue the page you are viewing. Only the address and title are shared, through Apple's Handoff. Private windows never use it.")),
             stripTrackingBox,
             note(String(localized: "Removes parameters like utm_source, fbclid, and gclid that only exist to track where you came from, before the page loads and when you copy an address.")),
         ])
@@ -444,6 +450,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         protectedLabel.stringValue = Self.countText(prefs.protectedTabs)
         httpsOnlyBox.state = prefs.httpsOnly ? .on : .off
         stripTrackingBox.state = prefs.stripsTrackingParameters ? .on : .off
+        handoffBox.state = prefs.handoffEnabled ? .on : .off
         confirmQuitBox.state = prefs.confirmsQuit ? .on : .off
         restoreBox.state = prefs.restoresSession ? .on : .off
         let permissions = services.currentProfile.permissions
@@ -507,6 +514,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         let count = sender.integerValue
         maxTabsLabel.stringValue = Self.countText(count)
         services.updatePreferences { $0.maxLoadedTabs = count }
+    }
+
+    @objc private func handoffChanged(_ sender: NSButton) {
+        let on = sender.state == .on
+        services.updatePreferences { $0.handoffEnabled = on }
     }
 
     @objc private func stripTrackingChanged(_ sender: NSButton) {
