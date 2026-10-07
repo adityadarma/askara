@@ -8,8 +8,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version without the leading v (for example 0.2.0)"
+        description: "Version, for example v1.2.3 (the leading v is optional)"
         required: true
+        type: string
 
 permissions:
   contents: write
@@ -25,14 +26,13 @@ jobs:
         env:
           INPUT_VERSION: ${{ inputs.version }}
         run: |
-          if [[ -n "$INPUT_VERSION" ]]; then
-            VERSION="$INPUT_VERSION"
-          else
-            VERSION="${GITHUB_REF_NAME#v}"
-          fi
-          # Expect tags like v1.2.3; a tag such as v.1.0.0 would produce an invalid ".1.0.0".
+          # Tag push: GITHUB_REF_NAME is the tag. Manual run: the "version" input.
+          RAW="${INPUT_VERSION:-$GITHUB_REF_NAME}"
+          RAW="${RAW//[[:space:]]/}"
+          VERSION="${RAW#v}"
+          # Only vX.Y.Z (or X.Y.Z for manual runs) is accepted; v.1.0.0 would become ".1.0.0".
           if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::Invalid version '$VERSION'. Use a tag like v1.2.3."
+            echo "::error::Invalid version '$RAW'. Use the format vX.Y.Z, for example v1.2.3."
             exit 1
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
