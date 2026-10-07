@@ -4,3 +4,7 @@ build/
 .opencode
 graphify-out
 AGENTS.md
+
+# Sparkle EdDSA private key (store it in the SPARKLE_PRIVATE_KEY secret instead)
+sparkle_private.key
+*.key

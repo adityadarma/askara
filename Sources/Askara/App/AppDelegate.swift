@@ -20,6 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         services.openProfile(services.profileList.lastUsedID, atLaunch: true)
         watchMemoryPressure()
         services.startHibernationTimer()
+        AppUpdater.shared.start()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -408,6 +409,11 @@ enum MainMenu {
         blockStatus.tag = blockStatusTag
         let appMenu = submenu("Askara", [
             item(String(localized: "About Askara"), #selector(NSApplication.orderFrontStandardAboutPanel(_:))),
+            {
+                let i = item(String(localized: "Check for Updates…"), #selector(AppUpdater.checkForUpdates(_:)))
+                i.target = AppUpdater.shared
+                return i
+            }(),
             .separator(),
             item(String(localized: "Settings…"), #selector(A.showSettingsAction(_:)), ","),
             .separator(),
