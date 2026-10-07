@@ -1,56 +1,70 @@
 import AppKit
+import UniformTypeIdentifiers
 
+/// One download: large file icon, name, then either a progress bar (running) or a single
+/// muted detail line (size · source · date). The action button sits centered on the right.
 private final class DownloadRowView: NSTableCellView {
     let fileIcon = NSImageView()
     let titleLabel = NSTextField(labelWithString: "")
-    let sourceLabel = NSTextField(labelWithString: "")
+    /// Scan warning or failure, colored. Hidden when there is nothing worth flagging.
     let statusLabel = NSTextField(labelWithString: "")
-    let dateLabel = NSTextField(labelWithString: "")
+    /// Size, source host, and date in one line, so columns can't drift out of alignment.
+    let detailLabel = NSTextField(labelWithString: "")
     let progress = NSProgressIndicator()
     let actionButton = NSButton()
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         fileIcon.imageScaling = .scaleProportionallyUpOrDown
-        fileIcon.translatesAutoresizingMaskIntoConstraints = false
-        titleLabel.font = .systemFont(ofSize: 11, weight: .medium)
+        titleLabel.font = .systemFont(ofSize: 13, weight: .medium)
         titleLabel.lineBreakMode = .byTruncatingMiddle
-        sourceLabel.font = .systemFont(ofSize: 9)
-        sourceLabel.textColor = .tertiaryLabelColor
-        sourceLabel.lineBreakMode = .byTruncatingMiddle
-        statusLabel.font = .systemFont(ofSize: 9)
-        dateLabel.font = .systemFont(ofSize: 9)
-        dateLabel.textColor = .tertiaryLabelColor
+        titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        statusLabel.font = .systemFont(ofSize: 11, weight: .medium)
+        statusLabel.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
+        detailLabel.font = .systemFont(ofSize: 11)
+        detailLabel.textColor = .secondaryLabelColor
+        detailLabel.lineBreakMode = .byTruncatingMiddle
+        detailLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        progress.style = .bar
         progress.controlSize = .small
         progress.minValue = 0
         progress.maxValue = 1
-        progress.translatesAutoresizingMaskIntoConstraints = false
-        actionButton.bezelStyle = .accessoryBarAction
-        actionButton.controlSize = .small
-        actionButton.translatesAutoresizingMaskIntoConstraints = false
+        // Borderless symbol button: lighter than a bezel on every row.
+        actionButton.isBordered = false
+        actionButton.imagePosition = .imageOnly
+        actionButton.symbolConfiguration = .init(pointSize: 15, weight: .regular)
+        actionButton.contentTintColor = .secondaryLabelColor
+        actionButton.setContentHuggingPriority(.required, for: .horizontal)
 
-        let titleLine = NSStackView(views: [titleLabel, NSView(), actionButton])
-        titleLine.spacing = 8
-        let statusLine = NSStackView(views: [sourceLabel, statusLabel, NSView(), dateLabel])
-        statusLine.spacing = 6
-        statusLine.distribution = .fillProportionally
-        let details = NSStackView(views: [titleLine, statusLine, progress])
-        details.orientation = .vertical
-        details.spacing = 0
-        details.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(fileIcon)
-        addSubview(details)
+        let detailLine = NSStackView(views: [statusLabel, detailLabel])
+        detailLine.spacing = 6
+        let text = NSStackView(views: [titleLabel, progress, detailLine])
+        text.orientation = .vertical
+        text.alignment = .leading
+        text.spacing = 3
+        text.setHuggingPriority(.defaultLow, for: .horizontal)
+        for view in [fileIcon, text, actionButton] as [NSView] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(view)
+        }
         NSLayoutConstraint.activate([
-            fileIcon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            fileIcon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 6),
             fileIcon.centerYAnchor.constraint(equalTo: centerYAnchor),
-            fileIcon.widthAnchor.constraint(equalToConstant: 18),
-            fileIcon.heightAnchor.constraint(equalToConstant: 18),
-            details.leadingAnchor.constraint(equalTo: fileIcon.trailingAnchor, constant: 8),
-            details.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
-            details.centerYAnchor.constraint(equalTo: centerYAnchor),
-            progress.heightAnchor.constraint(equalToConstant: 2),
-            actionButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 22),
+            fileIcon.widthAnchor.constraint(equalToConstant: 32),
+            fileIcon.heightAnchor.constraint(equalToConstant: 32),
+            text.leadingAnchor.constraint(equalTo: fileIcon.trailingAnchor, constant: 10),
+            text.centerYAnchor.constraint(equalTo: centerYAnchor),
+            text.trailingAnchor.constraint(lessThanOrEqualTo: actionButton.leadingAnchor, constant: -12),
+            progress.widthAnchor.constraint(equalTo: text.widthAnchor),
+            actionButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            actionButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+            actionButton.widthAnchor.constraint(equalToConstant: 24),
+            actionButton.heightAnchor.constraint(equalToConstant: 24),
         ])
+        // The text column takes all free width so the progress bar spans the row.
+        let fill = text.trailingAnchor.constraint(equalTo: actionButton.leadingAnchor, constant: -12)
+        fill.priority = .defaultHigh
+        fill.isActive = true
     }
 
     @available(*, unavailable)
@@ -111,7 +125,7 @@ final class DownloadsWindowController: NSWindowController, NSTableViewDataSource
         searchField.delegate = self
         searchField.target = self
         searchField.action = #selector(searchChanged(_:))
-        searchField.widthAnchor.constraint(equalToConstant: 280).isActive = true
+        searchField.widthAnchor.constraint(equalToConstant: 220).isActive = true
         searchField.setContentCompressionResistancePriority(.required, for: .horizontal)
         let header = NSStackView(views: [heading, summaryLabel, NSView(), searchField])
         header.alignment = .centerY
@@ -121,8 +135,9 @@ final class DownloadsWindowController: NSWindowController, NSTableViewDataSource
         column.resizingMask = .autoresizingMask
         table.addTableColumn(column)
         table.headerView = nil
-        table.rowHeight = 30
-        table.intercellSpacing = NSSize(width: 0, height: 1)
+        // Room for a 32 pt icon and two text lines with breathing space.
+        table.rowHeight = 50
+        table.intercellSpacing = NSSize(width: 0, height: 2)
         table.dataSource = self
         table.delegate = self
         table.allowsMultipleSelection = true
@@ -152,6 +167,7 @@ final class DownloadsWindowController: NSWindowController, NSTableViewDataSource
         clearButton.target = self
         clearButton.action = #selector(clearList(_:))
         clearButton.bezelStyle = .rounded
+        clearButton.controlSize = .small
         let footer = NSStackView(views: [NSView(), clearButton])
         emptyLabel.textColor = .secondaryLabelColor
         emptyLabel.font = .systemFont(ofSize: 14)
@@ -215,39 +231,84 @@ final class DownloadsWindowController: NSWindowController, NSTableViewDataSource
             return value
         }()
         let item = items[row]
-        if let path = item.destination?.path, FileManager.default.fileExists(atPath: path) {
-            cell.fileIcon.image = NSWorkspace.shared.icon(forFile: path)
-        } else {
-            cell.fileIcon.image = NSImage(systemSymbolName: "arrow.down.doc", accessibilityDescription: nil)
-        }
+        let exists = item.destination.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
+        cell.fileIcon.image = Self.icon(for: item, exists: exists)
+        // Missing files are dimmed, like Finder's "moved or deleted" look.
+        cell.fileIcon.alphaValue = exists || item.state == .running ? 1 : 0.45
         cell.titleLabel.stringValue = item.filename
-        cell.sourceLabel.stringValue = item.sourceURL?.host ?? item.sourceURL?.absoluteString ?? String(localized: "Unknown source")
-        let size = item.fileSize.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) }
-        cell.statusLabel.stringValue = [item.statusText, size].compactMap { $0 }.joined(separator: "  ·  ")
-        cell.statusLabel.textColor = item.risks.contains(where: \.isHighRisk) ? .systemOrange
-            : item.state == .running ? .controlAccentColor : .secondaryLabelColor
-        cell.dateLabel.stringValue = item.endedAt.map(dateFormatter.string(from:)) ?? ""
-        cell.toolTip = item.sourceURL?.absoluteString
+        cell.titleLabel.textColor = exists || item.state == .running ? .labelColor : .secondaryLabelColor
+
+        let row = Self.rowText(for: item, date: item.endedAt.map(dateFormatter.string(from:)))
+        cell.statusLabel.stringValue = row.status ?? ""
+        cell.statusLabel.textColor = row.statusColor
+        cell.statusLabel.isHidden = row.status == nil
+        cell.detailLabel.stringValue = row.detail
+        cell.toolTip = [item.sourceURL?.absoluteString, item.statusText].compactMap { $0 }.joined(separator: "\n")
+
         cell.progress.isHidden = item.state != .running
         cell.progress.isIndeterminate = item.fraction <= 0
         if cell.progress.isIndeterminate { cell.progress.startAnimation(nil) }
         else { cell.progress.stopAnimation(nil); cell.progress.doubleValue = item.fraction }
+
         cell.actionButton.identifier = .init(item.id.uuidString)
         cell.actionButton.target = self
         if item.state == .running {
-            cell.actionButton.title = ""
-            cell.actionButton.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: nil)
+            let label = String(localized: "Cancel Download")
+            cell.actionButton.image = NSImage(systemSymbolName: "xmark.circle.fill", accessibilityDescription: label)
+            cell.actionButton.toolTip = label
             cell.actionButton.action = #selector(rowCancel(_:))
             cell.actionButton.isHidden = false
-        } else if item.destination.map({ FileManager.default.fileExists(atPath: $0.path) }) == true {
-            cell.actionButton.title = ""
-            cell.actionButton.image = NSImage(systemSymbolName: "folder", accessibilityDescription: nil)
+        } else if exists {
+            let label = String(localized: "Show in Finder")
+            cell.actionButton.image = NSImage(systemSymbolName: "magnifyingglass.circle.fill", accessibilityDescription: label)
+            cell.actionButton.toolTip = label
             cell.actionButton.action = #selector(rowReveal(_:))
             cell.actionButton.isHidden = false
         } else {
             cell.actionButton.isHidden = true
         }
         return cell
+    }
+
+    /// Real Finder icon when the file exists, otherwise the generic icon for its type, so missing
+    /// and in-progress files still look like what they are.
+    private static func icon(for item: DownloadManager.Item, exists: Bool) -> NSImage {
+        if exists, let path = item.destination?.path { return NSWorkspace.shared.icon(forFile: path) }
+        let ext = (item.filename as NSString).pathExtension
+        return NSWorkspace.shared.icon(for: UTType(filenameExtension: ext) ?? .data)
+    }
+
+    /// Text under the file name. Status is shown only when it says something the user should notice:
+    /// archives and disk images are common, so their low-risk scan note stays in the tooltip.
+    static func rowText(for item: DownloadManager.Item, date: String?)
+        -> (status: String?, statusColor: NSColor, detail: String) {
+        let host = item.sourceURL?.host ?? item.sourceURL?.absoluteString
+        let size = item.fileSize.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) }
+        let status: String?
+        let color: NSColor
+        switch item.state {
+        case .running:
+            status = item.statusText
+            color = .controlAccentColor
+        case .cancelled, .failed:
+            status = item.statusText
+            color = item.state == .cancelled ? .secondaryLabelColor : .systemRed
+        case .finished:
+            switch item.scanState {
+            case .waiting, .scanning:
+                status = item.statusText
+                color = .secondaryLabelColor
+            case .failed:
+                status = item.statusText
+                color = .systemOrange
+            case .complete:
+                let high = item.risks.contains(where: \.isHighRisk)
+                status = high ? item.statusText : nil
+                color = .systemOrange
+            }
+        }
+        let parts = item.state == .running ? [host] : [size, host, date]
+        return (status, color, parts.compactMap { $0 }.joined(separator: " · "))
     }
 
     @objc private func rowCancel(_ sender: NSButton) {

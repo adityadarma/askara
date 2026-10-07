@@ -77,6 +77,32 @@ struct AskaraUITests {
         #expect(!file.items.contains { $0.submenu?.identifier == MainMenu.profileMenuID })
     }
 
+    @Test("Download rows: one detail line, warnings only for high-risk files")
+    @MainActor
+    func downloadRowText() {
+        let archive = DownloadManager.Item()
+        archive.filename = "a.zip"
+        archive.sourceURL = URL(string: "https://example.com/a.zip")
+        archive.state = .finished
+        archive.scanState = .complete
+        archive.risks = [.archive]
+        archive.fileSize = 4_000_000
+        let quiet = DownloadsWindowController.rowText(for: archive, date: "Today")
+        #expect(quiet.status == nil)
+        #expect(quiet.detail.contains("example.com"))
+        #expect(quiet.detail.hasSuffix("Today"))
+
+        archive.risks = [.installer]
+        #expect(DownloadsWindowController.rowText(for: archive, date: nil).status != nil)
+
+        let running = DownloadManager.Item()
+        running.sourceURL = URL(string: "https://example.com/b.zip")
+        running.fraction = 0.39
+        let live = DownloadsWindowController.rowText(for: running, date: nil)
+        #expect(live.status == "39%")
+        #expect(live.detail == "example.com")
+    }
+
     @Test("WebKit helper processes get readable names")
     func helperProcessNames() {
         #expect(ProcessMemory.displayName(for: "com.apple.WebKit.GPU") != "com.apple.WebKit.GPU")
