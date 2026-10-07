@@ -1417,6 +1417,10 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         config.userContentController.add(WeakScriptHandler(self), name: PictureInPictureScript.handlerName)
         config.userContentController.addUserScript(WKUserScript(
             source: PictureInPictureScript.source, injectionTime: .atDocumentEnd, forMainFrameOnly: false))
+        // YouTube video ads are removed from the player data before YouTube's scripts run.
+        // Exits immediately on other sites.
+        config.userContentController.addUserScript(WKUserScript(
+            source: YouTubeAdBlocker.source, injectionTime: .atDocumentStart, forMainFrameOnly: false))
         // "Inspect Element" in the context menu.
         DevTools.enable(on: config)
         if !Passkey.isAvailable {

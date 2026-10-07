@@ -238,8 +238,27 @@ import Testing
     @Test func jsonIsValidRuleList() throws {
         let data = Data(BlockList.contentRuleListJSON().utf8)
         let parsed = try #require(try JSONSerialization.jsonObject(with: data) as? [[String: Any]])
-        #expect(parsed.count == BlockList.domains.count)
+        #expect(parsed.count == BlockList.domains.count + YouTubeAdRules.selectors.count)
         #expect((parsed[0]["trigger"] as? [String: Any])?["url-filter"] is String)
+    }
+
+    @Test func youTubeRulesHideElementsOnYouTubeOnly() throws {
+        let data = Data(BlockList.contentRuleListJSON(domains: [], excludingSites: ["youtube.com"]).utf8)
+        let parsed = try #require(try JSONSerialization.jsonObject(with: data) as? [[String: Any]])
+        #expect(parsed.count == YouTubeAdRules.selectors.count)
+        let action = try #require(parsed[0]["action"] as? [String: Any])
+        #expect(action["type"] as? String == "css-display-none")
+        let trigger = try #require(parsed[0]["trigger"] as? [String: Any])
+        // The per-site exception also turns the YouTube rules off.
+        #expect((trigger["unless-top-url"] as? [String])?.first?.contains("youtube\\.com") == true)
+        let regex = try NSRegularExpression(pattern: try #require(trigger["url-filter"] as? String))
+        func matches(_ s: String) -> Bool {
+            regex.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)) != nil
+        }
+        #expect(matches("https://www.youtube.com/watch?v=x"))
+        #expect(matches("https://m.youtube.com/"))
+        #expect(!matches("https://notyoutube.com/"))
+        #expect(!matches("https://youtube.com.example.org/"))
     }
 
     @Test func filterMatchesDomainAndSubdomainOnly() throws {

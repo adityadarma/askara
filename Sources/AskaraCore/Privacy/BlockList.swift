@@ -47,7 +47,7 @@ public enum BlockList {
             let escaped = NSRegularExpression.escapedPattern(for: domain)
             return "^https?://([^/]*\\.)?\(escaped)(?::[0-9]+)?/"
         }
-        let rules: [[String: Any]] = domains.map { domain in
+        let domainRules: [[String: Any]] = domains.map { domain in
             let escaped = NSRegularExpression.escapedPattern(for: domain)
             var trigger: [String: Any] = [
                 "url-filter": "^https?://([^/]*\\.)?\(escaped)[/:]",
@@ -59,6 +59,7 @@ public enum BlockList {
                 "action": ["type": "block"],
             ]
         }
+        let rules = domainRules + YouTubeAdRules.rules(exclusions: exclusions)
         // Rules always serialize since they contain only String/Array/Dictionary.
         let data = try! JSONSerialization.data(withJSONObject: rules, options: [.sortedKeys])
         return String(decoding: data, as: UTF8.self)

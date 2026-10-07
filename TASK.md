@@ -32,7 +32,7 @@ Status: selesai dan terverifikasi.
 - Cache CEF lama dibersihkan tanpa menghapus metadata profil.
 - Bundle release tidak membawa framework browser tambahan; WebKit disediakan oleh macOS.
   Satu-satunya framework yang dibawa adalah `Sparkle.framework` untuk update dalam app.
-- `swift test`: 156 test lulus.
+- `swift test`: 160 test lulus.
 
 # Task: Rilis Universal dan Update dalam App
 
@@ -60,3 +60,26 @@ Setup sebelum rilis pertama:
 Batasan:
 - App masih ad-hoc signed: Gatekeeper memblokir pembukaan pertama, dan izin kamera/mikrofon/Keychain
   bisa diminta ulang setelah update. Developer ID + notarisasi menghilangkan keduanya.
+
+# Task: Blokir Iklan YouTube
+
+Status: selesai; teruji dengan halaman tiruan. Belum teruji di youtube.com asli.
+
+- Blokir domain tidak bisa menangkap iklan YouTube karena iklan dikirim dari domain YouTube sendiri.
+- `YouTubeAdBlocker` (user script, document start) menghapus `adPlacements`, `adSlots`,
+  `playerAds`, dan `adBreakHeartbeatParams` dari respons player sebelum YouTube membacanya, jadi
+  video langsung diputar tanpa iklan. Titik masuk yang ditangani: `ytInitialPlayerResponse`
+  (muat pertama), `JSON.parse`, dan `Response.json()` (video berikutnya).
+- Cadangan: kalau iklan tetap lolos, iklan dibisukan dan tombol "Skip" ditekan otomatis.
+- Aturan kosmetik (`YouTubeAdRules`, `css-display-none`) menyembunyikan banner, iklan feed, dan
+  overlay di youtube.com. Aturan ini ikut daftar blokir yang sudah ada.
+- Pengecualian ad blocker per situs (Privacy Dashboard) untuk youtube.com mematikan semuanya.
+  Script memeriksa elemen probe yang disembunyikan aturan, jadi hanya aktif jika aturan aktif.
+- Alternatif yang lebih tahan perubahan YouTube: Safari Web Extension ad blocker yang dipasang
+  pengguna, dimuat lewat `ExtensionManager`. Belum dicoba dengan ad blocker tertentu.
+
+Batasan:
+- Nama field dan selector bergantung pada YouTube dan perlu diperbarui bila YouTube berubah.
+- Iklan yang disisipkan langsung ke stream video di server (server-side ad insertion) tidak bisa
+  dihapus dari browser; untuk kasus itu hanya cadangan mute + skip yang berlaku.
+- YouTube dapat menampilkan peringatan anti-adblock bila mendeteksi perubahan ini.

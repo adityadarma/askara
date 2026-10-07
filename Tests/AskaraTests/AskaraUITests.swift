@@ -583,4 +583,101 @@ struct AskaraUITests {
         let payload = try await web.evaluateJavaScript(ReaderMode.extractionScript, in: nil, contentWorld: .defaultClient)
         if let article = ReaderArticle(payload: payload) { #expect(!article.isReadable) }
     }
+
+    // MARK: - YouTube ads
+
+    /// A page shaped like YouTube: the first player response is an inline `var`, later ones come
+    /// through `JSON.parse` and `Response.json()`. Results are written to `document.body.dataset`.
+    private static let youTubeAdPage = """
+    <html><head>
+    <script>
+      var ytInitialPlayerResponse = {"adPlacements": [1], "playerAds": [1], "videoDetails": {"videoId": "a"}};
+    </script>
+    </head><body>
+    <div id="masthead-ad">AD BANNER</div>
+    <div class="html5-video-player">
+      <video></video>
+      <button class="ytp-skip-ad-button" onclick="document.body.dataset.skipped = '1'">Skip</button>
+    </div>
+    <script>
+      const d = document.body.dataset;
+      const r = window.ytInitialPlayerResponse;
+      d.initialAds = String('adPlacements' in r || 'playerAds' in r);
+      d.initialVideo = r.videoDetails.videoId;
+      const parsed = JSON.parse('{"playerResponse": {"adSlots": [1], "videoDetails": {"videoId": "b"}}}');
+      d.parsedAds = String('adSlots' in parsed.playerResponse);
+      d.parsedVideo = parsed.playerResponse.videoDetails.videoId;
+      new Response('{"adPlacements": [1], "videoDetails": {"videoId": "c"}}').json().then((j) => {
+        d.fetchedAds = String('adPlacements' in j);
+        d.fetchedVideo = j.videoDetails.videoId;
+      });
+    </script>
+    </body></html>
+    """
+
+    private static let resultsScript = "JSON.stringify(document.body.dataset)"
+
+    @MainActor
+    private func youTubeWebView(exceptions: [String]) async throws -> WKWebView {
+        _ = NSApplication.shared
+        let json = BlockList.contentRuleListJSON(domains: [], excludingSites: exceptions)
+        // Compiling also proves WebKit accepts every selector in YouTubeAdRules.
+        let list = try #require(try await WKContentRuleListStore.default()
+            .compileContentRuleList(forIdentifier: "askara-test-youtube-\(exceptions.count)",
+                                    encodedContentRuleList: json))
+        let config = WKWebViewConfiguration()
+        config.userContentController.add(list)
+        config.userContentController.addUserScript(WKUserScript(
+            source: YouTubeAdBlocker.source, injectionTime: .atDocumentStart, forMainFrameOnly: false))
+        let web = WKWebView(frame: NSRect(x: 0, y: 0, width: 600, height: 400), configuration: config)
+        web.loadHTMLString(Self.youTubeAdPage, baseURL: URL(string: "https://www.youtube.com/watch?v=test"))
+        for _ in 0..<100 where web.isLoading || web.url == nil { try await Task.sleep(for: .milliseconds(50)) }
+        try await Task.sleep(for: .milliseconds(200))
+        return web
+    }
+
+    @MainActor
+    private func results(_ web: WKWebView) async throws -> [String: String] {
+        let text = try #require(try await web.evaluateJavaScript(Self.resultsScript) as? String)
+        return try #require(try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: String])
+    }
+
+    @Test("YouTube ad data is removed from player responses; the video data stays")
+    @MainActor
+    func youTubeAdsRemoved() async throws {
+        let web = try await youTubeWebView(exceptions: [])
+        let r = try await results(web)
+        #expect(r["initialAds"] == "false")
+        #expect(r["parsedAds"] == "false")
+        #expect(r["fetchedAds"] == "false")
+        #expect(r["initialVideo"] == "a")
+        #expect(r["parsedVideo"] == "b")
+        #expect(r["fetchedVideo"] == "c")
+        let banner = try await web.evaluateJavaScript(
+            "getComputedStyle(document.getElementById('masthead-ad')).display") as? String
+        #expect(banner == "none")
+    }
+
+    @Test("An ad that still gets through is skipped")
+    @MainActor
+    func youTubeFallbackSkips() async throws {
+        let web = try await youTubeWebView(exceptions: [])
+        _ = try await web.evaluateJavaScript(
+            "document.querySelector('.html5-video-player').classList.add('ad-showing'); true")
+        try await Task.sleep(for: .milliseconds(800))
+        #expect(try await results(web)["skipped"] == "1")
+    }
+
+    @Test("Ad-block exception for youtube.com turns YouTube blocking off")
+    @MainActor
+    func youTubeExceptionRespected() async throws {
+        let web = try await youTubeWebView(exceptions: ["youtube.com"])
+        let r = try await results(web)
+        #expect(r["initialAds"] == "true")
+        #expect(r["parsedAds"] == "true")
+        #expect(r["fetchedAds"] == "true")
+        let banner = try await web.evaluateJavaScript(
+            "getComputedStyle(document.getElementById('masthead-ad')).display") as? String
+        #expect(banner != "none")
+    }
 }
