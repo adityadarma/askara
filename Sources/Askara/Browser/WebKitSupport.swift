@@ -202,7 +202,9 @@ enum PictureInPictureScript {
       const candidate = (all) => {
         let best = null, bestPlaying = -1, bestArea = -1;
         for (const video of all) {
-          if (video.readyState < 2 || video.videoWidth <= 0 || video.videoHeight <= 0) continue;
+          // HAVE_METADATA is enough for PiP. Waiting for HAVE_CURRENT_DATA missed YouTube, where
+          // playback starts from a user click before the first frame is buffered.
+          if (video.readyState < 1 || video.videoWidth <= 0 || video.videoHeight <= 0) continue;
           const rect = video.getBoundingClientRect();
           const playing = video.paused ? 0 : 1;
           const area = rect.width * rect.height;
@@ -251,16 +253,26 @@ enum PictureInPictureScript {
         }
         const video = candidate(all);
         if (!video) return false;
-        if (video.requestPictureInPicture) await video.requestPictureInPicture();
-        else if (video.webkitSupportsPresentationMode && video.webkitSupportsPresentationMode('picture-in-picture'))
+        const legacy = () => {
+          if (!video.webkitSupportsPresentationMode ||
+              !video.webkitSupportsPresentationMode('picture-in-picture')) return false;
           video.webkitSetPresentationMode('picture-in-picture');
-        else return false;
+          return true;
+        };
+        let entered = false;
+        if (video.requestPictureInPicture) {
+          // Standard API can reject (e.g. `disablePictureInPicture`); WebKit's own mode may still work.
+          try { await video.requestPictureInPicture(); entered = true; } catch (_) { entered = legacy(); }
+        } else {
+          entered = legacy();
+        }
         report();
-        return true;
+        return entered;
       };
       // High-frequency readiness/play events may wait for the next frame. PiP transitions must be
       // immediate because background WebViews can suspend requestAnimationFrame indefinitely.
-      for (const event of ['play', 'pause', 'loadedmetadata'])
+      // YouTube reuses one <video> across navigations, so readiness events are the only signal.
+      for (const event of ['play', 'playing', 'pause', 'loadedmetadata', 'loadeddata', 'emptied', 'resize'])
         document.addEventListener(event, scheduleReport, true);
       for (const event of ['enterpictureinpicture', 'leavepictureinpicture', 'webkitpresentationmodechanged'])
         document.addEventListener(event, () => report(false), true);

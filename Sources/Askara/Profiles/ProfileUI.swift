@@ -39,15 +39,17 @@ enum ProfileColors {
     }
 }
 
-/// Profile list + actions, used by the toolbar button and File > Profiles.
+/// Profile list + actions, used by the toolbar button and the Profiles menu bar menu.
 @MainActor
 enum ProfileMenu {
-    static func fill(_ menu: NSMenu, current: UUID, target: AppDelegate) {
+    static func fill(_ menu: NSMenu, current: UUID, target: AppDelegate, showsHeader: Bool = true) {
         let services = BrowserServices.shared
-        let header = NSMenuItem(title: String(localized: "Profiles"), action: nil, keyEquivalent: "")
-        header.image = NSImage(systemSymbolName: "person.crop.circle", accessibilityDescription: nil)
-        header.isEnabled = false
-        menu.addItem(header)
+        if showsHeader {
+            let header = NSMenuItem(title: String(localized: "Profiles"), action: nil, keyEquivalent: "")
+            header.image = NSImage(systemSymbolName: "person.crop.circle", accessibilityDescription: nil)
+            header.isEnabled = false
+            menu.addItem(header)
+        }
         for profile in services.profileList.profiles {
             let item = NSMenuItem(title: profile.name, action: #selector(AppDelegate.openProfileAction(_:)),
                                   keyEquivalent: "")

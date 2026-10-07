@@ -23,12 +23,17 @@ final class AppUpdater: NSObject {
         super.init()
     }
 
-    /// Starts the updater. Sparkle asks for permission to check automatically on the second launch.
+    /// Starts the updater and checks for updates on every launch, not only when Sparkle's 24 h
+    /// schedule is due. The background check shows UI only when a newer version is available.
     func start() {
         guard let controller, !started else { return }
         do {
             try controller.updater.start()
             started = true
+            // Respect a user who turned automatic checks off in Sparkle's prompt or settings.
+            if controller.updater.automaticallyChecksForUpdates {
+                controller.updater.checkForUpdatesInBackground()
+            }
         } catch {
             Log.error("Updater failed to start: \(error.localizedDescription)")
         }

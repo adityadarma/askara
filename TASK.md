@@ -32,7 +32,7 @@ Status: selesai dan terverifikasi.
 - Cache CEF lama dibersihkan tanpa menghapus metadata profil.
 - Bundle release tidak membawa framework browser tambahan; WebKit disediakan oleh macOS.
   Satu-satunya framework yang dibawa adalah `Sparkle.framework` untuk update dalam app.
-- `swift test`: 160 test lulus.
+- `swift test`: 162 test lulus.
 
 # Task: Rilis Universal dan Update dalam App
 
@@ -97,3 +97,18 @@ Batasan:
 - Iklan yang disisipkan langsung ke stream video di server (server-side ad insertion) tidak bisa
   dihapus dari browser; untuk kasus itu hanya cadangan mute + skip yang berlaku.
 - YouTube dapat menampilkan peringatan anti-adblock bila mendeteksi perubahan ini.
+
+# Task: Notifikasi dan Progres Download
+
+Status: selesai; teruji lewat unit test. Tampilan cincin dan banner belum dicek langsung di layar.
+
+- Notifikasi "Unduhan Selesai" sebelumnya tidak terlihat saat Askara aktif, karena macOS
+  menyembunyikan notifikasi app aktif tanpa delegate. `DownloadManager` sekarang menjadi
+  `UNUserNotificationCenterDelegate`, jadi banner dan suara tetap muncul.
+- Klik notifikasi "Unduhan Selesai" membuka file di Finder; bila file sudah tidak ada, jendela
+  Downloads yang dibuka.
+- `DownloadsToolbarButton`: selama download berjalan, ikon menjadi panah kecil dengan cincin progres
+  berwarna aksen. Cincin berputar bila ukuran belum diketahui, lalu terisi sesuai rata-rata progres
+  download yang berjalan. Setelah selesai, ikon kembali normal.
+- Animasi memakai Core Animation tanpa timer. Dengan Reduce Motion, cincin tidak berputar.
+- `FirstClickButton` tidak lagi `final` agar bisa diturunkan.

@@ -1405,6 +1405,11 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         // Popups only from user clicks.
         config.preferences.javaScriptCanOpenWindowsAutomatically = false
         config.preferences.isElementFullscreenEnabled = true
+        // macOS WKWebView disables PiP by default (no public API), which greys out both the video
+        // context menu item and `requestPictureInPicture()`. Same private-preference pattern as DevTools.
+        if config.preferences.responds(to: Selector(("_setAllowsPictureInPictureMediaPlayback:"))) {
+            config.preferences.setValue(true, forKey: "allowsPictureInPictureMediaPlayback")
+        }
         // Extensions (e.g. Bitwarden) inject their scripts via this controller. Not for private windows.
         if let extensionController { config.webExtensionController = extensionController }
         if let list = services.ruleList { config.userContentController.add(list) }

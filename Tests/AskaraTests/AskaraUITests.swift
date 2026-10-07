@@ -59,6 +59,24 @@ struct AskaraUITests {
         #expect(processes == processes.sorted { $0.bytes > $1.bytes })
     }
 
+    @Test("Profiles is a top-level menu between Bookmarks and Tab")
+    @MainActor
+    func profilesMenuIsTopLevel() throws {
+        _ = NSApplication.shared // MainMenu.make assigns NSApp.windowsMenu.
+        let menu = MainMenu.make(delegate: AppDelegate())
+        let submenus = menu.items.compactMap(\.submenu)
+        let ids = submenus.map(\.identifier)
+        let bookmarks = try #require(ids.firstIndex(of: MainMenu.bookmarkMenuID))
+        let profiles = try #require(ids.firstIndex(of: MainMenu.profileMenuID))
+        let tabs = try #require(ids.firstIndex(of: MainMenu.tabMenuID))
+        #expect(profiles == bookmarks + 1)
+        #expect(tabs == profiles + 1)
+        #expect(submenus[profiles].title == String(localized: "Profiles"))
+        // No longer nested under File.
+        let file = try #require(submenus.first { $0.title == String(localized: "File") })
+        #expect(!file.items.contains { $0.submenu?.identifier == MainMenu.profileMenuID })
+    }
+
     @Test("WebKit helper processes get readable names")
     func helperProcessNames() {
         #expect(ProcessMemory.displayName(for: "com.apple.WebKit.GPU") != "com.apple.WebKit.GPU")

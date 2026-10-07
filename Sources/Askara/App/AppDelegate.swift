@@ -126,7 +126,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         services.makeWindow(profile: services.currentProfile, isPrivate: true).newTab(url: homeURL)
     }
 
-    /// Profile chosen in File > Profiles or the toolbar profile menu: go to its window, or open it.
+    /// Profile chosen in the Profiles menu or the toolbar profile menu: go to its window, or open it.
     @objc func openProfileAction(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? UUID else { return }
         services.openProfile(id)
@@ -254,7 +254,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if menu.identifier == MainMenu.tabMenuID { return updateTabMenu(menu) }
         if menu.identifier == MainMenu.profileMenuID {
             menu.removeAllItems()
-            ProfileMenu.fill(menu, current: services.currentProfile.id, target: self)
+            // The menu bar title already says "Profiles"; skip the duplicate header.
+            ProfileMenu.fill(menu, current: services.currentProfile.id, target: self, showsHeader: false)
             return
         }
         if menu.identifier == MainMenu.appMenuID {
@@ -434,15 +435,6 @@ enum MainMenu {
             item(String(localized: "New Tab"), #selector(B.newTabAction(_:)), "t"),
             item(String(localized: "New Window"), #selector(A.newWindowAction(_:)), "n"),
             item(String(localized: "New Private Window"), #selector(A.newPrivateWindowAction(_:)), "n", [.command, .shift]),
-            {
-                // Filled when opened (menuNeedsUpdate), like the toolbar profile button.
-                let holder = NSMenuItem(title: String(localized: "Profiles"), action: nil, keyEquivalent: "")
-                let menu = NSMenu(title: String(localized: "Profiles"))
-                menu.identifier = profileMenuID
-                menu.delegate = delegate
-                holder.submenu = menu
-                return holder
-            }(),
             item(String(localized: "Open Location…"), #selector(B.focusAddressBar(_:)), "l"),
             .separator(),
             item(String(localized: "Close Tab"), #selector(B.closeTabAction(_:)), "w"),
@@ -533,6 +525,12 @@ enum MainMenu {
         ])
         bookmarks.identifier = bookmarkMenuID
         bookmarks.delegate = delegate
+
+        // Top-level like Chrome (Bookmarks, Profiles, Tab). Filled when opened (menuNeedsUpdate),
+        // like the toolbar profile button.
+        let profiles = submenu(String(localized: "Profiles"), [])
+        profiles.identifier = profileMenuID
+        profiles.delegate = delegate
 
         // ⌘1–⌘9 keep working via hidden items. The visible list only contains
         // tabs that are actually open, filled when the menu opens (menuNeedsUpdate).
