@@ -57,9 +57,23 @@ Setup sebelum rilis pertama:
 - Ekspor kunci privat (`generate_keys -x <file>`) ke repository secret `SPARKLE_PRIVATE_KEY`, lalu
   hapus file ekspornya.
 
+Signing (identitas tetap):
+- `scripts/make-signing-cert.sh` membuat sertifikat self-signed "Askara Self-Signed" (20 tahun) di
+  login keychain, plus `.p12` dan password-nya di `~/.askara-signing/` (di luar repo).
+- `scripts/bundle.sh` otomatis memakai sertifikat itu bila ada; tanpa sertifikat kembali ke ad-hoc.
+  Designated requirement: `identifier "dev.adityadarma.askara" and certificate leaf = H"27af…77ba"`,
+  sama di setiap build, jadi izin Downloads/kamera/mikrofon/Keychain tidak diminta ulang.
+- Hardened runtime tidak dipakai untuk self-signed: library validation butuh Team ID, tanpa itu
+  `Sparkle.framework` gagal dimuat.
+- CI mengimpor sertifikat dari secret `SELF_SIGN_P12_BASE64` dan `SELF_SIGN_P12_PASSWORD` ke
+  keychain sementara, lalu gagal bila app tidak ditandatangani dengan sertifikat itu.
+- Update dari rilis ad-hoc lama tetap diterima Sparkle karena EdDSA valid; izin diminta sekali lagi
+  setelah update itu, lalu tetap.
+
 Batasan:
-- App masih ad-hoc signed: Gatekeeper memblokir pembukaan pertama, dan izin kamera/mikrofon/Keychain
-  bisa diminta ulang setelah update. Developer ID + notarisasi menghilangkan keduanya.
+- Gatekeeper tetap memblokir pembukaan pertama; Developer ID + notarisasi menghilangkannya.
+- Kalau `~/.askara-signing` dan secret hilang, sertifikat baru berarti identitas baru dan semua izin
+  diminta ulang. Simpan cadangan `.p12` dan password-nya.
 
 # Task: Blokir Iklan YouTube
 

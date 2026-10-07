@@ -40,6 +40,29 @@ jobs:
       - name: Test
         run: swift test
 
+      # The same self-signed certificate as local builds (scripts/make-signing-cert.sh), so every
+      # release has the same identity and macOS keeps the app's permissions after updates.
+      - name: Import signing certificate
+        env:
+          P12_BASE64: ${{ secrets.SELF_SIGN_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.SELF_SIGN_P12_PASSWORD }}
+        run: |
+          if [[ -z "$P12_BASE64" || -z "$P12_PASSWORD" ]]; then
+            echo "::error::Secrets SELF_SIGN_P12_BASE64 and SELF_SIGN_P12_PASSWORD are not set."
+            exit 1
+          fi
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 24)"
+          echo "$P12_BASE64" | base64 --decode > "$RUNNER_TEMP/signing.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/signing.p12" -k "$KEYCHAIN" -f pkcs12 -P "$P12_PASSWORD" -T /usr/bin/codesign
+          # Lets codesign use the key without a UI prompt.
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          rm -f "$RUNNER_TEMP/signing.p12"
+
       # CFBundleVersion = run number, so every release is strictly newer for Sparkle.
       - name: Build universal app
         env:
@@ -53,6 +76,11 @@ jobs:
           fi
           ./scripts/bundle.sh --universal
           lipo -archs build/Askara.app/Contents/MacOS/Askara
+          # Fail instead of shipping an ad-hoc build, which would reset users' permissions.
+          codesign -dvv build/Askara.app 2>&1 | grep -q "^Authority=Askara Self-Signed$" || {
+            echo "::error::App is not signed with the Askara Self-Signed certificate."
+            exit 1
+          }
 
       - name: Package
         id: package

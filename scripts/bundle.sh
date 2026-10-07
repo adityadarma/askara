@@ -94,10 +94,17 @@ else
 fi
 
 # Sign nested code inside-out: Sparkle helpers, then the framework, then the app.
+# Usage: sign <identity> <kind> [extra codesign args]; kind is developer-id, self-signed, or adhoc.
 sign() {
-    local identity="$1"; shift
+    local identity="$1" kind="$2"; shift 2
     local opts=(--force --sign "$identity")
-    [[ "$identity" != "-" ]] && opts+=(--options runtime --timestamp)
+    case "$kind" in
+        # Hardened runtime + secure timestamp: required for notarization.
+        developer-id) opts+=(--options runtime --timestamp) ;;
+        # No hardened runtime: its library validation needs a Team ID, which a self-signed
+        # certificate doesn't have, so Sparkle.framework would fail to load.
+        self-signed) opts+=(--timestamp=none) ;;
+    esac
     local fw="$APP/Contents/Frameworks/Sparkle.framework"
     local v="$fw/Versions/B"
     for item in "$v/XPCServices/Installer.xpc" "$v/XPCServices/Downloader.xpc" "$v/Autoupdate" "$v/Updater.app" "$fw"; do
@@ -124,12 +131,23 @@ if [[ -n "${ASKARA_SIGN_IDENTITY:-}" && -n "${ASKARA_PROFILE:-}" ]]; then
 </dict>
 </plist>
 ENTPLIST
-    sign "$ASKARA_SIGN_IDENTITY" --entitlements "$ENT"
+    sign "$ASKARA_SIGN_IDENTITY" developer-id --entitlements "$ENT"
     rm -f "$ENT"
     echo "Signed with passkey entitlement."
 else
-    sign -
-    echo "Ad-hoc signing: passkeys unavailable."
+    # A fixed self-signed certificate (scripts/make-signing-cert.sh) keeps the app's identity the
+    # same across builds, so macOS keeps Downloads/camera/microphone/Keychain permissions after
+    # updates. ASKARA_SELF_SIGN_IDENTITY overrides the name. CI imports the same certificate from
+    # the SELF_SIGN_P12_* secrets (.github/workflows/release.yml), so the default name matches.
+    SELF_ID="${ASKARA_SELF_SIGN_IDENTITY:-Askara Self-Signed}"
+    if security find-certificate -c "$SELF_ID" >/dev/null 2>&1; then
+        sign "$SELF_ID" self-signed
+        echo "Signed with \"$SELF_ID\": permissions persist across builds; passkeys unavailable."
+    else
+        sign - adhoc
+        echo "Ad-hoc signing: permissions are asked again after each build; passkeys unavailable."
+        echo "Run scripts/make-signing-cert.sh once to keep permissions across builds."
+    fi
 fi
 if $INSTALL; then
     DEST="/Applications/Askara.app"
