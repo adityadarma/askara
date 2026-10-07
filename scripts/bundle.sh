@@ -84,7 +84,9 @@ fi
 plutil -insert SUFeedURL -string "https://github.com/adityadarma/askara/releases/latest/download/appcast.xml" "$APP/Contents/Info.plist"
 plutil -insert SUEnableAutomaticChecks -bool YES "$APP/Contents/Info.plist"
 # Reject appcasts that are not EdDSA-signed (CI signs the feed as well as the zip).
+# Sparkle refuses to start with SURequireSignedFeed unless SUVerifyUpdateBeforeExtraction is also on.
 plutil -insert SURequireSignedFeed -bool YES "$APP/Contents/Info.plist"
+plutil -insert SUVerifyUpdateBeforeExtraction -bool YES "$APP/Contents/Info.plist"
 if [[ -n "${ASKARA_SPARKLE_PUBLIC_KEY:-}" ]]; then
     plutil -insert SUPublicEDKey -string "$ASKARA_SPARKLE_PUBLIC_KEY" "$APP/Contents/Info.plist"
 else

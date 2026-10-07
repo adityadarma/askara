@@ -30,6 +30,11 @@ jobs:
           else
             VERSION="${GITHUB_REF_NAME#v}"
           fi
+          # Expect tags like v1.2.3; a tag such as v.1.0.0 would produce an invalid ".1.0.0".
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid version '$VERSION'. Use a tag like v1.2.3."
+            exit 1
+          fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Test
