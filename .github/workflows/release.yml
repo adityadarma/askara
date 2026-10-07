@@ -1,0 +1,111 @@
+# Builds a universal (arm64 + x86_64) Askara.app and publishes it as a GitHub Release.
+# Trigger: push a tag such as v0.2.0, or run manually from the Actions tab.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version without the leading v (for example 0.2.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [[ -n "$INPUT_VERSION" ]]; then
+            VERSION="$INPUT_VERSION"
+          else
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Test
+        run: swift test
+
+      # CFBundleVersion = run number, so every release is strictly newer for Sparkle.
+      - name: Build universal app
+        env:
+          ASKARA_VERSION: ${{ steps.version.outputs.version }}
+          ASKARA_BUILD: ${{ github.run_number }}
+          ASKARA_SPARKLE_PUBLIC_KEY: ${{ vars.SPARKLE_PUBLIC_KEY }}
+        run: |
+          if [[ -z "$ASKARA_SPARKLE_PUBLIC_KEY" ]]; then
+            echo "::error::Repository variable SPARKLE_PUBLIC_KEY is not set."
+            exit 1
+          fi
+          ./scripts/bundle.sh --universal
+          lipo -archs build/Askara.app/Contents/MacOS/Askara
+
+      - name: Package
+        id: package
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          ZIP="Askara-$VERSION-universal.zip"
+          ditto -c -k --keepParent build/Askara.app "$ZIP"
+          shasum -a 256 "$ZIP" > "$ZIP.sha256"
+          echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
+
+      # appcast.xml is attached to every release; the app reads it from
+      # releases/latest/download/appcast.xml, so only the newest release is ever offered.
+      - name: Sign update and write appcast
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+          VERSION: ${{ steps.version.outputs.version }}
+          BUILD: ${{ github.run_number }}
+          ZIP: ${{ steps.package.outputs.zip }}
+          REPO: ${{ github.repository }}
+        run: |
+          if [[ -z "$SPARKLE_PRIVATE_KEY" ]]; then
+            echo "::error::Repository secret SPARKLE_PRIVATE_KEY is not set."
+            exit 1
+          fi
+          SIGN=.build/artifacts/sparkle/Sparkle/bin/sign_update
+          # Prints: sparkle:edSignature="..." length="..."
+          ATTRS="$(echo "$SPARKLE_PRIVATE_KEY" | "$SIGN" --ed-key-file - "$ZIP")"
+          URL="https://github.com/$REPO/releases/download/v$VERSION/$ZIP"
+          NOTES="https://github.com/$REPO/releases/tag/v$VERSION"
+          cat > appcast.xml <<EOF
+          <?xml version="1.0" encoding="utf-8"?>
+          <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+            <channel>
+              <title>Askara</title>
+              <item>
+                <title>Askara $VERSION</title>
+                <pubDate>$(LC_ALL=C date -u "+%a, %d %b %Y %H:%M:%S +0000")</pubDate>
+                <sparkle:version>$BUILD</sparkle:version>
+                <sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>
+                <sparkle:minimumSystemVersion>15.4</sparkle:minimumSystemVersion>
+                <sparkle:fullReleaseNotesLink>$NOTES</sparkle:fullReleaseNotesLink>
+                <enclosure url="$URL" type="application/octet-stream" $ATTRS />
+              </item>
+            </channel>
+          </rss>
+          EOF
+          # Sign the feed too, so a tampered appcast is rejected.
+          echo "$SPARKLE_PRIVATE_KEY" | "$SIGN" --ed-key-file - appcast.xml
+          cat appcast.xml
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          ZIP: ${{ steps.package.outputs.zip }}
+        run: |
+          gh release create "v$VERSION" "$ZIP" "$ZIP.sha256" appcast.xml \
+            --title "Askara $VERSION" \
+            --generate-notes \
+            --target "$GITHUB_SHA"
