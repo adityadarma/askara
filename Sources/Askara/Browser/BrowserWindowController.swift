@@ -326,7 +326,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     private let pictureInPictureButton = NSButton()
     private let pinnedExtensionStack = NSStackView()
     private let extensionsButton = FirstClickButton()
-    private let downloadsButton = FirstClickButton()
+    private let downloadsButton = DownloadsToolbarButton()
     private var privacyPopover: NSPopover?
     /// Profile avatar at the right end of the toolbar, like Chrome.
     private let profileButton = FirstClickButton()
@@ -857,9 +857,11 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         let active = !running.isEmpty
         let label = active ? (services.downloads.summary ?? String(localized: "Downloads"))
             : String(localized: "Downloads (⌥⌘L)")
-        downloadsButton.image = NSImage(systemSymbolName: active ? "arrow.down.circle.fill" : "arrow.down.circle",
+        // While running, the progress ring replaces the symbol's own circle.
+        downloadsButton.image = NSImage(systemSymbolName: active ? "arrow.down" : "arrow.down.circle",
                                         accessibilityDescription: label)?
-            .withSymbolConfiguration(.init(pointSize: 14, weight: .medium))
+            .withSymbolConfiguration(.init(pointSize: active ? 10 : 14, weight: active ? .bold : .medium))
+        downloadsButton.progress = services.downloads.toolbarProgress
         downloadsButton.contentTintColor = active ? .controlAccentColor : .secondaryLabelColor
         downloadsButton.toolTip = label
         downloadsButton.setAccessibilityLabel(label)

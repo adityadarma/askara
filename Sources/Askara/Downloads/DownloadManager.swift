@@ -87,10 +87,23 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
     }
 
     func requestNotificationPermission() {
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        let center = UNUserNotificationCenter.current()
+        // Without a delegate, macOS hides notifications while Askara is the active app.
+        center.delegate = self
+        center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
     }
 
     var running: [Item] { items.filter { $0.state == .running } }
+
+    /// Progress for the toolbar ring: nil when nothing runs, 0 while no download has reported
+    /// progress yet (size unknown, ring spins), otherwise the average fraction of running downloads.
+    var toolbarProgress: Double? { Self.toolbarProgress(fractions: running.map(\.fraction)) }
+
+    nonisolated static func toolbarProgress(fractions: [Double]) -> Double? {
+        guard !fractions.isEmpty else { return nil }
+        guard fractions.contains(where: { $0 > 0 }) else { return 0 }
+        return fractions.reduce(0, +) / Double(fractions.count)
+    }
 
     /// Summary for the status bar; nil when no downloads are running.
     var summary: String? {
@@ -169,7 +182,8 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
                 .post(name: .init("com.apple.DownloadFileFinished"), object: path)
         }
         announce(String(localized: "Download finished: \(item.filename)"))
-        notify(title: String(localized: "Download Complete"), body: item.filename, id: item.id)
+        notify(title: String(localized: "Download Complete"), body: item.filename, id: item.id,
+               file: item.destination)
         saveHistory()
         changed()
         scan(item)
@@ -260,11 +274,15 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
         fail(item, message: error.localizedDescription)
     }
 
-    private func notify(title: String, body: String, id: UUID) {
+    /// Key in a notification's userInfo: the downloaded file's path, revealed in Finder on click.
+    nonisolated static let notificationPathKey = "askaraDownloadPath"
+
+    private func notify(title: String, body: String, id: UUID, file: URL? = nil) {
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
         content.sound = .default
+        if let file { content.userInfo = [Self.notificationPathKey: file.path] }
         UNUserNotificationCenter.current().add(
             UNNotificationRequest(identifier: "download-\(id.uuidString)", content: content, trigger: nil))
     }
@@ -319,5 +337,29 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
         item.risks = record.risks
         item.fileSize = record.fileSize
         return item
+    }
+}
+
+// MARK: - Notifications
+
+extension DownloadManager: UNUserNotificationCenterDelegate {
+    /// Show the banner even while Askara is the active app (macOS hides it by default).
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                            willPresent notification: UNNotification)
+        async -> UNNotificationPresentationOptions {
+        [.banner, .sound, .list]
+    }
+
+    /// Clicking "Download Complete" reveals the file in Finder.
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                            didReceive response: UNNotificationResponse) async {
+        let path = response.notification.request.content.userInfo[Self.notificationPathKey] as? String
+        await MainActor.run {
+            if let path, FileManager.default.fileExists(atPath: path) {
+                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+            } else {
+                DownloadsWindowController.shared.show()
+            }
+        }
     }
 }

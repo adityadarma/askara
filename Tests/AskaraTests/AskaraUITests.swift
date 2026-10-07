@@ -66,6 +66,34 @@ struct AskaraUITests {
         #expect(ProcessMemory.displayName(for: "SomethingElse") == "SomethingElse")
     }
 
+    @Test("Toolbar download progress: hidden, spinning, then the average fraction")
+    func downloadToolbarProgress() {
+        #expect(DownloadManager.toolbarProgress(fractions: []) == nil)
+        #expect(DownloadManager.toolbarProgress(fractions: [0, 0]) == 0)
+        #expect(DownloadManager.toolbarProgress(fractions: [0.5, 1]) == 0.75)
+    }
+
+    @Test("Downloads button ring follows progress")
+    @MainActor
+    func downloadsButtonRing() {
+        _ = NSApplication.shared
+        let button = DownloadsToolbarButton(frame: NSRect(x: 0, y: 0, width: 28, height: 28))
+        button.layoutSubtreeIfNeeded()
+        #expect(!button.isRingVisible)
+
+        button.progress = 0
+        #expect(button.isRingVisible)
+        if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion { #expect(button.isSpinning) }
+
+        button.progress = 0.4
+        #expect(!button.isSpinning)
+        #expect(abs(button.ringFraction - 0.4) < 0.001)
+
+        button.progress = nil
+        #expect(!button.isRingVisible)
+        #expect(!button.isSpinning)
+    }
+
     @Test("Other processes popover lists what it is given")
     @MainActor
     func otherProcessesPopover() {
