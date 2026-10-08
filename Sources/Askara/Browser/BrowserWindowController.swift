@@ -33,6 +33,15 @@ final class Tab: NSObject {
     /// Device Mode (Develop menu): emulated screen size and user agent. nil = off.
     var device: DevicePreset?
     var deviceLandscape = false
+    /// Develop > User Agent. nil = Askara's default. Device Mode presets take precedence while on.
+    var userAgentOverride: String?
+    /// Develop > Disable Caches: HTTP caches are emptied before every page load in this tab.
+    var disablesCaches = false
+    /// User agent the page should get: the device's, else the override, else WebKit's default (nil).
+    var effectiveUserAgent: String? {
+        if let agent = device?.userAgent, !agent.isEmpty { return agent }
+        return userAgentOverride
+    }
     /// Forced `prefers-color-scheme` (Develop > Appearance). nil = follow the system.
     var colorScheme: NSAppearance.Name?
     /// Pinned: icon-only at the start of the tab strip, never put to sleep.
@@ -328,6 +337,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     private let extensionsButton = FirstClickButton()
     private let downloadsButton = DownloadsToolbarButton()
     private var privacyPopover: NSPopover?
+    /// Certificate prompts waiting for the user's answer, per host.
+    private var pendingCertificateChallenges: [String: [(SecTrust, @MainActor (URLSession.AuthChallengeDisposition, URLCredential?) -> Void)]] = [:]
     /// Profile avatar at the right end of the toolbar, like Chrome.
     private let profileButton = FirstClickButton()
     private let moreButton = FirstClickButton()
@@ -1330,8 +1341,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         webView.isInspectable = true
         (webView as? AskaraWebView)?.browser = self
         tab.webView = webView
-        // A tab woken from sleep keeps its Device Mode, Appearance, and mute settings.
-        webView.customUserAgent = tab.device?.userAgent
+        // A tab woken from sleep keeps its Device Mode, User Agent, Appearance, and mute settings.
+        webView.customUserAgent = tab.effectiveUserAgent
         webView.appearance = tab.colorScheme.flatMap(NSAppearance.init(named:))
         if tab.isMuted { webView.askaraSetMuted(true) }
 
@@ -1428,6 +1439,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         // Exits immediately on other sites.
         config.userContentController.addUserScript(WKUserScript(
             source: YouTubeAdBlocker.source, injectionTime: .atDocumentStart, forMainFrameOnly: false))
+        // Tree view for JSON responses, isolated from the page's own scripts.
+        config.userContentController.addUserScript(JSONViewer.userScript)
         // "Inspect Element" in the context menu.
         DevTools.enable(on: config)
         if !Passkey.isAvailable {
@@ -1725,6 +1738,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         copy.interactionState = interactionData.map { Data($0) }
         copy.device = tab.device
         copy.deviceLandscape = tab.deviceLandscape
+        copy.userAgentOverride = tab.userAgentOverride
+        copy.disablesCaches = tab.disablesCaches
         copy.colorScheme = tab.colorScheme
         copy.isMuted = tab.isMuted
         copy.isPinned = tab.isPinned
@@ -2245,15 +2260,117 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         guard let tab = activeTab else { return }
         let presets = DevicePreset.all
         let device = presets.indices.contains(sender.tag - 1) ? presets[sender.tag - 1] : nil
+        setDevice(device, for: tab)
+    }
+
+    private func setDevice(_ device: DevicePreset?, for tab: Tab) {
         guard device != tab.device else { return }
-        let userAgentChanged = device?.userAgent != tab.device?.userAgent
+        let before = tab.effectiveUserAgent
         tab.device = device
-        tab.webView?.customUserAgent = device?.userAgent
         layoutWebView(of: tab)
-        // Servers pick mobile/desktop pages from the user agent, so the page must be fetched again.
-        if userAgentChanged { tab.webView?.reload() }
+        applyUserAgent(of: tab, previous: before)
         showToast(device.map { String(localized: "Device Mode: \($0.name)") } ?? String(localized: "Device Mode off"),
                   duration: 2)
+    }
+
+    /// Servers pick mobile/desktop pages from the user agent, so a changed agent fetches the page again.
+    private func applyUserAgent(of tab: Tab, previous: String?) {
+        let agent = tab.effectiveUserAgent
+        tab.webView?.customUserAgent = agent
+        if agent != previous { tab.webView?.reload() }
+    }
+
+    /// Develop > Device Mode > Custom Size…: any viewport, keeping the current user agent.
+    @objc func customDeviceSizeAction(_ sender: Any?) {
+        guard let window, let tab = activeTab else { return }
+        let current: (width: Int, height: Int) = tab.device.map { $0.size(landscape: false) }
+            ?? (width: Int(contentView.bounds.width), height: Int(contentView.bounds.height))
+        let width = NSTextField(string: String(current.width))
+        let height = NSTextField(string: String(current.height))
+        for (field, label) in [(width, String(localized: "Width")), (height, String(localized: "Height"))] {
+            field.placeholderString = label
+            field.setAccessibilityLabel(label)
+            field.alignment = .right
+            field.translatesAutoresizingMaskIntoConstraints = false
+            field.widthAnchor.constraint(equalToConstant: 80).isActive = true
+        }
+        let times = NSTextField(labelWithString: "×")
+        let unit = NSTextField(labelWithString: String(localized: "CSS pixels"))
+        unit.textColor = .secondaryLabelColor
+        let row = NSStackView(views: [width, times, height, unit])
+        row.spacing = 6
+        row.frame = NSRect(x: 0, y: 0, width: 280, height: 24)
+
+        let alert = NSAlert()
+        alert.messageText = String(localized: "Custom Viewport Size")
+        alert.informativeText = String(localized: "Each side must be between \(DevicePreset.customRange.lowerBound) and \(DevicePreset.customRange.upperBound) pixels. The user agent doesn't change.")
+        alert.accessoryView = row
+        alert.addButton(withTitle: String(localized: "Apply"))
+        alert.addButton(withTitle: String(localized: "Cancel"))
+        alert.window.initialFirstResponder = width
+        alert.beginSheetModal(for: window) { [weak self, weak tab] response in
+            guard let self, let tab, response == .alertFirstButtonReturn else { return }
+            guard let device = DevicePreset.custom(width: width.integerValue, height: height.integerValue) else {
+                return self.showToast(String(localized: "Viewport size must be between \(DevicePreset.customRange.lowerBound) and \(DevicePreset.customRange.upperBound) pixels."),
+                                      duration: 4)
+            }
+            tab.deviceLandscape = false
+            self.setDevice(device, for: tab)
+        }
+    }
+
+    // MARK: - Actions: user agent & caches
+
+    /// Menu item tag: 0 = default, n = UserAgentPreset.all[n - 1].
+    @objc func userAgentAction(_ sender: NSMenuItem) {
+        let presets = UserAgentPreset.all
+        setUserAgentOverride(presets.indices.contains(sender.tag - 1) ? presets[sender.tag - 1].userAgent : nil)
+    }
+
+    @objc func customUserAgentAction(_ sender: Any?) {
+        guard let window, let tab = activeTab else { return }
+        let field = NSTextField(string: tab.userAgentOverride ?? "")
+        field.placeholderString = "Mozilla/5.0 …"
+        field.setAccessibilityLabel(String(localized: "User agent"))
+        field.frame = NSRect(x: 0, y: 0, width: 420, height: 24)
+        field.lineBreakMode = .byTruncatingTail
+        let alert = NSAlert()
+        alert.messageText = String(localized: "Custom User Agent")
+        alert.informativeText = String(localized: "Used by this tab until you change it. Leave empty to use the default.")
+        alert.accessoryView = field
+        alert.addButton(withTitle: String(localized: "Apply"))
+        alert.addButton(withTitle: String(localized: "Cancel"))
+        alert.window.initialFirstResponder = field
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn else { return }
+            self?.setUserAgentOverride(UserAgentPreset.sanitized(field.stringValue))
+        }
+    }
+
+    private func setUserAgentOverride(_ agent: String?) {
+        guard let tab = activeTab, agent != tab.userAgentOverride else { return }
+        let before = tab.effectiveUserAgent
+        tab.userAgentOverride = agent
+        applyUserAgent(of: tab, previous: before)
+        if tab.device.map({ !$0.userAgent.isEmpty }) == true {
+            showToast(String(localized: "User agent saved. Device Mode's user agent is used until you turn it off."), duration: 4)
+        } else {
+            let name = agent.flatMap { a in UserAgentPreset.all.first { $0.userAgent == a }?.name }
+            showToast(agent == nil ? String(localized: "User agent: default")
+                                   : String(localized: "User agent: \(name ?? String(localized: "custom"))"), duration: 2)
+        }
+    }
+
+    /// Like Safari's Develop > Disable Caches, for this tab: HTTP caches are emptied before every
+    /// page load, so pages and their resources always come from the server.
+    @objc func toggleDisableCachesAction(_ sender: Any?) {
+        guard let tab = activeTab else { return }
+        tab.disablesCaches.toggle()
+        showToast(tab.disablesCaches ? String(localized: "Caches disabled for this tab")
+                                     : String(localized: "Caches enabled"), duration: 2)
+        if tab.disablesCaches, let web = tab.webView {
+            DeveloperCache.empty(web.configuration.websiteDataStore) { [weak web] in web?.reloadFromOrigin() }
+        }
     }
 
     @objc func rotateDeviceAction(_ sender: Any?) {
@@ -2564,9 +2681,32 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
             return activeSiteHost != nil
         case #selector(deviceModeAction(_:)):
             let presets = DevicePreset.all
-            let current = activeTab?.device.flatMap { d in presets.firstIndex(of: d).map { $0 + 1 } } ?? 0
+            // A custom size isn't a preset: neither "Off" nor any preset is checked.
+            let current = activeTab?.device.map { d in presets.firstIndex(of: d).map { $0 + 1 } ?? -1 } ?? 0
             item.state = item.tag == current ? .on : .off
             return web != nil
+        case #selector(customDeviceSizeAction(_:)):
+            item.state = activeTab?.device?.isCustom == true ? .on : .off
+            return web != nil
+        case #selector(userAgentAction(_:)):
+            let presets = UserAgentPreset.all
+            let override = activeTab?.userAgentOverride
+            let current = override.map { a in presets.firstIndex { $0.userAgent == a }.map { $0 + 1 } ?? -1 } ?? 0
+            item.state = item.tag == current ? .on : .off
+            return web != nil
+        case #selector(customUserAgentAction(_:)):
+            let override = activeTab?.userAgentOverride
+            item.state = override != nil && !UserAgentPreset.all.contains { $0.userAgent == override } ? .on : .off
+            return web != nil
+        case #selector(toggleDisableCachesAction(_:)):
+            item.state = activeTab?.disablesCaches == true ? .on : .off
+            return web != nil
+        case #selector(copyAsCurlAction(_:)), #selector(showPageQRCodeAction(_:)):
+            return DeveloperPage.isWeb(web?.url)
+        case #selector(clearSiteDataAction(_:)):
+            return web != nil && activeSiteHost != nil
+        case #selector(openPageWithAction(_:)):
+            return activeTab?.url != nil
         case #selector(rotateDeviceAction(_:)):
             item.state = activeTab?.deviceLandscape == true ? .on : .off
             return activeTab?.device != nil
@@ -2618,6 +2758,19 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     /// The `preferences` variant lets JavaScript be switched per navigation, for per-site blocking.
     func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction, preferences: WKWebpagePreferences,
                  decisionHandler: @escaping @MainActor (WKNavigationActionPolicy, WKWebpagePreferences) -> Void) {
+        // Disable Caches: empty HTTP caches before each page load, so its resources are refetched too.
+        if action.targetFrame?.isMainFrame ?? true, tabs.first(where: { $0.webView === webView })?.disablesCaches == true {
+            DeveloperCache.empty(webView.configuration.websiteDataStore) { [weak self, weak webView] in
+                guard let self, let webView else { return decisionHandler(.cancel, preferences) }
+                self.decideNavigation(webView, action: action, preferences: preferences, decisionHandler: decisionHandler)
+            }
+            return
+        }
+        decideNavigation(webView, action: action, preferences: preferences, decisionHandler: decisionHandler)
+    }
+
+    private func decideNavigation(_ webView: WKWebView, action: WKNavigationAction, preferences: WKWebpagePreferences,
+                                  decisionHandler: @escaping @MainActor (WKNavigationActionPolicy, WKWebpagePreferences) -> Void) {
         if action.targetFrame?.isMainFrame ?? true,
            let tab = tabs.first(where: { $0.webView === webView }) {
             let candidate = action.request.httpMethod?.uppercased() == "GET" ? action.request.url : nil
@@ -2848,6 +3001,48 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
                 tab.displayURL = tab.webView?.url ?? tab.displayURL
                 self.updateToolbar()
             }
+        }
+    }
+
+    // MARK: - Local development certificates
+
+    /// A self-signed or mkcert certificate on a local development host can be accepted after a
+    /// warning. Public hosts always get WebKit's normal validation; there's no way to bypass it.
+    func webView(_ webView: WKWebView, didReceive challenge: URLAuthenticationChallenge,
+                 completionHandler: @escaping @MainActor (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        let space = challenge.protectionSpace
+        guard space.authenticationMethod == NSURLAuthenticationMethodServerTrust, let trust = space.serverTrust,
+              LocalDevelopmentHost.isLocal(space.host) else { return completionHandler(.performDefaultHandling, nil) }
+        if SecTrustEvaluateWithError(trust, nil) { return completionHandler(.performDefaultHandling, nil) }
+        let host = space.host.lowercased()
+        if services.certificateExceptionHosts.contains(host) {
+            return completionHandler(.useCredential, URLCredential(trust: trust))
+        }
+        // Several requests to the same host can fail at once: ask once, answer them all.
+        if pendingCertificateChallenges[host] != nil {
+            pendingCertificateChallenges[host]?.append((trust, completionHandler))
+            return
+        }
+        pendingCertificateChallenges[host] = [(trust, completionHandler)]
+        guard let window, let tab = tabs.first(where: { $0.webView === webView }) else {
+            return resolveCertificateChallenges(host: host, accept: false)
+        }
+        if tab !== activeTab { activate(tab: tab) }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = String(localized: "\(host) has an untrusted certificate")
+        alert.informativeText = String(localized: "This is a local development address, so the certificate is probably self-signed or made by a tool like mkcert. Only continue if this is your own server. Askara will trust it until you quit.")
+        alert.addButton(withTitle: String(localized: "Cancel"))
+        alert.addButton(withTitle: String(localized: "Trust and Continue"))
+        alert.beginSheetModal(for: window) { [weak self] response in
+            self?.resolveCertificateChallenges(host: host, accept: response == .alertSecondButtonReturn)
+        }
+    }
+
+    private func resolveCertificateChallenges(host: String, accept: Bool) {
+        if accept { services.certificateExceptionHosts.insert(host) }
+        for (trust, handler) in pendingCertificateChallenges.removeValue(forKey: host) ?? [] {
+            if accept { handler(.useCredential, URLCredential(trust: trust)) } else { handler(.cancelAuthenticationChallenge, nil) }
         }
     }
 

@@ -21,6 +21,19 @@ public struct DevicePreset: Equatable, Sendable, Identifiable {
         landscape ? (height, width) : (width, height)
     }
 
+    public static let customID = "custom"
+    /// Accepted CSS pixel range for a custom viewport.
+    public static let customRange = 200...4096
+
+    /// A user-chosen viewport (Develop > Device Mode > Custom Size). The user agent stays unchanged
+    /// (empty), since only the size is being tested. nil when a side is outside `customRange`.
+    public static func custom(width: Int, height: Int) -> DevicePreset? {
+        guard customRange.contains(width), customRange.contains(height) else { return nil }
+        return DevicePreset(id: customID, name: "\(width)×\(height)", width: width, height: height, userAgent: "")
+    }
+
+    public var isCustom: Bool { id == Self.customID }
+
     // iOS 26 Safari keeps reporting "18_6" as the OS version; Chrome for Android uses the reduced
     // "Android 10; K" form. These are the strings real devices send.
     static let iPhoneUA = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 "

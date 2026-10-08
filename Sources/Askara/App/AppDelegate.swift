@@ -239,11 +239,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - Develop
 
     @objc func emptyCachesAction(_ sender: Any?) {
-        let types: Set<String> = [WKWebsiteDataTypeDiskCache, WKWebsiteDataTypeMemoryCache,
-                                  WKWebsiteDataTypeFetchCache, WKWebsiteDataTypeOfflineWebApplicationCache]
         // Caches only; cookies, logins, and site storage are left untouched.
-        services.currentProfile.dataStore.removeData(ofTypes: types, modifiedSince: .distantPast) { [weak self] in
-            MainActor.assumeIsolated { self?.services.keyBrowserWindow?.showToast(String(localized: "Caches emptied"), duration: 2) }
+        DeveloperCache.empty(services.currentProfile.dataStore) { [weak self] in
+            self?.services.keyBrowserWindow?.showToast(String(localized: "Caches emptied"), duration: 2)
         }
     }
 
@@ -252,6 +250,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Populated when the menu opens, so there is no cost while it is closed.
     func menuNeedsUpdate(_ menu: NSMenu) {
         if menu.identifier == MainMenu.tabMenuID { return updateTabMenu(menu) }
+        if menu.identifier == OpenWithMenu.id { return OpenWithMenu.fill(menu) }
         if menu.identifier == MainMenu.profileMenuID {
             menu.removeAllItems()
             // The menu bar title already says "Profiles"; skip the duplicate header.
@@ -571,7 +570,36 @@ enum MainMenu {
             .separator(),
             item(String(localized: "Reload Page From Origin"), #selector(B.reloadIgnoringCacheAction(_:)), "r", [.command, .option]),
             item(String(localized: "Empty Caches"), #selector(A.emptyCachesAction(_:)), "e", [.command, .option]),
+            item(String(localized: "Disable Caches"), #selector(B.toggleDisableCachesAction(_:))),
+            item(String(localized: "Clear Site Data"), #selector(B.clearSiteDataAction(_:))),
             .separator(),
+            {
+                let holder = NSMenuItem(title: String(localized: "Open Page With"), action: nil, keyEquivalent: "")
+                let menu = NSMenu(title: String(localized: "Open Page With"))
+                menu.identifier = OpenWithMenu.id
+                menu.delegate = delegate
+                holder.submenu = menu
+                return holder
+            }(),
+            item(String(localized: "Show QR Code for Page"), #selector(B.showPageQRCodeAction(_:))),
+            item(String(localized: "Copy as cURL"), #selector(B.copyAsCurlAction(_:))),
+            .separator(),
+            {
+                // Like Safari's Develop > User Agent.
+                let holder = NSMenuItem(title: String(localized: "User Agent"), action: nil, keyEquivalent: "")
+                let menu = NSMenu(title: String(localized: "User Agent"))
+                menu.addItem(item(String(localized: "Default (Askara)"), #selector(B.userAgentAction(_:)), tag: 0))
+                menu.addItem(.separator())
+                for (index, preset) in UserAgentPreset.all.enumerated() {
+                    let entry = item(preset.name, #selector(B.userAgentAction(_:)), tag: index + 1)
+                    entry.toolTip = preset.userAgent
+                    menu.addItem(entry)
+                }
+                menu.addItem(.separator())
+                menu.addItem(item(String(localized: "Other…"), #selector(B.customUserAgentAction(_:))))
+                holder.submenu = menu
+                return holder
+            }(),
             // Title is set per site in validateMenuItem.
             item(String(localized: "Block JavaScript on This Site"), #selector(B.toggleSiteJavaScriptAction(_:))),
             item(String(localized: "Custom CSS & JavaScript…"), #selector(B.editSiteCodeAction(_:)), "j", [.command, .option, .shift]),
@@ -585,6 +613,7 @@ enum MainMenu {
                     menu.addItem(item("\(preset.name) (\(preset.width)×\(preset.height))",
                                       #selector(B.deviceModeAction(_:)), tag: index + 1))
                 }
+                menu.addItem(item(String(localized: "Custom Size…"), #selector(B.customDeviceSizeAction(_:))))
                 menu.addItem(.separator())
                 menu.addItem(item(String(localized: "Landscape"), #selector(B.rotateDeviceAction(_:))))
                 holder.submenu = menu

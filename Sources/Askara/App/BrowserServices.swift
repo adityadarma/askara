@@ -99,6 +99,10 @@ final class BrowserServices {
     /// Sites the user chose to open over HTTP despite HTTPS-Only Mode. Until quit only.
     var httpAllowedHosts: Set<String> = []
 
+    /// Local development hosts (localhost, *.test, private IPs) whose invalid certificate the user
+    /// accepted. Until quit only, and never public hosts.
+    var certificateExceptionHosts: Set<String> = []
+
     var searchEngine: SearchEngine { preferences.searchEngine }
     var homeURL: URL { preferences.homeURL }
 

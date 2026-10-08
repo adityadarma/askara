@@ -34,6 +34,30 @@ Status: selesai dan terverifikasi.
   Satu-satunya framework yang dibawa adalah `Sparkle.framework` untuk update dalam app.
 - `swift test`: 162 test lulus.
 
+# Task: Fitur Developer Tambahan
+
+Status: selesai; build bersih, `swift test` 177 test lulus. Alur UI (menu, sheet, sertifikat mkcert
+asli, scan QR di HP) belum dicek langsung di layar.
+
+Semua ada di menu Develop:
+- User Agent: Default, preset (Chrome/Edge/Firefox macOS, Chrome Windows, Safari iPhone/iPad,
+  Chrome Android, Googlebot), dan "Other…". Per tab, ikut tab saat sleep/duplicate. User agent
+  Device Mode tetap diutamakan selama aktif. Input kustom dibersihkan dari line break.
+- Disable Caches: toggle per tab; cache HTTP dikosongkan sebelum setiap navigasi main frame.
+  Cache WebKit dipakai bersama satu profil, jadi tab lain di profil itu ikut kehilangan cache.
+- JSON viewer: response `application/json`, `text/json`, `*+json` tampil sebagai tree dengan
+  Tree/Raw/Expand/Collapse/Copy. Berjalan di content world terpisah (tetap aktif saat JavaScript
+  situs diblokir); nilai disisipkan lewat `textContent`. Dokumen di atas 8 MB tetap teks biasa.
+- Sertifikat lokal: sertifikat tidak valid hanya bisa diterima untuk host lokal (`localhost`,
+  `*.localhost`, `*.test`, `*.local`, `*.internal`, 127/8, 10/8, 172.16/12, 192.168/16) setelah
+  sheet peringatan. Pengecualian berlaku sampai app ditutup. Host publik selalu divalidasi normal.
+- Clear Site Data: cookie dan semua data website situs aktif (termasuk subdomain).
+- Open Page With: browser terpasang dibaca saat submenu dibuka.
+- Show QR Code for Page: `localhost`/127.x diganti alamat IPv4 LAN Mac agar bisa dibuka di HP.
+- Copy as cURL: URL, user agent halaman, dan cookie yang cocok (domain, path, Secure). Toast
+  mengingatkan bila cookie ikut tersalin.
+- Device Mode > Custom Size…: 200–4096 piksel CSS per sisi, user agent tidak berubah.
+
 # Task: Rilis Universal dan Update dalam App
 
 Status: selesai; build dan signing terverifikasi lokal. Workflow CI dan alur update end-to-end
