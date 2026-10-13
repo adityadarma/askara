@@ -15,8 +15,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Retry removing website data of deleted profiles that was still in use last time.
         services.removeDataStores()
         services.sync.start()
-        // Start with one fresh home-page tab. Profile cookies remain available, but prior windows
-        // and tabs are not restored automatically.
+        // Start with one fresh home-page tab, unless the user enabled session restore or the
+        // previous launch was force quit / crashed (then the last windows and tabs come back).
         services.openProfile(services.profileList.lastUsedID, atLaunch: true)
         watchMemoryPressure()
         services.startHibernationTimer()

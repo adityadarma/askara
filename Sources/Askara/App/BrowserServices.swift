@@ -218,8 +218,8 @@ final class BrowserServices {
     }
 
     /// Opens a profile: its existing normal window if one is open, otherwise a fresh window with
-    /// exactly one home-page tab. At launch, "Continue where I left off" (Settings) brings back the
-    /// last session's windows instead. Either way the last session stays available under
+    /// exactly one home-page tab. At launch, "Continue where I left off" (Settings), or an unclean
+    /// exit of the previous launch, brings back the last session's windows instead. Either way the last session stays available under
     /// File > Restore Previous Session.
     func openProfile(_ id: UUID, atLaunch: Bool = false) {
         let profile = data(for: id)
@@ -230,7 +230,10 @@ final class BrowserServices {
         profile.prepare {
             // Must happen before the first window opens: that window overwrites the session file.
             if atLaunch { profile.rememberPreviousSession(home: self.homeURL) }
-            if !(atLaunch && self.preferences.restoresSession && profile.restoreSession(home: self.homeURL)) {
+            // After a force quit or crash, always bring the last pages back, even without
+            // "Continue where I left off": the user didn't choose to close them.
+            let restores = self.preferences.restoresSession || CrashReporter.shared.previousSessionEndedUncleanly
+            if !(atLaunch && restores && profile.restoreSession(home: self.homeURL)) {
                 self.makeWindow(profile: profile).newTab(url: self.homeURL)
             }
             NSApp.activate()

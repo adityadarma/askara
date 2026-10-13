@@ -27,8 +27,12 @@ final class CrashReporter {
 
     var hasReport: Bool { incidentFile.load() != nil }
 
+    /// True when the previous launch never reached `finishCleanly()` (force quit, crash, power loss).
+    private(set) var previousSessionEndedUncleanly = false
+
     func start() {
         if let previous = markerFile.load() {
+            previousSessionEndedUncleanly = true
             let incident = CrashIncident(
                 detectedAt: Date(), previousLaunch: previous.launchedAt,
                 appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "development",
