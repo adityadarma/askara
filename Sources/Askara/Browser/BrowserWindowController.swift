@@ -72,11 +72,22 @@ final class Tab: NSObject {
     /// PiP availability is reported independently by every frame; aggregate it at tab level.
     var pictureInPictureFrames: [String: (eligible: Bool, active: Bool, frame: WKFrameInfo)] = [:]
     var hasUnsavedInput: Bool { !dirtyFrames.isEmpty }
+    /// Paused from the toolbar media control: stays listed there so it can be resumed.
+    var mediaPausedByAskara = false
+    /// Watches `_isPlayingAudio` so the media control updates as soon as sound starts or stops.
+    var audioObserver: KeyValueObserver?
+    /// Shown in the toolbar media control: playing sound, in a call, or paused from that control.
+    var hasMedia: Bool {
+        guard let webView else { return false }
+        return webView.askaraIsPlayingAudio || webView.askaraIsCapturingMedia || mediaPausedByAskara
+    }
     /// Live WebKit page, or nil while the tab sleeps.
     var webView: WKWebView? {
         didSet {
             if webView == nil {
                 isDozing = false
+                mediaPausedByAskara = false
+                audioObserver = nil
                 observations.removeAll()
                 dirtyFrames.removeAll()
                 pictureInPictureFrames.removeAll()
@@ -336,6 +347,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     private let pinnedExtensionStack = NSStackView()
     private let extensionsButton = FirstClickButton()
     private let downloadsButton = DownloadsToolbarButton()
+    /// Media playing in any tab of any window: pause, mute, or Picture in Picture from here.
+    private let mediaButton = FirstClickButton()
     private var privacyPopover: NSPopover?
     /// Certificate prompts waiting for the user's answer, per host.
     private var pendingCertificateChallenges: [String: [(SecTrust, @MainActor (URLSession.AuthChallengeDisposition, URLCredential?) -> Void)]] = [:]
@@ -404,6 +417,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
                            name: NSView.frameDidChangeNotification, object: contentView)
         refreshExtensionButtons()
         updateDownloadsButton()
+        updateMediaButton()
         extensionController?.didOpenWindow(self)
     }
 
@@ -450,6 +464,9 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         moreButton.contentTintColor = .labelColor
         configure(extensionsButton, symbol: "puzzlepiece.extension", label: String(localized: "Extensions"),
                   action: #selector(showExtensionsMenu(_:)))
+        configure(mediaButton, symbol: "waveform", label: String(localized: "Media"),
+                  action: #selector(showMediaMenu(_:)))
+        mediaButton.isHidden = true
         configure(downloadsButton, symbol: "arrow.down.circle", label: String(localized: "Downloads (⌥⌘L)"),
                   action: #selector(showDownloads(_:)))
         [
@@ -463,6 +480,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
             (pictureInPictureButton, "askara.picture-in-picture"),
             (extensionsButton, "askara.extensions"),
             (downloadsButton, "askara.downloads"),
+            (mediaButton, "askara.media"),
             (moreButton, "askara.menu"),
         ].forEach { $0.0.setAccessibilityIdentifier($0.1) }
 
@@ -551,7 +569,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         separator.heightAnchor.constraint(equalToConstant: 24).isActive = true
         separator.widthAnchor.constraint(equalToConstant: 1).isActive = true
         let toolbarStack = NSStackView(views: [backButton, forwardButton, reloadButton, homeButton,
-                                               addressBar, pinnedExtensionStack, extensionsButton, downloadsButton, separator,
+                                               addressBar, pinnedExtensionStack, extensionsButton, mediaButton, downloadsButton, separator,
                                                profileButton, moreButton])
         toolbarStack.orientation = .horizontal
         toolbarStack.spacing = 6
@@ -992,6 +1010,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     /// Takes a tab out of this window without closing its page (it's moving to another window).
     fileprivate func removeTabForMove(_ tab: Tab) {
         guard let index = tabs.firstIndex(where: { $0 === tab }) else { return }
+        let partner = splitPartner(of: tab)
+        let splitEnded = endSplit(containing: tab)
         tab.webView?.removeFromSuperview()
         tabs.remove(at: index)
         if tabs.isEmpty {
@@ -999,15 +1019,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
             window?.close()
             return
         }
-        if index < activeIndex {
-            activeIndex -= 1
-            refreshTabStrip()
-        } else if index == activeIndex {
-            activeIndex = -1
-            activate(index: min(index, tabs.count - 1))
-        } else {
-            refreshTabStrip()
-        }
+        settleAfterRemoving(index: index, partner: partner, splitEnded: splitEnded)
         sessionChanged()
     }
 
@@ -1277,7 +1289,6 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         if index != activeIndex { hideFindBar(nil) }
         let previous = activeTab
         previous?.lastActive = Date()
-        previous?.webView?.removeFromSuperview()
         hideSleepSnapshot(animated: false)
 
         activeIndex = index
@@ -1287,11 +1298,15 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         let wasAsleep = tab.webView == nil
         let webView = tab.webView ?? wake(tab)
         rouse(tab)
-        if previous !== tab { extensionController?.didActivateTab(tab, previousActiveTab: previous) }
+        if previous !== tab {
+            extensionController?.didActivateTab(tab, previousActiveTab: previous)
+            // Remember which tab is open, so a force quit or crash reopens this one (debounced).
+            sessionChanged(immediate: false)
+        }
         refreshExtensionButtons()
 
-        contentView.addSubview(webView)
-        layoutWebView(of: tab)
+        // Swaps in this tab's page (and its Split View partner), removing pages no longer shown.
+        showVisibleTabs()
         // The snapshot is only useful while the page reloads; once the tab is in use it's stale.
         if wasAsleep, let snapshot = tab.sleepSnapshot { showSleepSnapshot(snapshot) }
         tab.sleepSnapshot = nil
@@ -1369,6 +1384,9 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
                     if !web.isLoading {
                         tab.displayURL = url
                         self?.updateToolbar()
+                        // SPA navigation (pushState) never reaches didFinish: save it here so a
+                        // force quit reopens the page actually shown (debounced).
+                        self?.sessionChanged(immediate: false)
                     }
                 }
             },
@@ -1399,12 +1417,17 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
                 MainActor.assumeIsolated { self?.updateToolbar() }
             },
             webView.observe(\.cameraCaptureState) { [weak self] _, _ in
-                MainActor.assumeIsolated { self?.refreshTabStrip() }
+                MainActor.assumeIsolated { self?.mediaChanged() }
             },
             webView.observe(\.microphoneCaptureState) { [weak self] _, _ in
-                MainActor.assumeIsolated { self?.refreshTabStrip() }
+                MainActor.assumeIsolated { self?.mediaChanged() }
             },
         ]
+        tab.audioObserver = webView.askaraObservePlayingAudio { [weak self, weak tab] in
+            // Sound again (from the page or the control): no longer "paused by Askara".
+            if let tab, tab.webView?.askaraIsPlayingAudio == true { tab.mediaPausedByAskara = false }
+            self?.mediaChanged()
+        }
     }
 
     private func makeConfiguration() -> WKWebViewConfiguration {
@@ -1472,9 +1495,12 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
             // A muted tab's sound doesn't matter to the user, but a call (camera/mic) still does.
             let audible = tab.isMuted ? (tab.webView?.askaraIsCapturingMedia ?? false) : tab.isPlayingAudio
             return TabSnapshot(id: tab.id, lastActive: tab.lastActive, isLoaded: tab.webView != nil,
-                               isActive: index == activeIndex, memoryBytes: bytes,
+                               isActive: isVisible(tab), memoryBytes: bytes,
                                isPlayingAudio: audible, hasUnsavedInput: tab.hasUnsavedInput,
-                               keepAwake: keepsAwake(tab), wasViewed: tab.wasViewed)
+                               keepAwake: keepsAwake(tab), wasViewed: tab.wasViewed,
+                               idleTimeout: ((tab.webView?.url ?? tab.url)?.host).flatMap {
+                                   services.preferences.sleepTimeout(host: $0)
+                               })
         }
     }
 
@@ -1490,7 +1516,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     func hibernate(tabIDs: Set<UUID>, force: Bool = false, reasons: [UUID: HibernationReason] = [:]) {
         var changed = false
         for (index, tab) in tabs.enumerated()
-        where index != activeIndex && tabIDs.contains(tab.id) && !tab.hasUnsavedInput && (force || !keepsAwake(tab))
+        where !isVisible(tab) && tabIDs.contains(tab.id) && !tab.hasUnsavedInput && (force || !keepsAwake(tab))
             && tab.webView != nil {
             tab.freedBytes = services.exclusiveFootprint(of: tab.webView)
             let reason = force ? "manual" : (reasons[tab.id]?.rawValue ?? "collapsed")
@@ -1518,7 +1544,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     /// page is intact, for when the tab sleeps fully later.
     func doze(tabIDs: Set<UUID>) {
         for (index, tab) in tabs.enumerated()
-        where index != activeIndex && tabIDs.contains(tab.id) && !tab.isDozing {
+        where !isVisible(tab) && tabIDs.contains(tab.id) && !tab.isDozing {
             guard let web = tab.webView else { continue }
             tab.isDozing = true
             web.setAllMediaPlaybackSuspended(true)
@@ -1563,8 +1589,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         guard let image = NSImage(data: data) else { return }
         sleepSnapshotView.image = image
         sleepSnapshotView.alphaValue = 1
-        sleepSnapshotView.frame = contentView.bounds
-        sleepSnapshotView.autoresizingMask = [.width, .height]
+        sleepSnapshotView.frame = activeTab.map(paneRect(for:)) ?? contentView.bounds
+        sleepSnapshotView.autoresizingMask = shownSplit == nil ? [.width, .height] : []
         contentView.addSubview(sleepSnapshotView, positioned: .above, relativeTo: nil)
         // Never cover the page for long if loading stalls.
         sleepSnapshotTimeout?.cancel()
@@ -1613,6 +1639,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         webView.navigationDelegate = nil
         webView.uiDelegate = nil
         webView.removeFromSuperview()
+        services.mediaStateChanged()
     }
 
     private func closeTab(at index: Int) {
@@ -1621,6 +1648,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         if !isPrivate, let saved = savedTab(tab) {
             profile.recentlyClosed.push(.tab(id: UUID(), closedAt: Date(), tab: saved))
         }
+        let partner = splitPartner(of: tab)
+        let splitEnded = endSplit(containing: tab)
         dropWebView(of: tab)
         tabs.remove(at: index)
         extensionController?.didCloseTab(tab, windowIsClosing: tabs.isEmpty)
@@ -1629,16 +1658,33 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
             window?.close()
             return
         }
+        settleAfterRemoving(index: index, partner: partner, splitEnded: splitEnded)
+        sessionChanged()
+    }
+
+    /// The other tab of the Split View pair, if `tab` is in it.
+    private func splitPartner(of tab: Tab) -> Tab? {
+        guard let pair = splitPair else { return nil }
+        if pair.left === tab { return pair.right }
+        if pair.right === tab { return pair.left }
+        return nil
+    }
+
+    /// After a tab left `tabs`: fixes the active index. Closing the active side of Split View
+    /// selects the other side, which then fills the window.
+    private func settleAfterRemoving(index: Int, partner: Tab?, splitEnded: Bool) {
         if index < activeIndex {
             activeIndex -= 1
             refreshTabStrip()
         } else if index == activeIndex {
             activeIndex = -1 // old tab is already detached; don't touch it again
-            activate(index: min(index, tabs.count - 1))
+            let next = partner.flatMap { p in tabs.firstIndex { $0 === p } } ?? min(index, tabs.count - 1)
+            activate(index: next)
+            return
         } else {
             refreshTabStrip()
         }
-        sessionChanged()
+        if splitEnded { showVisibleTabs() }
     }
 
     private func savedTab(_ tab: Tab) -> SessionState.SavedTab? {
@@ -1780,6 +1826,14 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         menu.addItem(menuItem(String(localized: "Duplicate Tab"), #selector(duplicateTabAction(_:)), tab))
         menu.addItem(menuItem(String(localized: "Duplicate Tab in Background"),
                               #selector(duplicateTabInBackgroundAction(_:)), tab))
+        if !isPrivate, tabs.count > 1 {
+            menu.addItem(menuItem(String(localized: "Move Tab to New Window"), #selector(moveTabToNewWindowAction(_:)), tab))
+        }
+        if splitPartner(of: tab) != nil {
+            menu.addItem(menuItem(String(localized: "Close Split View"), #selector(closeSplitViewAction(_:)), tab))
+        } else if tab !== activeTab {
+            menu.addItem(menuItem(String(localized: "Open in Split View"), #selector(openInSplitViewAction(_:)), tab))
+        }
         menu.addItem(menuItem(tab.isPinned ? String(localized: "Unpin Tab") : String(localized: "Pin Tab"),
                               #selector(togglePinTabAction(_:)), tab))
         menu.addItem(menuItem(tab.isMuted ? String(localized: "Unmute Tab") : String(localized: "Mute Tab"),
@@ -1809,6 +1863,21 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         }
         showToast(awake ? String(localized: "\(site) can sleep again") : String(localized: "\(site) will stay awake"),
                   duration: 2)
+    }
+
+    /// View > Sleep This Site: tag 0 = the Settings timeout, otherwise minutes for the active site.
+    @objc func siteSleepAction(_ sender: NSMenuItem) {
+        guard let host = activeSiteHost else { return NSSound.beep() }
+        let minutes = sender.tag
+        var site: String?
+        services.updatePreferences { prefs in
+            // Clears a rule saved for a parent domain too, so "Default" really means default.
+            if minutes == 0 { SiteSettings.candidates(for: host).forEach { prefs.setSiteSleep($0, minutes: nil) } }
+            site = prefs.setSiteSleep(host, minutes: minutes)
+        }
+        guard let site else { return NSSound.beep() }
+        showToast(minutes == 0 ? String(localized: "\(site) uses the Memory Saver setting")
+                               : String(localized: "\(site) sleeps after \(minutes) min in the background"), duration: 2)
     }
 
     // MARK: - Actions: tabs & navigation
@@ -1845,6 +1914,71 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     @objc func previousTabAction(_ sender: Any?) {
         guard !tabs.isEmpty else { return }
         activate(index: (activeIndex - 1 + tabs.count) % tabs.count)
+    }
+
+    /// Order of the ⌃Tab cycle in progress (most recently used first). Kept while Control is held,
+    /// so pressing Tab again walks further back instead of bouncing between two tabs.
+    private var recentTabCycle: [Tab]?
+    private var recentTabPosition = 0
+    private var controlKeyMonitor: Any?
+
+    /// ⌃Tab / ⌃⇧Tab: recently used tabs, like the app switcher. Tag 1 = backwards.
+    @objc func recentTabAction(_ sender: Any?) {
+        guard tabs.count > 1 else { return }
+        if recentTabCycle == nil {
+            let active = activeTab
+            recentTabCycle = tabs.sorted { a, b in
+                if a === active { return true }
+                if b === active { return false }
+                return a.lastActive > b.lastActive
+            }
+            recentTabPosition = 0
+            watchControlRelease()
+        }
+        guard let cycle = recentTabCycle?.filter({ tab in tabs.contains { $0 === tab } }), cycle.count > 1 else {
+            recentTabCycle = nil
+            return
+        }
+        recentTabCycle = cycle
+        let step = (sender as? NSMenuItem)?.tag == 1 ? -1 : 1
+        recentTabPosition = (recentTabPosition + step + cycle.count) % cycle.count
+        activate(tab: cycle[recentTabPosition])
+        // A menu shortcut without Control held (e.g. from the menu bar): one step only.
+        if !NSEvent.modifierFlags.contains(.control) { endRecentTabCycle() }
+    }
+
+    private func watchControlRelease() {
+        guard controlKeyMonitor == nil else { return }
+        controlKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+            MainActor.assumeIsolated {
+                if !event.modifierFlags.contains(.control) { self?.endRecentTabCycle() }
+            }
+            return event
+        }
+    }
+
+    private func endRecentTabCycle() {
+        recentTabCycle = nil
+        if let monitor = controlKeyMonitor { NSEvent.removeMonitor(monitor) }
+        controlKeyMonitor = nil
+    }
+
+    /// Tab > Move Tab to New Window: the live page (history, scroll, logins) moves along.
+    @objc func moveTabToNewWindowAction(_ sender: Any?) {
+        guard !isPrivate, tabs.count > 1, let tab = targetTab(sender),
+              let oldIndex = tabs.firstIndex(where: { $0 === tab }) else { return NSSound.beep() }
+        let target = services.makeWindow(profile: profile)
+        if let newWindow = target.window, let source = self.window {
+            newWindow.setContentSize(source.contentLayoutRect.size)
+            newWindow.setFrameTopLeftPoint(NSPoint(x: source.frame.minX + 30, y: source.frame.maxY - 30))
+        }
+        removeTabForMove(tab)
+        target.adopt(tab, at: 0, from: self, oldIndex: oldIndex)
+    }
+
+    /// ⌘K: search tabs, menu commands, bookmarks, and history from one field.
+    @objc func showCommandPaletteAction(_ sender: Any?) {
+        CommandPalette.toggle(for: self, services: services)
     }
 
     @objc func focusAddressBar(_ sender: Any?) {
@@ -2165,7 +2299,13 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     }
 
     @objc func togglePictureInPicture(_ sender: Any?) {
-        guard let tab = activeTab, let web = tab.webView, tab.pictureInPictureEligible else { return NSSound.beep() }
+        guard let tab = activeTab else { return NSSound.beep() }
+        togglePictureInPicture(of: tab)
+    }
+
+    /// Also used by the media control for tabs in the background or in other windows.
+    func togglePictureInPicture(of tab: Tab) {
+        guard let web = tab.webView, tab.pictureInPictureEligible else { return NSSound.beep() }
         Task { @MainActor [weak self, weak web] in
             guard let self, let web else { return }
             do {
@@ -2175,6 +2315,130 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
             } catch {
                 self.showToast(String(localized: "Picture in Picture isn't available for this video"), duration: 3)
             }
+        }
+    }
+
+    // MARK: - Media control
+
+    /// Sound, camera, or microphone changed in one of this window's tabs.
+    private func mediaChanged() {
+        refreshTabStrip()
+        services.mediaStateChanged()
+    }
+
+    /// Toolbar media button: shown in every window while any tab (in any window) has media.
+    func updateMediaButton() {
+        let media = services.mediaTabs
+        mediaButton.isHidden = media.isEmpty
+        let playing = media.contains { $0.webView?.askaraIsPlayingAudio == true && !$0.isMuted }
+        let label = String(localized: "Media")
+        mediaButton.image = NSImage(systemSymbolName: playing ? "waveform" : "play.circle", accessibilityDescription: label)?
+            .withSymbolConfiguration(.init(pointSize: 14, weight: .medium))
+        mediaButton.contentTintColor = playing ? .controlAccentColor : .secondaryLabelColor
+    }
+
+    @objc private func showMediaMenu(_ sender: NSButton) {
+        let menu = NSMenu()
+        menu.minimumWidth = 280
+        menu.autoenablesItems = false
+        func add(_ title: String, _ symbol: String, _ action: Selector, _ tab: Tab?, indent: Bool = true) {
+            let item = menuItem(title, action, tab)
+            item.image = menuIcon(symbol)
+            item.indentationLevel = indent ? 1 : 0
+            menu.addItem(item)
+        }
+        let media = services.mediaTabs
+        for (index, tab) in media.enumerated() {
+            if index > 0 { menu.addItem(.separator()) }
+            let web = tab.webView
+            let header = menuItem(tab.title, #selector(showMediaTabAction(_:)), tab)
+            header.image = FaviconStore.shared.icon(for: web?.url ?? tab.url).map { icon in
+                let small = icon.copy() as? NSImage ?? icon
+                small.size = NSSize(width: 16, height: 16)
+                return small
+            } ?? menuIcon("globe")
+            header.toolTip = (web?.url ?? tab.url)?.host
+            menu.addItem(header)
+            let playing = web?.askaraIsPlayingAudio == true
+            // A call (camera/mic) without sound has nothing to pause.
+            if playing || tab.mediaPausedByAskara {
+                add(playing ? String(localized: "Pause") : String(localized: "Play"),
+                    playing ? "pause.fill" : "play.fill", #selector(toggleMediaPlaybackAction(_:)), tab)
+            }
+            add(tab.isMuted ? String(localized: "Unmute Tab") : String(localized: "Mute Tab"),
+                tab.isMuted ? "speaker.wave.2" : "speaker.slash", #selector(toggleMediaMuteAction(_:)), tab)
+            if tab.pictureInPictureEligible {
+                add(tab.isPictureInPicture ? String(localized: "Exit Picture in Picture") : String(localized: "Picture in Picture"),
+                    "pip", #selector(toggleMediaPictureInPictureAction(_:)), tab)
+            }
+        }
+        if media.filter({ $0.webView?.askaraIsPlayingAudio == true }).count > 1 {
+            menu.addItem(.separator())
+            add(String(localized: "Pause All Media"), "pause.circle", #selector(pauseAllMediaAction(_:)), nil, indent: false)
+        }
+        guard !media.isEmpty else { return NSSound.beep() }
+        showToolbarMenu(menu, below: sender)
+    }
+
+    /// The media control's tab, which may live in another window. Ignores tabs that were closed since.
+    private func mediaTab(_ sender: Any?) -> Tab? {
+        guard let tab = (sender as? NSMenuItem)?.representedObject as? Tab,
+              tab.owner?.allTabs.contains(where: { $0 === tab }) == true else { return nil }
+        return tab
+    }
+
+    @objc func showMediaTabAction(_ sender: Any?) {
+        guard let tab = mediaTab(sender), let owner = tab.owner else { return }
+        owner.activate(tab: tab)
+        owner.window?.makeKeyAndOrderFront(nil)
+    }
+
+    @objc func toggleMediaPlaybackAction(_ sender: Any?) {
+        guard let tab = mediaTab(sender) else { return }
+        setMediaPaused(tab.webView?.askaraIsPlayingAudio == true, tab: tab)
+    }
+
+    @objc func toggleMediaMuteAction(_ sender: Any?) {
+        guard let tab = mediaTab(sender) else { return }
+        tab.owner?.setMuted(!tab.isMuted, tab: tab)
+        services.mediaStateChanged()
+    }
+
+    @objc func toggleMediaPictureInPictureAction(_ sender: Any?) {
+        guard let tab = mediaTab(sender) else { return }
+        tab.owner?.togglePictureInPicture(of: tab)
+    }
+
+    /// Tab › Pause All Media and the media control: pauses every tab in every window.
+    @objc func pauseAllMediaAction(_ sender: Any?) {
+        let playing = services.mediaTabs.filter { $0.webView?.askaraIsPlayingAudio == true }
+        guard !playing.isEmpty else { return NSSound.beep() }
+        playing.forEach { setMediaPaused(true, tab: $0) }
+    }
+
+    /// Pauses with a real pause (the page's own controls update), so the user can also resume from
+    /// the page. The script marks what it paused so Play resumes the same media; frames with a known
+    /// video are included, and WebKit's pause catches media in any other frame.
+    private func setMediaPaused(_ paused: Bool, tab: Tab) {
+        guard let web = tab.webView else { return }
+        let frames: [WKFrameInfo?] = [nil] + tab.pictureInPictureFrames.values.map(\.frame).filter { !$0.isMainFrame }
+        Task { @MainActor [weak self, weak web, weak tab] in
+            guard let web, let tab else { return }
+            var handled = false
+            for frame in frames {
+                let result = try? await web.callAsyncJavaScript(
+                    "return window.__askaraMedia ? window.__askaraMedia(action) : false;",
+                    arguments: ["action": paused ? "pause" : "play"], in: frame, contentWorld: .page)
+                if (result as? Bool) == true { handled = true }
+            }
+            if paused {
+                await web.pauseAllMediaPlayback()
+                tab.mediaPausedByAskara = true
+            } else {
+                tab.mediaPausedByAskara = false
+                if !handled { self?.showToast(String(localized: "This page's media can only be resumed from the page"), duration: 3) }
+            }
+            self?.services.mediaStateChanged()
         }
     }
 
@@ -2389,23 +2653,26 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
 
     /// Full size normally. In Device Mode: the device's size, centered, scaled down to fit the window.
     /// `pageZoom` is scaled by the same factor, so the page still lays out at the device's CSS width.
+    /// In Split View, each page fills its own side instead of the whole content area.
     private func layoutWebView(of tab: Tab) {
         guard let web = tab.webView, web.superview === contentView else { return }
+        let pane = paneRect(for: tab)
         guard let device = tab.device else {
-            web.autoresizingMask = [.width, .height]
-            web.frame = contentView.bounds
+            // Split View panes are laid out on every resize instead (contentViewResized).
+            web.autoresizingMask = shownSplit == nil ? [.width, .height] : []
+            web.frame = pane
             web.pageZoom = tab.zoom
             contentView.layer?.backgroundColor = nil
             return
         }
         let size = device.size(landscape: tab.deviceLandscape)
         let width = CGFloat(size.width), height = CGFloat(size.height)
-        let available = contentView.bounds.insetBy(dx: 16, dy: 16)
+        let available = pane.insetBy(dx: 16, dy: 16)
         let scale = max(0.25, min(1, available.width / width, available.height / height))
         let frameSize = NSSize(width: (width * scale).rounded(), height: (height * scale).rounded())
         web.autoresizingMask = []
-        web.frame = NSRect(x: ((contentView.bounds.width - frameSize.width) / 2).rounded(),
-                           y: ((contentView.bounds.height - frameSize.height) / 2).rounded(),
+        web.frame = NSRect(x: (pane.minX + (pane.width - frameSize.width) / 2).rounded(),
+                           y: (pane.minY + (pane.height - frameSize.height) / 2).rounded(),
                            width: frameSize.width, height: frameSize.height)
         web.pageZoom = scale * tab.zoom
         contentView.wantsLayer = true
@@ -2413,8 +2680,179 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     }
 
     @objc private func contentViewResized(_ note: Notification) {
+        if shownSplit != nil { return layoutVisibleTabs() }
         guard let tab = activeTab, tab.device != nil else { return }
         layoutWebView(of: tab)
+    }
+
+    // MARK: - Split View
+
+    /// Two tabs side by side. The pair stays together while you visit other tabs, and comes back
+    /// when you select either of them. The side you click becomes the active tab (address bar,
+    /// shortcuts, find).
+    private var splitPair: (left: Tab, right: Tab)?
+    /// Share of the width for the left page.
+    private var splitRatio: CGFloat = 0.5
+    private lazy var splitDivider: SplitDividerView = {
+        let divider = SplitDividerView()
+        divider.onDrag = { [weak self] x in
+            guard let self else { return }
+            let width = max(1, self.contentView.bounds.width - 1)
+            self.splitRatio = min(0.8, max(0.2, x / width))
+            self.layoutVisibleTabs()
+        }
+        divider.onDoubleClick = { [weak self] in
+            self?.splitRatio = 0.5
+            self?.layoutVisibleTabs()
+        }
+        return divider
+    }()
+    /// Accent line over the page that the toolbar currently controls.
+    private let splitFocusBar: NSView = {
+        let bar = NSView()
+        bar.wantsLayer = true
+        return bar
+    }()
+
+    /// The pair, while one of its tabs is the active tab (otherwise only the active tab is shown).
+    private var shownSplit: (left: Tab, right: Tab)? {
+        guard let pair = splitPair, let active = activeTab, pair.left === active || pair.right === active else { return nil }
+        return pair
+    }
+
+    private func visibleTabs() -> [Tab] {
+        if let pair = shownSplit { return [pair.left, pair.right] }
+        return activeTab.map { [$0] } ?? []
+    }
+
+    /// Shown on screen: never dozes or sleeps, and reloads right away if its page process ends.
+    private func isVisible(_ tab: Tab) -> Bool { visibleTabs().contains { $0 === tab } }
+
+    private func paneRect(for tab: Tab) -> NSRect {
+        let bounds = contentView.bounds
+        guard let pair = shownSplit else { return bounds }
+        let leftWidth = ((bounds.width - 1) * splitRatio).rounded()
+        if tab === pair.left { return NSRect(x: 0, y: 0, width: leftWidth, height: bounds.height) }
+        return NSRect(x: leftWidth + 1, y: 0, width: max(0, bounds.width - leftWidth - 1), height: bounds.height)
+    }
+
+    /// Puts the visible tabs' pages in the content area (waking a sleeping partner) and removes the rest.
+    private func showVisibleTabs() {
+        let visible = visibleTabs()
+        for tab in visible where tab !== activeTab {
+            if tab.webView == nil { wake(tab) }
+            rouse(tab)
+            tab.wasViewed = true
+            tab.lastActive = Date()
+        }
+        let pages = visible.compactMap(\.webView)
+        for case let web as WKWebView in contentView.subviews where !pages.contains(where: { $0 === web }) {
+            web.removeFromSuperview()
+        }
+        for web in pages where web.superview !== contentView {
+            contentView.addSubview(web, positioned: .below, relativeTo: nil)
+        }
+        layoutVisibleTabs()
+    }
+
+    private func layoutVisibleTabs() {
+        visibleTabs().forEach(layoutWebView(of:))
+        guard let pair = shownSplit, let active = activeTab else {
+            splitDivider.removeFromSuperview()
+            splitFocusBar.removeFromSuperview()
+            return
+        }
+        let left = paneRect(for: pair.left)
+        splitDivider.frame = NSRect(x: (left.maxX + 0.5 - SplitDividerView.hitWidth / 2).rounded(.down), y: 0,
+                                    width: SplitDividerView.hitWidth, height: contentView.bounds.height)
+        let pane = paneRect(for: active)
+        // contentView is flipped = false: the top edge is maxY.
+        splitFocusBar.frame = NSRect(x: pane.minX, y: pane.maxY - 2, width: pane.width, height: 2)
+        splitFocusBar.layer?.backgroundColor = NSColor.controlAccentColor.cgColor
+        for view in [splitDivider, splitFocusBar] where view.superview !== contentView {
+            contentView.addSubview(view, positioned: .above, relativeTo: nil)
+        }
+        splitDivider.needsDisplay = true
+        window?.invalidateCursorRects(for: splitDivider)
+    }
+
+    /// WebKit may route clicks to internal subviews, so `AskaraWebView.mouseDown` alone isn't
+    /// guaranteed to see them. This watches clicks in this window and finds the page under them.
+    private var splitClickMonitor: Any?
+
+    private func watchSplitClicks() {
+        guard splitClickMonitor == nil else { return }
+        splitClickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
+            MainActor.assumeIsolated {
+                guard let self, event.window === self.window, self.shownSplit != nil,
+                      let hit = self.window?.contentView?.hitTest(event.locationInWindow) else { return }
+                var view: NSView? = hit
+                while let current = view, !(current is WKWebView) { view = current.superview }
+                if let web = view as? WKWebView { self.webViewWasClicked(web) }
+            }
+            return event
+        }
+    }
+
+    private func stopWatchingSplitClicks() {
+        if let monitor = splitClickMonitor { NSEvent.removeMonitor(monitor) }
+        splitClickMonitor = nil
+    }
+
+    /// Clicking the other page of Split View makes it the active tab.
+    func webViewWasClicked(_ webView: WKWebView) {
+        guard shownSplit != nil, webView !== activeTab?.webView,
+              let tab = tabs.first(where: { $0.webView === webView }) else { return }
+        activate(tab: tab)
+    }
+
+    /// The tab is closing or moving to another window: the other page goes back to full width.
+    /// Returns true when a split was ended, so the caller can redo the layout once tabs are settled.
+    @discardableResult
+    private func endSplit(containing tab: Tab) -> Bool {
+        guard let pair = splitPair, pair.left === tab || pair.right === tab else { return false }
+        splitPair = nil
+        stopWatchingSplitClicks()
+        return true
+    }
+
+    private func openSplit(with partner: Tab) {
+        guard let active = activeTab, partner !== active, tabs.contains(where: { $0 === partner }) else { return }
+        splitPair = (active, partner)
+        watchSplitClicks()
+        showVisibleTabs()
+        updateToolbar()
+        showToast(String(localized: "Split View: click a page to control it from the toolbar"), duration: 3)
+    }
+
+    /// View › Split View: pairs the active tab with the most recently used other tab (or a new tab).
+    /// Again: back to a single page.
+    @objc func toggleSplitViewAction(_ sender: Any?) {
+        if shownSplit != nil { return closeSplitViewAction(sender) }
+        guard let active = activeTab else { return }
+        let partner = tabs.filter { $0 !== active }.max { $0.lastActive < $1.lastActive }
+            ?? insertTab(url: services.homeURL, at: activeIndex + 1, activate: false)
+        openSplit(with: partner)
+    }
+
+    /// Tab menu › Open in Split View: this tab next to the active one.
+    @objc func openInSplitViewAction(_ sender: Any?) {
+        guard let tab = targetTab(sender), tab !== activeTab else { return NSSound.beep() }
+        openSplit(with: tab)
+    }
+
+    @objc func closeSplitViewAction(_ sender: Any?) {
+        guard splitPair != nil else { return }
+        splitPair = nil
+        stopWatchingSplitClicks()
+        showVisibleTabs()
+        if let web = activeTab?.webView { window?.makeFirstResponder(web) }
+    }
+
+    @objc func swapSplitSidesAction(_ sender: Any?) {
+        guard let pair = shownSplit else { return }
+        splitPair = (pair.right, pair.left)
+        layoutVisibleTabs()
     }
 
     // MARK: - Actions: zoom & print
@@ -2748,6 +3186,23 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
             guard let host = activeSiteHost else { return false }
             item.state = services.preferences.keepsAwake(host: host) ? .on : .off
             return true
+        case #selector(toggleSplitViewAction(_:)):
+            item.state = shownSplit != nil ? .on : .off
+            return activeTab != nil
+        case #selector(swapSplitSidesAction(_:)):
+            return shownSplit != nil
+        case #selector(pauseAllMediaAction(_:)):
+            return services.mediaTabs.contains { $0.webView?.askaraIsPlayingAudio == true }
+        case #selector(moveTabToNewWindowAction(_:)):
+            return !isPrivate && tabs.count > 1
+        case #selector(recentTabAction(_:)):
+            return tabs.count > 1
+        case #selector(siteSleepAction(_:)):
+            guard let host = activeSiteHost else { return false }
+            let minutes = services.preferences.sleepTimeout(host: host).map { Int($0 / 60) } ?? 0
+            item.state = item.tag == minutes ? .on : .off
+            // A keep-awake exception wins, so a timeout would have no effect.
+            return !services.preferences.keepsAwake(host: host)
         default:
             return true
         }
@@ -2879,6 +3334,10 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         tab.pictureInPictureEligible = false
         tab.isPictureInPicture = false
         tab.pictureInPictureFrame = nil
+        if tab.mediaPausedByAskara {
+            tab.mediaPausedByAskara = false
+            services.mediaStateChanged()
+        }
         if tab === activeTab { updateToolbar() }
         // As early as possible so the page doesn't flash without the custom CSS.
         applySiteCSS(to: webView, url: webView.url)
@@ -2923,7 +3382,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         // Killed by macOS (usually out of memory) or crashed: the page has to load again.
         Log.notice("Askara: page process ended, tab will reload: \(webView.url?.host ?? "?")")
         CrashReporter.shared.record("WebContent process ended")
-        if index == activeIndex {
+        if isVisible(tabs[index]) {
             webView.reload()
         } else {
             dropWebView(of: tabs[index])
@@ -3225,6 +3684,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     func windowWillMove(_ notification: Notification) { suggestions.hide() }
 
     func windowWillClose(_ notification: Notification) {
+        stopWatchingSplitClicks()
+        endRecentTabCycle()
         spareNewTab.discard()
         suggestionTask?.cancel()
         suggestionTask = nil

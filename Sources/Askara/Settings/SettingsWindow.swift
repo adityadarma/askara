@@ -27,6 +27,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     private let protectedLabel = NSTextField(labelWithString: "")
     private let awakeTable = NSTableView()
     private let awakeField = NSTextField()
+    private let siteRulePopup = NSPopUpButton()
     // Privacy
     private let httpsOnlyBox = NSButton(checkboxWithTitle: String(localized: "Always use secure connections (HTTPS-Only Mode)"),
                                         target: nil, action: nil)
@@ -254,9 +255,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         grid.rowSpacing = 10
         grid.column(at: 0).xPlacement = .trailing
 
-        let column = NSTableColumn(identifier: .init("site"))
-        column.title = String(localized: "Always keep these sites awake")
-        awakeTable.addTableColumn(column)
+        for (id, title, width) in [("site", String(localized: "Site"), 320.0), ("rule", String(localized: "Rule"), 200.0)] {
+            let column = NSTableColumn(identifier: .init(id))
+            column.title = title
+            column.width = width
+            awakeTable.addTableColumn(column)
+        }
+        awakeTable.allowsMultipleSelection = true
         awakeTable.dataSource = self
         awakeTable.delegate = self
         awakeTable.usesAlternatingRowBackgroundColors = true
@@ -270,12 +275,20 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         awakeField.widthAnchor.constraint(equalToConstant: 260).isActive = true
         let add = NSButton(title: String(localized: "Add"), target: self, action: #selector(addAwakeSite(_:)))
         let remove = NSButton(title: String(localized: "Remove"), target: self, action: #selector(removeAwakeSite(_:)))
-        let row = NSStackView(views: [awakeField, add, remove])
+        siteRulePopup.addItem(withTitle: String(localized: "Never sleeps"))
+        siteRulePopup.lastItem?.tag = 0
+        for minutes in BrowserPreferences.siteSleepChoices {
+            siteRulePopup.addItem(withTitle: String(localized: "Sleeps after \(minutes) min"))
+            siteRulePopup.lastItem?.tag = minutes
+        }
+        siteRulePopup.setAccessibilityLabel(String(localized: "Rule"))
+        let row = NSStackView(views: [awakeField, siteRulePopup, add, remove])
         row.spacing = 6
 
         return stack([
             grid,
             note(String(localized: "Paused tabs stay loaded (no reload) but their media stops and caches are freed. Sleeping tabs use no RAM and reload when you open them, showing their last view meanwhile. Tabs with unsent form input, playing audio, or pinned tabs don't sleep. When macOS runs low on memory, background tabs sleep regardless of these settings.")),
+            note(String(localized: "Site rules: add a site here to keep it awake or make it sleep sooner. View > Sleep This Site does the same for the open site.")),
             scroll, row,
         ])
     }
@@ -544,16 +557,38 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     @objc private func addAwakeSite(_ sender: Any?) {
         let text = awakeField.stringValue
         guard !text.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        let minutes = siteRulePopup.selectedTag()
         var added: String?
-        services.updatePreferences { added = $0.addKeepAwakeSite(text) }
+        services.updatePreferences { prefs in
+            if minutes == 0 {
+                added = prefs.addKeepAwakeSite(text)
+                if added != nil { prefs.setSiteSleep(text, minutes: nil) }
+            } else if let site = prefs.setSiteSleep(text, minutes: minutes) {
+                // One rule per site: a timeout replaces "never sleeps".
+                prefs.removeKeepAwakeSite(site)
+                added = site
+            }
+        }
         if added == nil { NSSound.beep() } else { awakeField.stringValue = "" }
     }
 
     @objc private func removeAwakeSite(_ sender: Any?) {
-        let sites = services.preferences.keepAwakeSites
-        let selected = awakeTable.selectedRowIndexes.compactMap { sites.indices.contains($0) ? sites[$0] : nil }
+        let rules = siteRules
+        let selected = awakeTable.selectedRowIndexes.compactMap { rules.indices.contains($0) ? rules[$0] : nil }
         guard !selected.isEmpty else { return NSSound.beep() }
-        services.updatePreferences { prefs in selected.forEach { prefs.removeKeepAwakeSite($0) } }
+        services.updatePreferences { prefs in
+            for rule in selected {
+                if rule.minutes == nil { prefs.removeKeepAwakeSite(rule.site) } else { prefs.setSiteSleep(rule.site, minutes: nil) }
+            }
+        }
+    }
+
+    /// Keep-awake sites (minutes nil) and per-site sleep timeouts, sorted by site.
+    private var siteRules: [(site: String, minutes: Int?)] {
+        let prefs = services.preferences
+        let awake = prefs.keepAwakeSites.map { (site: $0, minutes: Int?.none) }
+        let timed = prefs.siteSleepMinutes.map { (site: $0.key, minutes: Optional($0.value)) }
+        return (awake + timed).sorted { ($0.site, $0.minutes ?? 0) < ($1.site, $1.minutes ?? 0) }
     }
 
     @objc private func forgetPermission(_ sender: Any?) {
@@ -599,7 +634,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     // MARK: - Tables
 
     func numberOfRows(in tableView: NSTableView) -> Int {
-        if tableView === awakeTable { return services.preferences.keepAwakeSites.count }
+        if tableView === awakeTable { return siteRules.count }
         if tableView === extensionTable { return services.currentProfile.extensions.installed.count }
         return permissionRows.count
     }
@@ -607,7 +642,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let text: String
         if tableView === awakeTable {
-            text = services.preferences.keepAwakeSites[row]
+            let rules = siteRules
+            guard rules.indices.contains(row) else { return nil }
+            let rule = rules[row]
+            if tableColumn?.identifier.rawValue == "rule" {
+                text = rule.minutes.map { String(localized: "Sleeps after \($0) min") } ?? String(localized: "Never sleeps")
+            } else {
+                text = rule.site
+            }
         } else if tableView === extensionTable {
             let manager = services.currentProfile.extensions
             let item = manager.installed[row]

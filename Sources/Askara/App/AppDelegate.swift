@@ -435,6 +435,7 @@ enum MainMenu {
             item(String(localized: "New Window"), #selector(A.newWindowAction(_:)), "n"),
             item(String(localized: "New Private Window"), #selector(A.newPrivateWindowAction(_:)), "n", [.command, .shift]),
             item(String(localized: "Open Location…"), #selector(B.focusAddressBar(_:)), "l"),
+            item(String(localized: "Command Palette…"), #selector(B.showCommandPaletteAction(_:)), "k"),
             .separator(),
             item(String(localized: "Close Tab"), #selector(B.closeTabAction(_:)), "w"),
             item(String(localized: "Close Window"), #selector(NSWindow.performClose(_:)), "w", [.command, .shift]),
@@ -479,8 +480,23 @@ enum MainMenu {
             item(String(localized: "Zoom Out"), #selector(B.zoomOutAction(_:)), "-"),
             item(String(localized: "Actual Size"), #selector(B.zoomResetAction(_:)), "0"),
             .separator(),
+            item(String(localized: "Split View"), #selector(B.toggleSplitViewAction(_:)), "\\", .command),
+            item(String(localized: "Swap Split View Sides"), #selector(B.swapSplitSidesAction(_:))),
+            .separator(),
             item(String(localized: "Sleep Background Tabs"), #selector(B.hibernateNowAction(_:)), "k", [.command, .shift]),
             item(String(localized: "Keep This Site Awake"), #selector(B.toggleKeepAwakeAction(_:))),
+            {
+                // Per-site sleep timeout, e.g. heavy sites sleep after 1 min in the background.
+                let holder = NSMenuItem(title: String(localized: "Sleep This Site"), action: nil, keyEquivalent: "")
+                let menu = NSMenu(title: String(localized: "Sleep This Site"))
+                menu.addItem(item(String(localized: "Memory Saver Setting"), #selector(B.siteSleepAction(_:)), tag: 0))
+                menu.addItem(.separator())
+                for minutes in BrowserPreferences.siteSleepChoices {
+                    menu.addItem(item(String(localized: "After \(minutes) min"), #selector(B.siteSleepAction(_:)), tag: minutes))
+                }
+                holder.submenu = menu
+                return holder
+            }(),
             {
                 // Memory Saver status, updated when the View menu opens.
                 let status = NSMenuItem(title: "", action: nil, keyEquivalent: "")
@@ -542,6 +558,10 @@ enum MainMenu {
             item(String(localized: "Mute Tab"), #selector(B.toggleMuteTabAction(_:)), "m", [.command, .control]),
             item(String(localized: "Duplicate Tab"), #selector(B.duplicateTabAction(_:))),
             item(String(localized: "Duplicate Tab in Background"), #selector(B.duplicateTabInBackgroundAction(_:))),
+            item(String(localized: "Move Tab to New Window"), #selector(B.moveTabToNewWindowAction(_:))),
+            item(String(localized: "Pause All Media"), #selector(B.pauseAllMediaAction(_:)), "p", [.command, .control]),
+            item(String(localized: "Show Recently Used Tab"), #selector(B.recentTabAction(_:)), "\t", .control),
+            item(String(localized: "Show Previously Used Tab"), #selector(B.recentTabAction(_:)), "\t", [.control, .shift], tag: 1),
             item(String(localized: "Close Duplicate Tabs"), #selector(B.closeDuplicateTabsAction(_:))),
         ]
         for n in 1...9 {

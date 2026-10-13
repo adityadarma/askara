@@ -362,11 +362,35 @@ final class BrowserServices {
                 let services = BrowserServices.shared
                 services.enforceHibernation()
                 services.windows.forEach { $0.refreshTabStrip() } // audio icon
+                services.mediaStateChanged() // fallback when `_isPlayingAudio` can't be observed
             }
         }
         timer.tolerance = 10
         RunLoop.main.add(timer, forMode: .common)
         hibernationTimer = timer
+    }
+
+    // MARK: - Media control (global, across windows)
+
+    /// Tabs with sound, a call, or media paused from the toolbar control. Private windows included:
+    /// the control is only shown in Askara's own windows. Order: windows by last use, then tab order.
+    var mediaTabs: [Tab] {
+        windows.sorted { $0.lastFocused > $1.lastFocused }.flatMap { $0.allTabs.filter(\.hasMedia) }
+    }
+
+    private var mediaUpdateScheduled = false
+
+    /// Coalesces bursts (several frames/tabs changing at once) into one toolbar update per run loop.
+    func mediaStateChanged() {
+        guard !mediaUpdateScheduled else { return }
+        mediaUpdateScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.mediaUpdateScheduled = false
+                self.windows.forEach { $0.updateMediaButton() }
+            }
+        }
     }
 
     func enforceHibernation(pressure: MemoryPressure = .normal) {

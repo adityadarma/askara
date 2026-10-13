@@ -17,6 +17,12 @@ extension WKWebView {
         return (value(forKey: "_isPlayingAudio") as? Bool) ?? false
     }
 
+    /// Calls `handler` when `_isPlayingAudio` changes, so audio state shows right away instead of on
+    /// the next timer tick. nil when this WebKit lacks the property.
+    func askaraObservePlayingAudio(_ handler: @escaping @MainActor () -> Void) -> KeyValueObserver? {
+        KeyValueObserver(self, keyPath: "_isPlayingAudio", handler: handler)
+    }
+
     /// Camera/microphone active (e.g. Google Meet): don't put to sleep.
     var askaraIsCapturingMedia: Bool {
         cameraCaptureState != .none || microphoneCaptureState != .none
@@ -46,6 +52,33 @@ extension WKWebView {
 /// Browser marker in the user agent. WKWebView's default omits "Version/… Safari/…", so
 /// some sites serve an old version (e.g. the basic Google homepage) and extensions like Bitwarden
 /// fail to identify the browser and get stuck on the loading screen.
+/// String-keyed KVO for private WebKit properties, which Swift key paths can't name. Keeps the
+/// observed object alive and unregisters on deinit, so clearing the observer is enough.
+final class KeyValueObserver: NSObject {
+    private let object: NSObject
+    private let keyPath: String
+    private let handler: @MainActor () -> Void
+
+    init?(_ object: NSObject, keyPath: String, handler: @escaping @MainActor () -> Void) {
+        guard object.responds(to: Selector((keyPath))) else { return nil }
+        self.object = object
+        self.keyPath = keyPath
+        self.handler = handler
+        super.init()
+        object.addObserver(self, forKeyPath: keyPath, options: [], context: nil)
+    }
+
+    override func observeValue(forKeyPath keyPath: String?, of object: Any?,
+                               change: [NSKeyValueChangeKey: Any]?, context: UnsafeMutableRawPointer?) {
+        let handler = handler
+        // WebKit posts these on the main thread; hop there if that ever changes.
+        if Thread.isMainThread { MainActor.assumeIsolated { handler() } }
+        else { DispatchQueue.main.async { MainActor.assumeIsolated { handler() } } }
+    }
+
+    deinit { object.removeObserver(self, forKeyPath: keyPath) }
+}
+
 enum UserAgent {
     static let applicationName: String = {
         let full = Bundle(path: "/Applications/Safari.app")?
@@ -238,6 +271,24 @@ enum PictureInPictureScript {
         if (scheduled || !pageVisible) return;
         scheduled = true;
         requestAnimationFrame(() => report(false));
+      };
+
+      // Toolbar media control. Pause marks what it stopped, so Play resumes exactly that media
+      // (or the main player when nothing was paused by Askara, e.g. after the page paused itself).
+      window.__askaraMedia = (action) => {
+        const media = Array.from(document.querySelectorAll('video, audio'));
+        if (action === 'pause') {
+          let paused = false;
+          for (const m of media) if (!m.paused) { m.__askaraPaused = true; m.pause(); paused = true; }
+          return paused;
+        }
+        let targets = media.filter((m) => m.__askaraPaused);
+        if (!targets.length) {
+          const main = candidate(videos()) || media.find((m) => m.readyState > 0);
+          targets = main ? [main] : [];
+        }
+        for (const m of targets) { delete m.__askaraPaused; m.play().catch(() => {}); }
+        return targets.length > 0;
       };
 
       window.__askaraTogglePiP = async () => {

@@ -46,6 +46,9 @@ public struct BrowserPreferences: Codable, Equatable, Sendable {
     public var syncFolderPath = ""
     /// Security-scoped permission for the selected folder. Local to this Mac.
     public var syncFolderBookmark: Data?
+    /// Per-site sleep timeout in minutes (site key → minutes), e.g. heavy sites sleep after 1 min.
+    /// Keep-awake exceptions still win over these.
+    public private(set) var siteSleepMinutes: [String: Int] = [:]
 
     public init() {}
 
@@ -54,6 +57,7 @@ public struct BrowserPreferences: Codable, Equatable, Sendable {
              syncEnabled
         case syncFolderPath, syncFolderBookmark, dozeAfterMinutes, memoryBudgetPercent, protectedTabs
         case stripsTrackingParameters, confirmsQuit, restoresSession, handoffEnabled
+        case siteSleepMinutes
     }
 
     public init(from decoder: Decoder) throws {
@@ -77,6 +81,8 @@ public struct BrowserPreferences: Codable, Equatable, Sendable {
         syncEnabled = try c.decodeIfPresent(Bool.self, forKey: .syncEnabled) ?? d.syncEnabled
         syncFolderPath = try c.decodeIfPresent(String.self, forKey: .syncFolderPath) ?? d.syncFolderPath
         syncFolderBookmark = try c.decodeIfPresent(Data.self, forKey: .syncFolderBookmark)
+        siteSleepMinutes = (try c.decodeIfPresent([String: Int].self, forKey: .siteSleepMinutes) ?? [:])
+            .filter { $0.value > 0 }
     }
 
     public var searchEngine: SearchEngine { SearchEngine.engine(id: searchEngineID) }
@@ -107,6 +113,28 @@ public struct BrowserPreferences: Codable, Equatable, Sendable {
                                  recentGrace: Self.recentGrace,
                                  dozeAfter: doze == 0 ? .infinity : TimeInterval(doze * 60),
                                  maxGracedTabs: gracedLimit == 0 ? .max : gracedLimit)
+    }
+
+    // MARK: Per-site sleep timeout
+
+    /// Choices for a site's sleep timeout, in minutes.
+    public static let siteSleepChoices = [1, 2, 5, 10, 30]
+
+    /// Sleep timeout for a host, from the most specific saved site (subdomain before domain). nil = global.
+    public func sleepTimeout(host: String) -> TimeInterval? {
+        for site in SiteSettings.candidates(for: host) {
+            if let minutes = siteSleepMinutes[site] { return TimeInterval(minutes * 60) }
+        }
+        return nil
+    }
+
+    /// Accepts "example.com" or a full address. `minutes` nil or 0 removes the rule.
+    /// Returns the stored site key, or nil when the text isn't a site.
+    @discardableResult
+    public mutating func setSiteSleep(_ text: String, minutes: Int?) -> String? {
+        guard let site = Self.siteKey(from: text) else { return nil }
+        if let minutes, minutes > 0 { siteSleepMinutes[site] = minutes } else { siteSleepMinutes[site] = nil }
+        return site
     }
 
     // MARK: Memory Saver exceptions

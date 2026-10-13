@@ -18,10 +18,13 @@ public struct TabSnapshot: Equatable {
     /// have a fresh `lastActive` but nothing the user would miss, so they don't get the grace period
     /// and are the first to go when over a limit.
     public let wasViewed: Bool
+    /// Per-site sleep timeout (Settings > Memory Saver). nil = the global `idleTimeout`.
+    public let idleTimeout: TimeInterval?
 
     public init(id: UUID, lastActive: Date, isLoaded: Bool, isActive: Bool,
                 memoryBytes: UInt64 = 0, isPlayingAudio: Bool = false, hasUnsavedInput: Bool = false,
-                keepAwake: Bool = false, wasViewed: Bool = true) {
+                keepAwake: Bool = false, wasViewed: Bool = true, idleTimeout: TimeInterval? = nil) {
+        self.idleTimeout = idleTimeout
         self.id = id
         self.lastActive = lastActive
         self.isLoaded = isLoaded
@@ -76,9 +79,10 @@ public struct HibernationPolicy: Equatable {
     /// Loaded background tabs that should doze. Tabs playing audio or on a call keep running, and
     /// keep-awake tabs (pinned, exception sites) are left alone so e.g. chat notification sounds still play.
     public func tabsToDoze(_ tabs: [TabSnapshot], now: Date = Date()) -> [UUID] {
+        // A site set to sleep sooner than the doze delay skips dozing and goes straight to sleep.
         tabs.filter {
             $0.isLoaded && !$0.isActive && !$0.isPlayingAudio && !$0.keepAwake
-                && now.timeIntervalSince($0.lastActive) >= dozeAfter
+                && now.timeIntervalSince($0.lastActive) >= min(dozeAfter, $0.idleTimeout ?? .infinity)
         }.map(\.id)
     }
 
@@ -121,7 +125,7 @@ public struct HibernationPolicy: Equatable {
         let background = allBackground.filter { !$0.isPlayingAudio }
 
         var reasons: [UUID: HibernationReason] = [:]
-        for tab in background where now.timeIntervalSince(tab.lastActive) >= idleTimeout {
+        for tab in background where now.timeIntervalSince(tab.lastActive) >= (tab.idleTimeout ?? idleTimeout) {
             reasons[tab.id] = .idle
         }
 
