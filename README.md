@@ -26,6 +26,19 @@ its own; the only bundled framework is Sparkle, for in-app updates.
 - macOS 15.4 or later (the minimum for `WKWebExtension`).
 - Swift 5.9+ (Xcode or Command Line Tools).
 
+## Install
+
+Download `Askara-<version>-universal.zip` from the latest release (works on Apple Silicon and
+Intel), unzip it, and move `Askara.app` to the Applications folder.
+
+Askara is not notarized by Apple, so macOS blocks the first launch. Do one of these once:
+
+- **System Settings:** open Askara and click Done on the warning. Then open System Settings >
+  Privacy & Security, scroll down, and click Open Anyway.
+- **Terminal:** `xattr -dr com.apple.quarantine /Applications/Askara.app`
+
+In-app updates are not affected.
+
 ## Build and run
 
 ```sh

@@ -140,5 +140,6 @@ jobs:
         run: |
           gh release create "v$VERSION" "$ZIP" "$ZIP.sha256" appcast.xml \
             --title "Askara $VERSION" \
+            --notes-file .github/release-install.md \
             --generate-notes \
             --target "$GITHUB_SHA"
