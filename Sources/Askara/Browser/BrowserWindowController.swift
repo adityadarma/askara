@@ -246,13 +246,23 @@ final class AddressField: NSTextField {
 }
 
 final class AddressBarView: NSView {
+    /// True while the suggestion list is attached below: bottom corners square off and the bottom
+    /// border disappears so bar and list look like one shape.
+    var isJoined = false { didSet { if isJoined != oldValue { needsDisplay = true } } }
+
     override func draw(_ dirtyRect: NSRect) {
+        let bottom: CGFloat = isJoined ? 0 : 8
         NSColor.controlBackgroundColor.setFill()
-        NSBezierPath(roundedRect: bounds, xRadius: 8, yRadius: 8).fill()
+        NSBezierPath.rect(bounds, topRadius: 8, bottomRadius: bottom).fill()
         NSColor.separatorColor.withAlphaComponent(0.45).setStroke()
-        let border = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 8, yRadius: 8)
+        let border = NSBezierPath.rect(bounds.insetBy(dx: 0.5, dy: 0.5), topRadius: 7.5,
+                                       bottomRadius: isJoined ? 0 : 7.5)
         border.lineWidth = 1
         border.stroke()
+        if isJoined {
+            NSColor.controlBackgroundColor.setFill()
+            NSRect(x: 1, y: 0, width: bounds.width - 2, height: 1).fill()
+        }
     }
 }
 
@@ -324,6 +334,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     private lazy var suggestions: AddressSuggestionsController = {
         let controller = AddressSuggestionsController()
         controller.onChoose = { [weak self] in self?.chooseSuggestion($0) }
+        controller.onVisibilityChange = { [weak self] in self?.addressBar.isJoined = $0 }
         return controller
     }()
     /// What the user actually typed, restored when arrowing back past the first suggestion.
@@ -1998,30 +2009,52 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
 
     private func chooseSuggestion(_ suggestion: AddressSuggestion) {
         suggestions.hide()
-        addressField.stringValue = AddressParser.displayString(for: suggestion.url)
+        addressField.stringValue = suggestion.kind == .search
+            ? suggestion.title : AddressParser.displayString(for: suggestion.url)
         load(suggestion.url)
     }
 
     private func scheduleSuggestions() {
         suggestionTask?.cancel()
+        // Deleting text must not bring the completion straight back.
+        // Backspace on the selected completion leaves the typed text unchanged, hence <=.
+        let isDeleting = addressField.stringValue.count <= typedAddress.count
         typedAddress = addressField.stringValue
         let query = typedAddress
-        // Never allow Enter/click to choose rows computed for the previous query.
-        suggestions.hide()
+        // Keep the old rows on screen until the new ones arrive (no hide/show flicker), but never
+        // let Enter choose a row computed for the previous query.
+        suggestions.clearSelection()
         guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             suggestionTask = nil
+            suggestions.hide()
             return
         }
         // Snapshot value types once. The nonisolated worker runs away from AppKit's main thread,
         // while remaining part of this Task so cancellation propagates into ranking.
         let history = profile.history.entries
         let bookmarks = profile.bookmarks.bookmarks
+        let engine = services.searchEngine
+        let searchSubtitle = String(localized: "Search with \(engine.name)")
         suggestionTask = Task { @MainActor [weak self] in
             guard let found = await Self.rankSuggestions(query: query, history: history, bookmarks: bookmarks),
                   !Task.isCancelled, let self, self.addressField.stringValue == query else { return }
             self.suggestionTask = nil
-            if !found.isEmpty { self.suggestions.show(found, below: self.addressField) }
+            let rows = AddressSuggester.withSearchRow(found, query: query, engine: engine, subtitle: searchSubtitle)
+            self.suggestions.show(rows, below: self.addressBar)
+            if !isDeleting { self.applyInlineCompletion(typed: query, top: found.first) }
         }
+    }
+
+    /// Fills the rest of the top suggestion's address after the caret, selected so the next
+    /// keystroke replaces it and Enter accepts it.
+    private func applyInlineCompletion(typed: String, top: AddressSuggestion?) {
+        guard let editor = addressField.currentEditor() as? NSTextView,
+              editor.selectedRange.location == (typed as NSString).length,
+              editor.selectedRange.length == 0,
+              let completed = AddressSuggester.inlineCompletion(for: typed, topSuggestion: top) else { return }
+        let typedLength = (typed as NSString).length
+        addressField.stringValue = completed
+        editor.setSelectedRange(NSRange(location: typedLength, length: (completed as NSString).length - typedLength))
     }
 
     nonisolated private static func rankSuggestions(query: String, history: [HistoryEntry],
@@ -2997,7 +3030,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
             }
             if let delta {
                 let chosen = suggestions.moveSelection(by: delta)
-                addressField.stringValue = chosen?.url.absoluteString ?? typedAddress
+                addressField.stringValue = chosen.map { $0.kind == .search ? $0.title : $0.url.absoluteString }
+                    ?? typedAddress
                 textView.moveToEndOfDocument(nil)
                 return true
             }

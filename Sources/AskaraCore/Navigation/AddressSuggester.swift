@@ -2,16 +2,20 @@ import Foundation
 
 /// One row in the address bar's suggestion list.
 public struct AddressSuggestion: Equatable, Sendable {
-    public enum Kind: Equatable, Sendable { case history, bookmark }
+    /// `search` is the "search the web for what I typed" row; its `title` is the typed query.
+    public enum Kind: Equatable, Sendable { case history, bookmark, search }
 
     public var kind: Kind
     public var url: URL
     public var title: String
+    /// Secondary text for rows that are not a page address, e.g. "Search with Google".
+    public var subtitle: String?
 
-    public init(kind: Kind, url: URL, title: String) {
+    public init(kind: Kind, url: URL, title: String, subtitle: String? = nil) {
         self.kind = kind
         self.url = url
         self.title = title
+        self.subtitle = subtitle
     }
 }
 
@@ -97,6 +101,33 @@ public enum AddressSuggester {
         let titleWords = lowerTitle.split(whereSeparator: { !$0.isLetter && !$0.isNumber })
         if words.allSatisfy({ word in titleWords.contains { $0.hasPrefix(word) } }) { return 45 }
         return 20
+    }
+
+    /// Adds the web-search row for `query` to ranked page matches, like Chrome. It goes after the
+    /// first `position` matches so the best page matches stay on top.
+    public static func withSearchRow(_ matches: [AddressSuggestion], query: String, engine: SearchEngine,
+                                     subtitle: String, position: Int = 3) -> [AddressSuggestion] {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let url = engine.searchURL(for: trimmed) else { return matches }
+        var result = matches
+        result.insert(AddressSuggestion(kind: .search, url: url, title: trimmed, subtitle: subtitle),
+                      at: min(max(0, position), matches.count))
+        return result
+    }
+
+    /// Text the address bar should show while typing: what the user typed plus the rest of the top
+    /// suggestion's address, like Chrome ("nex" becomes "nex" + "us.goodponsel.com").
+    /// nil when the top suggestion does not start with the typed text, or the text has spaces
+    /// (then it is a search, not an address).
+    public static func inlineCompletion(for typed: String, topSuggestion: AddressSuggestion?) -> String? {
+        guard let topSuggestion, !typed.isEmpty, !typed.contains(where: \.isWhitespace) else { return nil }
+        let strippedTyped = stripPrefixes(typed)
+        guard !strippedTyped.isEmpty else { return nil }
+        var address = stripPrefixes(topSuggestion.url.absoluteString)
+        if address.hasSuffix("/") { address.removeLast() }
+        guard address.count > strippedTyped.count,
+              address.lowercased().hasPrefix(strippedTyped.lowercased()) else { return nil }
+        return typed + address.dropFirst(strippedTyped.count)
     }
 
     /// "https://www.example.com" and "example.com" should match the same way.

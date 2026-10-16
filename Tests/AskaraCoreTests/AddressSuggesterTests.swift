@@ -72,4 +72,36 @@ import Testing
         #expect(result.count == 4)
         #expect(!result.contains { $0.hasPrefix("file:") })
     }
+
+    @Test func inlineCompletionAppendsRestOfTopAddress() {
+        let top = AddressSuggestion(kind: .history, url: URL(string: "https://nexus.goodponsel.com/")!, title: "Nexus")
+        #expect(AddressSuggester.inlineCompletion(for: "nex", topSuggestion: top) == "nexus.goodponsel.com")
+        #expect(AddressSuggester.inlineCompletion(for: "NEX", topSuggestion: top) == "NEXus.goodponsel.com")
+        #expect(AddressSuggester.inlineCompletion(for: "https://nex", topSuggestion: top) == "https://nexus.goodponsel.com")
+    }
+
+    @Test func inlineCompletionSkipsNonPrefixSpacesAndExactMatch() {
+        let top = AddressSuggestion(kind: .history, url: URL(string: "https://nexus.goodponsel.com/logs")!, title: "Logs")
+        #expect(AddressSuggester.inlineCompletion(for: "goodp", topSuggestion: top) == nil)
+        #expect(AddressSuggester.inlineCompletion(for: "nex log", topSuggestion: top) == nil)
+        #expect(AddressSuggester.inlineCompletion(for: "nexus.goodponsel.com/logs", topSuggestion: top) == nil)
+        #expect(AddressSuggester.inlineCompletion(for: "nex", topSuggestion: nil) == nil)
+    }
+
+    @Test func searchRowGoesAfterTopMatchesAndUsesEngine() throws {
+        let matches = (0..<5).map {
+            AddressSuggestion(kind: .history, url: URL(string: "https://nex\($0).com/")!, title: "N\($0)")
+        }
+        let engine = SearchEngine.engine(id: "duckduckgo")
+        let rows = AddressSuggester.withSearchRow(matches, query: " nex ", engine: engine, subtitle: "Search with DuckDuckGo")
+        #expect(rows.count == 6)
+        #expect(rows[3].kind == .search)
+        #expect(rows[3].title == "nex")
+        #expect(rows[3].url.absoluteString == "https://duckduckgo.com/?q=nex")
+        #expect(rows.filter { $0.kind != .search } == matches)
+
+        let few = AddressSuggester.withSearchRow(Array(matches.prefix(1)), query: "nex", engine: engine, subtitle: "")
+        #expect(few.map(\.kind) == [.history, .search])
+        #expect(AddressSuggester.withSearchRow([], query: "  ", engine: engine, subtitle: "").isEmpty)
+    }
 }
