@@ -62,6 +62,15 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>NSMicrophoneUsageDescription</key><string>Websites you allow can use the microphone, for example for calls.</string>
     <key>NSLocationUsageDescription</key><string>Websites you allow can see your location, for example for maps.</string>
     <key>NSLocationWhenInUseUsageDescription</key><string>Websites you allow can see your location, for example for maps.</string>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key><string>PDF Document</string>
+            <key>CFBundleTypeRole</key><string>Viewer</string>
+            <key>LSHandlerRank</key><string>Alternate</string>
+            <key>LSItemContentTypes</key><array><string>com.adobe.pdf</string></array>
+        </dict>
+    </array>
     <key>CFBundleURLTypes</key>
     <array>
         <dict>

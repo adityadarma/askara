@@ -136,6 +136,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func editProfileAction(_ sender: Any?) { ProfileDialogs.edit(services.currentProfile.id) }
     @objc func deleteProfileAction(_ sender: Any?) { ProfileDialogs.delete(services.currentProfile.id) }
 
+    /// File > Open File… (⌘O): PDFs, web pages, and images from disk open in a new tab.
+    @objc func openFileAction(_ sender: Any?) {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.pdf, .html, .image, .plainText, .json]
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        guard panel.runModal() == .OK else { return }
+        panel.urls.forEach { services.open($0, newTab: true) }
+    }
+
     /// ⌘T when there are no windows at all.
     @objc func newTabAction(_ sender: Any?) { newWindowAction(sender) }
 
@@ -435,6 +445,7 @@ enum MainMenu {
             item(String(localized: "New Window"), #selector(A.newWindowAction(_:)), "n"),
             item(String(localized: "New Private Window"), #selector(A.newPrivateWindowAction(_:)), "n", [.command, .shift]),
             item(String(localized: "Open Location…"), #selector(B.focusAddressBar(_:)), "l"),
+            item(String(localized: "Open File…"), #selector(A.openFileAction(_:)), "o"),
             item(String(localized: "Command Palette…"), #selector(B.showCommandPaletteAction(_:)), "k"),
             .separator(),
             item(String(localized: "Close Tab"), #selector(B.closeTabAction(_:)), "w"),
@@ -445,6 +456,8 @@ enum MainMenu {
             item(String(localized: "Open This Page in Safari"), #selector(B.openInSafariAction(_:))),
             item(String(localized: "Print…"), #selector(B.printPageAction(_:)), "p"),
             item(String(localized: "Save Page as PDF…"), #selector(B.savePageAsPDFAction(_:))),
+            item(String(localized: "Take Screenshot of Visible Area"), #selector(B.visibleScreenshotAction(_:)), "s", [.command, .option]),
+            item(String(localized: "Take Full-Page Screenshot"), #selector(B.fullPageScreenshotAction(_:)), "s", [.command, .shift]),
             item(String(localized: "Share…"), #selector(B.sharePageAction(_:))),
         ])
         // The Edit menu is required for copy/paste to work in the address bar and web pages.
@@ -472,7 +485,6 @@ enum MainMenu {
             item(String(localized: "Reload Page"), #selector(B.reloadAction(_:)), "r"),
             .separator(),
             item(String(localized: "Show Bookmarks Bar"), #selector(B.toggleBookmarksBarAction(_:)), "b", [.command, .shift]),
-            item(String(localized: "Take Full-Page Screenshot"), #selector(B.fullPageScreenshotAction(_:)), "s", [.command, .shift]),
             item(String(localized: "Show Reader"), #selector(B.toggleReaderAction(_:)), "r", [.command, .shift]),
             .separator(),
             item(String(localized: "Zoom In"), #selector(B.zoomInAction(_:)), "+"),

@@ -1,4 +1,5 @@
 import AppKit
+import UniformTypeIdentifiers
 import WebKit
 
 /// The right-clicked content, reported by `ContextMenuProbe` just before the menu appears.
@@ -35,11 +36,74 @@ enum ContextMenuProbe {
     """
 }
 
+/// Local files dragged in from Finder that Askara can show: PDFs, web pages, images, and text.
+enum DroppedFiles {
+    static func openable(in info: NSDraggingInfo) -> [URL] {
+        let urls = info.draggingPasteboard.readObjects(
+            forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        return urls.filter { url in
+            guard let type = UTType(filenameExtension: url.pathExtension.lowercased()) else { return false }
+            return [UTType.pdf, .html, .image, .plainText, .json].contains { type.conforms(to: $0) }
+        }
+    }
+}
+
 /// WKWebView with a fuller right-click menu (new tab, background tab, private window,
 /// search text, copy address, bookmark, etc.).
 final class AskaraWebView: WKWebView {
     weak var browser: BrowserWindowController?
     var contextTarget = ContextTarget()
+
+    // MARK: - File drops
+
+    /// Whether the page under the cursor takes dropped files itself (upload field or drop zone).
+    /// Updated while dragging; until the first answer arrives the page keeps the drop.
+    private var pageTakesFileDrop = true
+    private var dropProbeInFlight = false
+
+    private func probeDropTarget(_ info: NSDraggingInfo) {
+        guard !dropProbeInFlight else { return }
+        dropProbeInFlight = true
+        let point = convert(info.draggingLocation, from: nil)
+        let x = point.x / pageZoom
+        let y = (isFlipped ? point.y : bounds.height - point.y) / pageZoom
+        let script = """
+        (() => {
+          const e = document.elementFromPoint(\(x), \(y));
+          const sel = 'input[type=file],[dropzone],[ondrop],[class*=dropzone i],[class*=drop-zone i],[class*=upload i],[id*=dropzone i]';
+          return !!(e && e.closest(sel)) || !!document.querySelector('input[type=file]');
+        })()
+        """
+        evaluateJavaScript(script) { [weak self] value, _ in
+            MainActor.assumeIsolated {
+                self?.dropProbeInFlight = false
+                self?.pageTakesFileDrop = (value as? Bool) ?? true
+            }
+        }
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        pageTakesFileDrop = true
+        if !DroppedFiles.openable(in: sender).isEmpty { probeDropTarget(sender) }
+        return super.draggingEntered(sender)
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        if !DroppedFiles.openable(in: sender).isEmpty { probeDropTarget(sender) }
+        return super.draggingUpdated(sender)
+    }
+
+    /// A file dropped on a page that does not take files opens in a new tab, like other browsers.
+    /// Holding ⌥ always opens it, even over an upload field.
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let files = DroppedFiles.openable(in: sender)
+        let forced = NSEvent.modifierFlags.contains(.option)
+        if !files.isEmpty, forced || !pageTakesFileDrop, let browser {
+            files.forEach { browser.newTab(url: $0) }
+            return true
+        }
+        return super.performDragOperation(sender)
+    }
 
     override func willOpenMenu(_ menu: NSMenu, with event: NSEvent) {
         super.willOpenMenu(menu, with: event)

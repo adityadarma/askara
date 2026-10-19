@@ -30,6 +30,8 @@ final class Tab: NSObject {
     /// before tabs the user actually switched between.
     var wasViewed = false
     var interactionState: Any?
+    /// The main frame is a PDF document (WebKit's built-in viewer). Set from the navigation response.
+    var isPDFDocument = false
     /// Device Mode (Develop menu): emulated screen size and user agent. nil = off.
     var device: DevicePreset?
     var deviceLandscape = false
@@ -847,6 +849,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         add(String(localized: "Actual Size"), "1.magnifyingglass", #selector(zoomResetAction(_:)), key: "0")
         add(String(localized: "Print…"), "printer", #selector(printPageAction(_:)), key: "p")
         add(String(localized: "Save Page as PDF…"), "doc.richtext", #selector(savePageAsPDFAction(_:)))
+        add(String(localized: "Take Full-Page Screenshot"), "camera.viewfinder", #selector(fullPageScreenshotAction(_:)))
         add(String(localized: "Share…"), "square.and.arrow.up", #selector(sharePageAction(_:)))
         add(activeTab?.readerOriginalURL != nil ? String(localized: "Hide Reader") : String(localized: "Show Reader"),
             "doc.plaintext", #selector(toggleReaderAction(_:)), key: "R")
@@ -991,6 +994,13 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         source.removeTabForMove(tab)
         adopt(tab, at: index, from: source, oldIndex: oldIndex)
         return true
+    }
+
+    func tabStrip(_ strip: TabStripView, openFiles urls: [URL], at index: Int) {
+        for (offset, url) in urls.enumerated() {
+            // The last file ends up active, like opening several files at once.
+            insertTab(url: url, at: index + offset, activate: offset == urls.count - 1)
+        }
     }
 
     func tabStrip(_ strip: TabStripView, detachTab id: String, to screenPoint: NSPoint) {
@@ -3112,7 +3122,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
             item.title = services.preferences.showsBookmarksBar ? String(localized: "Hide Bookmarks Bar")
                                                                 : String(localized: "Show Bookmarks Bar")
             return !isPrivate
-        case #selector(fullPageScreenshotAction(_:)):
+        case #selector(fullPageScreenshotAction(_:)), #selector(visibleScreenshotAction(_:)):
             return activeTab?.webView?.url != nil
         case #selector(toggleReaderAction(_:)):
             let inReader = activeTab?.readerOriginalURL != nil
@@ -3121,7 +3131,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         case #selector(sharePageAction(_:)):
             return ["http", "https"].contains(shareablePageURL?.scheme?.lowercased() ?? "")
         case #selector(savePageAsPDFAction(_:)):
-            return ["http", "https"].contains(content?.url?.scheme ?? "")
+            return activeTab?.isPDFDocument == true || ["http", "https"].contains(content?.url?.scheme ?? "")
         case #selector(toggleBookmarkAction(_:)):
             guard let url = activeTab?.url else { return false }
             item.title = profile.bookmarks.contains(url) ? String(localized: "Remove Bookmark") : String(localized: "Add Bookmark")
@@ -3338,6 +3348,9 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
             .value(forHTTPHeaderField: "Content-Disposition")?.lowercased() ?? ""
         if response.isForMainFrame, !response.canShowMIMEType || disposition.hasPrefix("attachment") {
             return decisionHandler(.download)
+        }
+        if response.isForMainFrame, let tab = tabs.first(where: { $0.webView === webView }) {
+            tab.isPDFDocument = response.response.mimeType?.lowercased() == "application/pdf"
         }
         decisionHandler(.allow)
     }

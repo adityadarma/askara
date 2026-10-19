@@ -135,6 +135,7 @@
 "Open Link in New Private Window" = "Buka Link di Jendela Pribadi";
 "Open Link in New Tab" = "Buka Link di Tab Baru";
 "Open Location…" = "Buka Lokasi";
+"Open File…" = "Buka File…";
 "Open Page in Safari" = "Buka Halaman di Safari";
 "Open This Page in Safari" = "Buka Halaman Ini di Safari";
 "Open Video in New Tab" = "Buka Video di Tab Baru";
@@ -411,7 +412,7 @@
 "Open Askara from Askara.app to set it as default." = "Buka Askara dari Askara.app untuk menjadikannya default.";
 "Open Privacy Settings" = "Buka Pengaturan Privasi";
 "Other Bookmarks" = "Bookmark Lain";
-"Page is very long: the PNG was cut. Use PDF for the whole page." = "Halaman sangat panjang: PNG terpotong. Pakai PDF untuk seluruh halaman.";
+"Page is very long: the image was cut. Use PDF for the whole page." = "Halaman sangat panjang: gambar terpotong. Pakai PDF untuk seluruh halaman.";
 "Pinned (never sleeps)" = "Disematkan (tidak pernah tidur)";
 "Screenshot saved: %@" = "Screenshot disimpan: %@";
 "Show Bookmarks Bar" = "Tampilkan Bar Bookmark";
@@ -419,6 +420,7 @@
 "Sleep Tab" = "Tidurkan Tab";
 "Status" = "Status";
 "Tabs and memory use" = "Tab dan pemakaian memori";
+"Take Screenshot of Visible Area" = "Screenshot Area yang Terlihat";
 "Take Full-Page Screenshot" = "Screenshot Satu Halaman Penuh";
 "Task Manager" = "Task Manager";
 "That address is already bookmarked." = "Alamat itu sudah ada di bookmark.";

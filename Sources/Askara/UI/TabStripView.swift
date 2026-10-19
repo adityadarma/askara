@@ -59,6 +59,8 @@ protocol TabStripDelegate: AnyObject {
     func tabStrip(_ strip: TabStripView, acceptTab id: String, at index: Int) -> Bool
     /// Dropped outside every tab strip: open it in a new window near `screenPoint` (top-left).
     func tabStrip(_ strip: TabStripView, detachTab id: String, to screenPoint: NSPoint)
+    /// Files from Finder dropped on the strip: each opens as a new tab starting at `index`.
+    func tabStrip(_ strip: TabStripView, openFiles urls: [URL], at index: Int)
 }
 
 struct TabStripItem: Equatable {
@@ -208,7 +210,7 @@ final class TabStripView: NSView, NSDraggingSource {
         setAccessibilityRole(.tabGroup)
         setAccessibilityLabel(String(localized: "Tabs"))
         setAccessibilityIdentifier("askara.tabs")
-        registerForDraggedTypes([Self.tabType])
+        registerForDraggedTypes([Self.tabType, .fileURL])
     }
 
     @available(*, unavailable)
@@ -446,6 +448,9 @@ final class TabStripView: NSView, NSDraggingSource {
     }
 
     private func dropOperation(_ info: NSDraggingInfo) -> NSDragOperation {
+        if info.draggingPasteboard.string(forType: Self.tabType) == nil {
+            return DroppedFiles.openable(in: info).isEmpty ? [] : .copy
+        }
         guard let id = info.draggingPasteboard.string(forType: Self.tabType),
               delegate?.tabStrip(self, canAcceptTab: id) == true else { return [] }
         return .move
@@ -455,8 +460,13 @@ final class TabStripView: NSView, NSDraggingSource {
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation { dropOperation(sender) }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
-        guard let id = sender.draggingPasteboard.string(forType: Self.tabType) else { return false }
         let x = convert(sender.draggingLocation, from: nil).x
+        guard let id = sender.draggingPasteboard.string(forType: Self.tabType) else {
+            let files = DroppedFiles.openable(in: sender)
+            guard !files.isEmpty else { return false }
+            delegate?.tabStrip(self, openFiles: files, at: dropIndex(atX: x))
+            return true
+        }
         return delegate?.tabStrip(self, acceptTab: id, at: dropIndex(atX: x)) ?? false
     }
 
