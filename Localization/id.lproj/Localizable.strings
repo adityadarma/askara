@@ -656,3 +656,16 @@
 "Swap Split View Sides" = "Tukar Sisi Split View";
 "Split View divider" = "Pembatas Split View";
 "Split View: click a page to control it from the toolbar" = "Split View: klik halaman untuk mengontrolnya dari toolbar";
+"Blocked Domains…" = "Domain Terblokir…";
+"Domain" = "Domain";
+"Domains you blocked" = "Domain yang Anda blokir";
+"Automatically blocked domains" = "Domain yang diblokir otomatis";
+"e.g. ads.example.com" = "mis. ads.example.com";
+"Domain to block" = "Domain yang akan diblokir";
+"Search" = "Cari";
+"Search automatic domains" = "Cari domain otomatis";
+"Update Now" = "Perbarui Sekarang";
+"Blocked by you" = "Diblokir oleh Anda";
+"Blocked automatically" = "Diblokir otomatis";
+"Add domains one at a time or paste several separated by spaces, commas, or new lines. URLs work too. Subdomains are blocked as well. Reload open pages to apply." = "Tambahkan domain satu per satu atau tempel beberapa sekaligus, dipisah spasi, koma, atau baris baru. URL juga bisa. Subdomain ikut diblokir. Muat ulang halaman yang terbuka agar berlaku.";
+"%lld automatic domains · %lld blocked by you" = "%lld domain otomatis · %lld diblokir oleh Anda";

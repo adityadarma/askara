@@ -18,10 +18,16 @@ final class BlockListUpdater {
 
     private let domainsFile: JSONFile<[String]>
     private let metadataFile: JSONFile<BlockListMetadata>
+    private let customFile: JSONFile<[String]>
     private weak var services: BrowserServices?
     private(set) var metadata: BlockListMetadata
     private(set) var isUpdating = false
+    /// Everything that is blocked: automatic and manual domains together.
     private(set) var currentDomains: [String]
+    /// Built-in plus downloaded domains. Read-only for the user.
+    private(set) var automaticDomains: [String]
+    /// Domains the user blocked by hand (Askara > Blocked Domains…).
+    private(set) var customDomains: [String]
     private var timer: Timer?
 
     /// Called each time a new list finishes compiling.
@@ -33,12 +39,24 @@ final class BlockListUpdater {
         if let storageDirectory {
             domainsFile = JSONFile(url: storageDirectory.appendingPathComponent("blocklist-domains.json"))
             metadataFile = JSONFile(url: storageDirectory.appendingPathComponent("blocklist-meta.json"))
+            customFile = JSONFile(url: storageDirectory.appendingPathComponent("blocklist-custom.json"))
         } else {
             domainsFile = .inAppSupport("blocklist-domains.json")
             metadataFile = .inAppSupport("blocklist-meta.json")
+            customFile = .inAppSupport("blocklist-custom.json")
         }
         metadata = metadataFile.load() ?? BlockListMetadata()
-        currentDomains = BlockList.merged(with: domainsFile.load() ?? [])
+        // First launch: no file yet, so seed it. Later edits (even an empty list) are kept as saved.
+        let custom: [String]
+        if let saved = customFile.load() {
+            custom = saved
+        } else {
+            custom = BlockList.initialCustomDomains
+            try? customFile.save(custom)
+        }
+        customDomains = custom
+        automaticDomains = BlockList.merged(with: domainsFile.load() ?? [])
+        currentDomains = BlockList.merged(with: automaticDomains + custom)
     }
 
     /// Compiles the saved (or built-in) list, then checks for updates in the background.
@@ -60,6 +78,13 @@ final class BlockListUpdater {
 
     /// Rebuilds the current list after a per-site exception changes.
     func recompile() { compile(downloaded: domainsFile.load() ?? []) }
+
+    /// Replaces the manual block list, saves it and rebuilds the rules.
+    func setCustomDomains(_ domains: [String]) {
+        customDomains = domains
+        do { try customFile.save(domains) } catch { Log.error("Askara: failed to save custom blocklist: \(error)") }
+        recompile()
+    }
 
     /// `force` ignores ETag/Last-Modified and the daily schedule (for the "Update Now" menu).
     func update(force: Bool, completion: ((String) -> Void)?) {
@@ -130,7 +155,8 @@ final class BlockListUpdater {
     }
 
     private func compile(downloaded: [String]) {
-        let domains = BlockList.merged(with: downloaded)
+        automaticDomains = BlockList.merged(with: downloaded)
+        let domains = BlockList.merged(with: automaticDomains + customDomains)
         currentDomains = domains
         onDomainsChanged?(domains)
         let json = BlockList.contentRuleListJSON(
@@ -150,7 +176,7 @@ final class BlockListUpdater {
 
     /// Summary for the menu.
     var statusText: String {
-        let count = BlockList.merged(with: domainsFile.load() ?? []).count
+        let count = currentDomains.count
         guard let updated = metadata.lastUpdated else { return String(localized: "Blocking \(count) domains (built-in list)") }
         let formatter = RelativeDateTimeFormatter()
         return String(localized: "Blocking \(count) domains · updated \(formatter.localizedString(for: updated, relativeTo: Date()))")

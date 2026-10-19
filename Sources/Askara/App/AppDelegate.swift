@@ -166,6 +166,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self?.services.keyBrowserWindow?.showToast(message, duration: 4)
         }
     }
+    @objc func editBlockedDomainsAction(_ sender: Any?) {
+        services.settingsWindow.showAdBlocker()
+    }
+
     @objc func showSettingsAction(_ sender: Any?) { services.settingsWindow.show() }
     @objc func showHistoryAction(_ sender: Any?) { LibraryWindowController.history.show() }
     @objc func showBookmarksAction(_ sender: Any?) { LibraryWindowController.bookmarks.show() }
@@ -429,6 +433,7 @@ enum MainMenu {
             .separator(),
             blockStatus,
             item(String(localized: "Update Ad Block List"), #selector(A.updateBlockListAction(_:))),
+            item(String(localized: "Blocked Domains…"), #selector(A.editBlockedDomainsAction(_:))),
             item(String(localized: "Export Previous Session Report…"), #selector(A.exportCrashReportAction(_:))),
             item(String(localized: "Delete Previous Session Report"), #selector(A.deleteCrashReportAction(_:))),
             .separator(),

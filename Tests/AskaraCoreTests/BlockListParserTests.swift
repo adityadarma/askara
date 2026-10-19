@@ -54,4 +54,24 @@ import Testing
         // System clock went backwards: check again.
         #expect(BlockListMetadata(lastChecked: now.addingTimeInterval(3_600)).needsCheck(now: now))
     }
+
+    @Test func parsesManualEntries() {
+        let text = """
+        Ads.Example.com
+        https://www.tracker.net:8080/path/x.js?a=1
+        ||adblock.example.io^, *.wild.example.org
+        google.com 127.0.0.1 nodot bad_domain.com
+        ads.example.com
+        """
+        #expect(BlockListParser.parseManual(text) ==
+                ["adblock.example.io", "ads.example.com", "wild.example.org", "www.tracker.net"])
+    }
+
+    @Test func wasmArcadeAdsAreSeededAsManualNotAutomatic() {
+        #expect(BlockList.initialCustomDomains.count == 9)
+        for domain in BlockList.initialCustomDomains {
+            #expect(BlockListParser.normalizeManualEntry(domain) == domain)
+            #expect(!BlockList.domains.contains(domain))
+        }
+    }
 }

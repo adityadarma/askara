@@ -40,6 +40,31 @@ public enum BlockListParser {
         return result
     }
 
+    /// Reads domains typed or pasted by the user, separated by newlines, commas or spaces.
+    /// Accepts bare domains, full URLs (`https://ads.example.com/x.js`) and `||ads.example.com^`.
+    /// Invalid and protected entries are skipped; the result is deduplicated and sorted.
+    public static func parseManual(_ text: String) -> [String] {
+        var seen = Set<String>()
+        for token in text.split(whereSeparator: { $0.isWhitespace || $0 == "," || $0 == ";" }) {
+            if let domain = normalizeManualEntry(String(token)), seen.count < maxDomains { seen.insert(domain) }
+        }
+        return seen.sorted()
+    }
+
+    /// "https://Ads.Example.com:8080/x?y" → "ads.example.com". nil if it is not a blockable domain.
+    public static func normalizeManualEntry(_ input: String) -> String? {
+        var value = input.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if value.hasPrefix("||") { value.removeFirst(2) }
+        if let range = value.range(of: "://") { value = String(value[range.upperBound...]) }
+        if let end = value.firstIndex(where: { "/?#^".contains($0) }) { value = String(value[..<end]) }
+        if let at = value.lastIndex(of: "@") { value = String(value[value.index(after: at)...]) }
+        if let colon = value.firstIndex(of: ":") { value = String(value[..<colon]) }
+        if value.hasPrefix("*.") { value.removeFirst(2) }
+        while value.hasSuffix(".") { value.removeLast() }
+        guard isValidDomain(value), !neverBlock.contains(value) else { return nil }
+        return value
+    }
+
     /// Only letters, digits, hyphens, and dots; at least two labels; not an IP address.
     /// This also keeps odd characters out of WebKit rule regex/JSON.
     public static func isValidDomain(_ domain: String) -> Bool {

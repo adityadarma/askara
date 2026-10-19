@@ -39,6 +39,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
                                       target: nil, action: nil)
     private let confirmQuitBox = NSButton(checkboxWithTitle: String(localized: "Ask before quitting with several tabs open"),
                                           target: nil, action: nil)
+    // Ad Blocker
+    private let manualTable = NSTableView()
+    private let manualField = NSTextField()
+    private let autoTable = NSTableView()
+    private let autoSearch = NSSearchField()
+    private let adBlockStatus = NSTextField(wrappingLabelWithString: "")
+    private let adBlockUpdateButton = NSButton()
+    private var autoRows: [String] = []
     // Permissions
     private let permissionTable = NSTableView()
     private var permissionRows: [(host: String, kind: PermissionKind, choice: PermissionChoice)] = []
@@ -48,7 +56,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     private let extensionPinButton = NSButton()
 
     init() {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 620, height: 460),
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 620, height: 600),
                               styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: true)
         window.title = String(localized: "Settings")
         window.isReleasedWhenClosed = false
@@ -61,6 +69,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
                                                name: .askaraSyncChanged, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(reload),
                                                name: .askaraExtensionsChanged, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(reload),
+                                               name: .askaraBlockListReady, object: nil)
     }
 
     @available(*, unavailable)
@@ -80,6 +90,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         }
     }
 
+    func showAdBlocker() {
+        show()
+        if let item = tabView.tabViewItems.first(where: { $0.identifier as? String == "adblocker" }) {
+            tabView.selectTabViewItem(item)
+        }
+    }
+
     // MARK: - Layout
 
     private func buildUI() {
@@ -95,6 +112,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         addPage(String(localized: "General"), generalPage())
         addPage(String(localized: "Memory Saver"), memoryPage())
         addPage(String(localized: "Privacy & Security"), privacyPage())
+        addPage(String(localized: "Ad Blocker"), adBlockerPage(), identifier: "adblocker")
         addPage(String(localized: "Site Permissions"), permissionsPage())
         addPage(String(localized: "Extensions"), extensionsPage(), identifier: "extensions")
     }
@@ -310,6 +328,58 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         ])
     }
 
+    private func adBlockerPage() -> NSView {
+        func configure(_ table: NSTableView, label: String, multiple: Bool) {
+            let column = NSTableColumn(identifier: .init("domain"))
+            column.title = String(localized: "Domain")
+            column.width = 520
+            table.addTableColumn(column)
+            table.allowsMultipleSelection = multiple
+            table.dataSource = self
+            table.delegate = self
+            table.usesAlternatingRowBackgroundColors = true
+            table.setAccessibilityLabel(label)
+        }
+        configure(manualTable, label: String(localized: "Domains you blocked"), multiple: true)
+        configure(autoTable, label: String(localized: "Automatically blocked domains"), multiple: false)
+
+        manualField.placeholderString = String(localized: "e.g. ads.example.com")
+        manualField.target = self
+        manualField.action = #selector(addBlockedDomain(_:))
+        manualField.setAccessibilityLabel(String(localized: "Domain to block"))
+        manualField.widthAnchor.constraint(equalToConstant: 340).isActive = true
+        let add = NSButton(title: String(localized: "Add"), target: self, action: #selector(addBlockedDomain(_:)))
+        let remove = NSButton(title: String(localized: "Remove"), target: self, action: #selector(removeBlockedDomain(_:)))
+        let manualRow = NSStackView(views: [manualField, add, remove])
+        manualRow.spacing = 6
+
+        autoSearch.placeholderString = String(localized: "Search")
+        autoSearch.sendsSearchStringImmediately = true
+        autoSearch.target = self
+        autoSearch.action = #selector(autoFilterChanged(_:))
+        autoSearch.setAccessibilityLabel(String(localized: "Search automatic domains"))
+        autoSearch.widthAnchor.constraint(equalToConstant: 200).isActive = true
+        adBlockUpdateButton.title = String(localized: "Update Now")
+        adBlockUpdateButton.target = self
+        adBlockUpdateButton.action = #selector(updateAutoList(_:))
+        let autoRow = NSStackView(views: [autoSearch, adBlockUpdateButton])
+        autoRow.spacing = 6
+
+        let manualTitle = NSTextField(labelWithString: String(localized: "Blocked by you"))
+        manualTitle.font = .boldSystemFont(ofSize: NSFont.systemFontSize)
+        let autoTitle = NSTextField(labelWithString: String(localized: "Blocked automatically"))
+        autoTitle.font = .boldSystemFont(ofSize: NSFont.systemFontSize)
+
+        return stack([
+            manualTitle,
+            note(String(localized: "Add domains one at a time or paste several separated by spaces, commas, or new lines. URLs work too. Subdomains are blocked as well. Reload open pages to apply.")),
+            tableScroll(manualTable, height: 120), manualRow,
+            autoTitle,
+            adBlockStatus,
+            tableScroll(autoTable, height: 120), autoRow,
+        ])
+    }
+
     private func permissionsPage() -> NSView {
         for (id, title, width) in [("site", String(localized: "Site"), 260.0), ("kind", String(localized: "Permission"), 120.0),
                                    ("choice", String(localized: "Choice"), 100.0)] {
@@ -472,6 +542,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
                 permissions.choice(kind, host: host).map { (host, kind, $0) }
             }
         }
+        let updater = services.blockListUpdater
+        let query = autoSearch.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        autoRows = query.isEmpty ? updater.automaticDomains : updater.automaticDomains.filter { $0.contains(query) }
+        adBlockStatus.stringValue = String(localized: "\(updater.automaticDomains.count) automatic domains · \(updater.customDomains.count) blocked by you")
+            + " · " + updater.statusText
+        adBlockUpdateButton.isEnabled = !updater.isUpdating
+        manualTable.reloadData()
+        autoTable.reloadData()
         awakeTable.reloadData()
         permissionTable.reloadData()
         extensionTable.reloadData()
@@ -552,6 +630,35 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     @objc private func httpsOnlyChanged(_ sender: NSButton) {
         let on = sender.state == .on
         services.updatePreferences { $0.httpsOnly = on }
+    }
+
+    @objc private func addBlockedDomain(_ sender: Any?) {
+        let parsed = BlockListParser.parseManual(manualField.stringValue)
+        guard !parsed.isEmpty else { return NSSound.beep() }
+        let updater = services.blockListUpdater
+        updater.setCustomDomains(Array(Set(updater.customDomains).union(parsed)).sorted())
+        manualField.stringValue = ""
+        reload()
+    }
+
+    @objc private func removeBlockedDomain(_ sender: Any?) {
+        let updater = services.blockListUpdater
+        let domains = updater.customDomains
+        let selected = Set(manualTable.selectedRowIndexes.compactMap { domains.indices.contains($0) ? domains[$0] : nil })
+        guard !selected.isEmpty else { return NSSound.beep() }
+        updater.setCustomDomains(domains.filter { !selected.contains($0) })
+        reload()
+    }
+
+    @objc private func autoFilterChanged(_ sender: Any?) { reload() }
+
+    @objc private func updateAutoList(_ sender: Any?) {
+        adBlockUpdateButton.isEnabled = false
+        adBlockStatus.stringValue = String(localized: "Updating ad block list…")
+        services.blockListUpdater.update(force: true) { [weak self] message in
+            self?.reload()
+            self?.adBlockStatus.stringValue = message
+        }
     }
 
     @objc private func addAwakeSite(_ sender: Any?) {
@@ -635,13 +742,22 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
 
     func numberOfRows(in tableView: NSTableView) -> Int {
         if tableView === awakeTable { return siteRules.count }
+        if tableView === manualTable { return services.blockListUpdater.customDomains.count }
+        if tableView === autoTable { return autoRows.count }
         if tableView === extensionTable { return services.currentProfile.extensions.installed.count }
         return permissionRows.count
     }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let text: String
-        if tableView === awakeTable {
+        if tableView === manualTable {
+            let domains = services.blockListUpdater.customDomains
+            guard domains.indices.contains(row) else { return nil }
+            text = domains[row]
+        } else if tableView === autoTable {
+            guard autoRows.indices.contains(row) else { return nil }
+            text = autoRows[row]
+        } else if tableView === awakeTable {
             let rules = siteRules
             guard rules.indices.contains(row) else { return nil }
             let rule = rules[row]

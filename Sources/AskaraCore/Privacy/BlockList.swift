@@ -36,6 +36,20 @@ public enum BlockList {
         "popads.net",
     ]
 
+    /// Manual entries added on first launch (ad networks loaded by wasmarcade.com).
+    /// They go into the user's own list, so the user can edit or remove them.
+    public static let initialCustomDomains: [String] = [
+        "al5sm.com",
+        "calwhichherea.com",
+        "croppasmotter.com",
+        "d2f9q8zryik75d.cloudfront.net",
+        "dd133.com",
+        "omg10.com",
+        "ratwapaleola.com",
+        "sothssoapy.com",
+        "ueuee.com",
+    ]
+
     /// Built-in and downloaded lists merged, deduplicated and sorted.
     public static func merged(with downloaded: [String]) -> [String] {
         Array(Set(domains).union(downloaded)).sorted()
