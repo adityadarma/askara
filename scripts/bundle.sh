@@ -49,7 +49,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundleDevelopmentRegion</key><string>en</string>
     <key>CFBundleLocalizations</key><array><string>en</string><string>id</string></array>
     <key>CFBundleAllowMixedLocalizations</key><true/>
-    <key>LSMinimumSystemVersion</key><string>15.4</string>
+    <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSUserActivityTypes</key><array><string>NSUserActivityTypeBrowsingWeb</string></array>
     <key>NSAppTransportSecurity</key>

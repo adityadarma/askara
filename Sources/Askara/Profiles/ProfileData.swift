@@ -123,22 +123,26 @@ final class ProfileData {
 
     // MARK: - Extensions
 
-    private var extensionManager: ExtensionManager?
-    var loadedExtensions: ExtensionManager? { extensionManager }
+    /// Type-erased because `ExtensionManager` exists only on macOS 15.4+.
+    private var extensionManagerStorage: AnyObject?
+
+    @available(macOS 15.4, *)
+    var loadedExtensions: ExtensionManager? { extensionManagerStorage as? ExtensionManager }
 
     /// Created (and extensions loaded) when a normal window of this profile first needs it.
+    @available(macOS 15.4, *)
     var extensions: ExtensionManager {
-        if let extensionManager { return extensionManager }
+        if let existing = loadedExtensions { return existing }
         let manager = ExtensionManager(profile: self)
-        extensionManager = manager
+        extensionManagerStorage = manager
         manager.start()
         return manager
     }
 
     /// Frees extension background pages when no window of this profile is left.
     func unloadExtensions() {
-        extensionManager?.shutDown()
-        extensionManager = nil
+        if #available(macOS 15.4, *) { loadedExtensions?.shutDown() }
+        extensionManagerStorage = nil
     }
 
     // MARK: - Permissions

@@ -111,6 +111,7 @@ final class Tab: NSObject {
     var isPlayingAudio: Bool { webView?.askaraIsPlayingAudio == true || webView?.askaraIsCapturingMedia == true }
 }
 
+@available(macOS 15.4, *)
 extension Tab: WKWebExtensionTab {
     func window(for context: WKWebExtensionContext) -> (any WKWebExtensionWindow)? { owner }
     func indexInWindow(for context: WKWebExtensionContext) -> Int { owner?.index(of: self) ?? NSNotFound }
@@ -431,7 +432,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         refreshExtensionButtons()
         updateDownloadsButton()
         updateMediaButton()
-        extensionController?.didOpenWindow(self)
+        if #available(macOS 15.4, *) { extensionController?.didOpenWindow(self) }
     }
 
     @available(*, unavailable)
@@ -1054,7 +1055,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         let position = clampedIndex(index, pinned: tab.isPinned)
         tabs.insert(tab, at: position)
         if position <= activeIndex { activeIndex += 1 }
-        extensionController?.didMoveTab(tab, from: oldIndex, in: source)
+        if #available(macOS 15.4, *) { extensionController?.didMoveTab(tab, from: oldIndex, in: source) }
         activate(index: position)
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
@@ -1153,7 +1154,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         let position = min(max(firstUnpinned, index), tabs.count)
         tabs.insert(tab, at: position)
         if position <= activeIndex { activeIndex += 1 }
-        extensionController?.didOpenTab(tab)
+        if #available(macOS 15.4, *) { extensionController?.didOpenTab(tab) }
         if activate || activeIndex < 0 {
             self.activate(index: position)
         } else {
@@ -1166,6 +1167,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     // MARK: - Tab access for extensions
 
     /// Extension controller, for normal windows only. Private windows are invisible to extensions.
+    @available(macOS 15.4, *)
     var extensionController: WKWebExtensionController? {
         isPrivate ? nil : profile.extensions.controller
     }
@@ -1206,8 +1208,20 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         tab.webView?.load(URLRequest(url: url))
     }
 
-    private func tabChanged(_ tab: Tab, _ properties: WKWebExtension.TabChangedProperties) {
-        extensionController?.didChangeTabProperties(properties, for: tab)
+    private enum TabChange { case title, URL, loading, pinned, muted }
+
+    /// Tells extensions a tab property changed. No-op before macOS 15.4.
+    private func tabChanged(_ tab: Tab, _ change: TabChange) {
+        guard #available(macOS 15.4, *), let controller = extensionController else { return }
+        let properties: WKWebExtension.TabChangedProperties
+        switch change {
+        case .title: properties = .title
+        case .URL: properties = .URL
+        case .loading: properties = .loading
+        case .pinned: properties = .pinned
+        case .muted: properties = .muted
+        }
+        controller.didChangeTabProperties(properties, for: tab)
     }
 
     /// Loads a URL in the active tab (or a new tab if there is none).
@@ -1238,7 +1252,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
             tab.interactionState = saved.interactionData
             return tab
         }
-        tabs.forEach { extensionController?.didOpenTab($0) }
+        if #available(macOS 15.4, *) { tabs.forEach { extensionController?.didOpenTab($0) } }
         let active = tabs.indices.contains(saved.activeIndex) ? tabs[saved.activeIndex] : nil
         normalizeTabOrder()
         activate(index: active.flatMap { a in tabs.firstIndex { $0 === a } } ?? 0)
@@ -1284,7 +1298,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         var active = 0
         for (index, tab) in tabs.enumerated() {
             // Temporary extension pages (e.g. passkey confirmation) are not restored.
-            guard let url = tab.webView?.url ?? tab.url, !ExtensionManager.isExtensionScheme(url.scheme) else { continue }
+            guard let url = tab.webView?.url ?? tab.url, !ExtensionSupport.isExtensionScheme(url.scheme) else { continue }
             if index == activeIndex { active = saved.count }
             // A live tab's state must be read from its WebView; a sleeping tab already has it cached.
             let interactionData = (tab.webView?.interactionState ?? tab.interactionState) as? Data
@@ -1320,7 +1334,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         let webView = tab.webView ?? wake(tab)
         rouse(tab)
         if previous !== tab {
-            extensionController?.didActivateTab(tab, previousActiveTab: previous)
+            if #available(macOS 15.4, *) { extensionController?.didActivateTab(tab, previousActiveTab: previous) }
             // Remember which tab is open, so a force quit or crash reopens this one (debounced).
             sessionChanged(immediate: false)
         }
@@ -1352,9 +1366,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     /// Creates a page for a new or sleeping tab and restores its history and scroll position.
     @discardableResult
     private func wake(_ tab: Tab, loadURL: Bool = true) -> WKWebView {
-        let configuration = extensionController != nil
-            ? profile.extensions.webViewConfiguration(for: tab.url) ?? makeConfiguration()
-            : makeConfiguration()
+        let configuration = extensionWebViewConfiguration(for: tab.url) ?? makeConfiguration()
         let webView = AskaraWebView(frame: contentView.bounds, configuration: configuration)
         attach(webView, to: tab)
         guard loadURL else { return webView }
@@ -1451,6 +1463,13 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         }
     }
 
+    /// Extension pages only load with their extension's configuration. Nil for normal pages,
+    /// private windows, and systems without extension support (before macOS 15.4).
+    private func extensionWebViewConfiguration(for url: URL?) -> WKWebViewConfiguration? {
+        guard #available(macOS 15.4, *), extensionController != nil else { return nil }
+        return profile.extensions.webViewConfiguration(for: url)
+    }
+
     private func makeConfiguration() -> WKWebViewConfiguration {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = dataStore
@@ -1466,7 +1485,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
             config.preferences.setValue(true, forKey: "allowsPictureInPictureMediaPlayback")
         }
         // Extensions (e.g. Bitwarden) inject their scripts via this controller. Not for private windows.
-        if let extensionController { config.webExtensionController = extensionController }
+        if #available(macOS 15.4, *), let extensionController { config.webExtensionController = extensionController }
         if let list = services.ruleList { config.userContentController.add(list) }
         // Detect form input in all frames (including iframes) so tabs with input aren't put to sleep.
         config.userContentController.add(WeakScriptHandler(self), name: FormGuard.handlerName)
@@ -1673,7 +1692,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         let splitEnded = endSplit(containing: tab)
         dropWebView(of: tab)
         tabs.remove(at: index)
-        extensionController?.didCloseTab(tab, windowIsClosing: tabs.isEmpty)
+        if #available(macOS 15.4, *) { extensionController?.didCloseTab(tab, windowIsClosing: tabs.isEmpty) }
         if tabs.isEmpty {
             activeIndex = -1
             window?.close()
@@ -1709,7 +1728,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     }
 
     private func savedTab(_ tab: Tab) -> SessionState.SavedTab? {
-        guard let url = tab.webView?.url ?? tab.url, !ExtensionManager.isExtensionScheme(url.scheme) else { return nil }
+        guard let url = tab.webView?.url ?? tab.url, !ExtensionSupport.isExtensionScheme(url.scheme) else { return nil }
         let interactionData = (tab.webView?.interactionState ?? tab.interactionState) as? Data
         return .init(url: url, title: tab.title, isPinned: tab.isPinned, isMuted: tab.isMuted,
                      interactionData: interactionData)
@@ -1724,7 +1743,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         let old = tabs
         tabs = newOrder
         if let active, let index = tabs.firstIndex(where: { $0 === active }) { activeIndex = index }
-        guard let controller = extensionController else { return }
+        guard #available(macOS 15.4, *), let controller = extensionController else { return }
         for (newIndex, tab) in tabs.enumerated() {
             if let oldIndex = old.firstIndex(where: { $0 === tab }), oldIndex != newIndex {
                 controller.didMoveTab(tab, from: oldIndex, in: self)
@@ -3082,7 +3101,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         }
 
         let site = host.isEmpty ? String(localized: "this site") : host
-        let hasExtension = !isPrivate && !profile.extensions.loaded.isEmpty
+        var hasExtension = false
+        if #available(macOS 15.4, *) { hasExtension = !isPrivate && !profile.extensions.loaded.isEmpty }
         let alert = NSAlert()
         switch reason {
         case .securityKey:
@@ -3335,7 +3355,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         // mailto:, tel:, zoommtg:, etc. go to the matching app, only when clicked by the user.
         let webSchemes: Set<String> = ["http", "https", "about", "file", "blob", "data", "javascript"]
         // Internal extension pages (settings, popups opened in a tab) still load in Askara.
-        if !webSchemes.contains(scheme), !(profile.loadedExtensions?.isExtensionURL(url) ?? false) {
+        if !webSchemes.contains(scheme), !isExtensionPage(url) {
             if isUserClick { NSWorkspace.shared.open(url) }
             return .cancel
         }
@@ -3702,13 +3722,19 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         }
     }
 
+    /// Internal extension page (settings, popup opened in a tab). Always false before macOS 15.4.
+    private func isExtensionPage(_ url: URL) -> Bool {
+        guard #available(macOS 15.4, *) else { return false }
+        return profile.loadedExtensions?.isExtensionURL(url) ?? false
+    }
+
     // MARK: - NSWindowDelegate
 
     func windowDidBecomeKey(_ notification: Notification) {
         activeTab?.lastActive = Date()
         lastFocused = Date()
         if !isPrivate { services.profileUsed(profile) }
-        extensionController?.didFocusWindow(self)
+        if #available(macOS 15.4, *) { extensionController?.didFocusWindow(self) }
         // First ⌘T in this window should already be instant. No-op if a spare for this URL exists.
         spareNewTab.prepare(url: services.homeURL, after: 3)
     }
@@ -3744,7 +3770,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         // Popup tabs can retain script access to their opener. Close children/newest tabs first.
         tabs.reversed().forEach(dropWebView(of:))
         tabs.removeAll()
-        if let controller = extensionController {
+        if #available(macOS 15.4, *), let controller = extensionController {
             closing.forEach { controller.didCloseTab($0, windowIsClosing: true) }
             controller.didCloseWindow(self)
         }
@@ -3762,8 +3788,9 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
             view.removeFromSuperview()
         }
         pinnedExtensionButtons.removeAll()
-        extensionsButton.isHidden = isPrivate
-        guard !isPrivate else { return }
+        // Safari extensions need macOS 15.4. Older systems get no extension UI.
+        extensionsButton.isHidden = isPrivate || !ExtensionSupport.isAvailable
+        guard !isPrivate, #available(macOS 15.4, *) else { return }
         let manager = profile.extensions
         for (index, entry) in manager.loaded.enumerated() where manager.isPinned(entry.item) {
             let action = entry.context.action(for: activeTab)
@@ -3792,6 +3819,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
             : String(localized: "Extensions (\(count) active)")
     }
 
+    @available(macOS 15.4, *)
     private func addExtensionBadge(_ text: String, to button: NSButton) {
         let badge = NSTextField(labelWithString: text)
         badge.font = .boldSystemFont(ofSize: 8)
@@ -3810,6 +3838,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         ])
     }
 
+    @available(macOS 15.4, *)
     @objc private func extensionButtonClicked(_ sender: NSButton) {
         let loaded = profile.loadedExtensions?.loaded ?? []
         guard loaded.indices.contains(sender.tag) else { return }
@@ -3819,12 +3848,14 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         loaded[sender.tag].context.performAction(for: activeTab)
     }
 
+    @available(macOS 15.4, *)
     @objc private func extensionMenuItemClicked(_ sender: NSMenuItem) {
         let loaded = profile.loadedExtensions?.loaded ?? []
         guard loaded.indices.contains(sender.tag) else { return }
         loaded[sender.tag].context.performAction(for: activeTab)
     }
 
+    @available(macOS 15.4, *)
     @objc private func extensionMenuButtonClicked(_ sender: NSButton) {
         sender.enclosingMenuItem?.menu?.cancelTracking()
         let loaded = profile.loadedExtensions?.loaded ?? []
@@ -3832,6 +3863,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         loaded[sender.tag].context.performAction(for: activeTab)
     }
 
+    @available(macOS 15.4, *)
     @objc private func togglePinnedExtension(_ sender: NSMenuItem) {
         let loaded = profile.loadedExtensions?.loaded ?? []
         guard loaded.indices.contains(sender.tag) else { return }
@@ -3839,6 +3871,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         profile.extensions.setPinned(!profile.extensions.isPinned(item), item: item)
     }
 
+    @available(macOS 15.4, *)
     @objc private func togglePinnedExtensionButton(_ sender: NSButton) {
         sender.enclosingMenuItem?.menu?.cancelTracking()
         let loaded = profile.loadedExtensions?.loaded ?? []
@@ -3848,6 +3881,11 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     }
 
     @objc private func showExtensionsMenu(_ sender: NSButton) {
+        if #available(macOS 15.4, *) { presentExtensionsMenu(sender) }
+    }
+
+    @available(macOS 15.4, *)
+    private func presentExtensionsMenu(_ sender: NSButton) {
         let manager = profile.extensions
         let menu = NSMenu()
         menu.minimumWidth = 260
@@ -3927,6 +3965,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     }
 
     /// Shows the extension popup below its button. WebKit has already prepared the NSPopover.
+    @available(macOS 15.4, *)
     func presentExtensionPopup(_ action: WKWebExtension.Action) -> Bool {
         guard let popover = action.popupPopover else { return false }
         let bundleID = profile.loadedExtensions?.loaded.first { $0.context === action.webExtensionContext }?.item.bundleID
@@ -3943,6 +3982,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
 
 // MARK: - Window as WKWebExtensionWindow
 
+@available(macOS 15.4, *)
 extension BrowserWindowController: WKWebExtensionWindow {
     func tabs(for context: WKWebExtensionContext) -> [any WKWebExtensionTab] { tabs }
 

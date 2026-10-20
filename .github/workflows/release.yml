@@ -20,6 +20,9 @@ jobs:
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history and tags, so release notes can list commits since the previous release.
+          fetch-depth: 0
 
       - name: Resolve version
         id: version
@@ -121,7 +124,7 @@ jobs:
                 <pubDate>$(LC_ALL=C date -u "+%a, %d %b %Y %H:%M:%S +0000")</pubDate>
                 <sparkle:version>$BUILD</sparkle:version>
                 <sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>
-                <sparkle:minimumSystemVersion>15.4</sparkle:minimumSystemVersion>
+                <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
                 <sparkle:fullReleaseNotesLink>$NOTES</sparkle:fullReleaseNotesLink>
                 <enclosure url="$URL" type="application/octet-stream" $ATTRS />
               </item>
@@ -132,6 +135,19 @@ jobs:
           echo "$SPARKLE_PRIVATE_KEY" | "$SIGN" --ed-key-file - appcast.xml
           cat appcast.xml
 
+      # Notes list features, bug fixes, and other changes from commit subjects (Conventional Commits)
+      # since the previous release tag, followed by the install instructions.
+      - name: Write release notes
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          {
+            ./scripts/release-notes.sh "v$VERSION"
+            echo
+            cat .github/release-install.md
+          } > release-notes.md
+          cat release-notes.md
+
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -140,6 +156,5 @@ jobs:
         run: |
           gh release create "v$VERSION" "$ZIP" "$ZIP.sha256" appcast.xml \
             --title "Askara $VERSION" \
-            --notes-file .github/release-install.md \
-            --generate-notes \
+            --notes-file release-notes.md \
             --target "$GITHUB_SHA"

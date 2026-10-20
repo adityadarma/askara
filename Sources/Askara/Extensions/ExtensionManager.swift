@@ -13,11 +13,29 @@ struct InstalledExtension: Equatable {
     let bundleURL: URL
 }
 
+/// OS-independent extension helpers. Safari extension support (WKWebExtension) needs macOS 15.4;
+/// on older systems the extension UI is hidden and no `ExtensionManager` is ever created.
+enum ExtensionSupport {
+    static var isAvailable: Bool {
+        if #available(macOS 15.4, *) { return true }
+        return false
+    }
+
+    /// Scheme for extension pages, matching Safari so extensions that check it work.
+    static let scheme = "safari-web-extension"
+
+    /// Also accepts WebKit's default scheme, e.g. for tabs saved by older versions.
+    static func isExtensionScheme(_ scheme: String?) -> Bool {
+        scheme == Self.scheme || scheme == "webkit-extension"
+    }
+}
+
 /// Loads installed Safari extensions (e.g. Bitwarden) via the WKWebExtension API. One per profile:
 /// each profile has its own enabled list and extension storage (e.g. a separate Bitwarden vault login).
 ///
 /// Extensions load only after the user enables them and approves their permissions. That choice is saved,
 /// and approved permissions are re-granted every time the profile opens.
+@available(macOS 15.4, *)
 @MainActor
 final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     private struct Keys {
@@ -65,17 +83,9 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         controller.delegate = self
     }
 
-    /// Scheme for extension pages, matching Safari so extensions that check it work.
-    static let extensionScheme = "safari-web-extension"
-
-    /// Also accepts WebKit's default scheme, e.g. for tabs saved by older versions.
-    static func isExtensionScheme(_ scheme: String?) -> Bool {
-        scheme == extensionScheme || scheme == "webkit-extension"
-    }
-
     /// Custom base-URL schemes must be registered before any match pattern is used.
     private static let registerScheme: Void = {
-        WKWebExtension.MatchPattern.registerCustomURLScheme(extensionScheme)
+        WKWebExtension.MatchPattern.registerCustomURLScheme(ExtensionSupport.scheme)
     }()
 
     // MARK: - Discovery & loading
@@ -188,7 +198,7 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         // Use Safari's scheme instead of WebKit's default `webkit-extension://`. Safari extensions
         // check it: Bitwarden's inline menu only loads its button/list iframes from
         // chrome-extension:, moz-extension:, or safari-web-extension: URLs.
-        if let base = URL(string: "\(Self.extensionScheme)://\(context.uniqueIdentifier.lowercased())/") {
+        if let base = URL(string: "\(ExtensionSupport.scheme)://\(context.uniqueIdentifier.lowercased())/") {
             context.baseURL = base
         }
         // Permissions were approved when the user enabled the extension.
@@ -246,7 +256,7 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// Extension pages (e.g. Bitwarden's passkey confirmation window) only load with that extension's
     /// WebView configuration; with a normal tab configuration the page is blank.
     func webViewConfiguration(for url: URL?) -> WKWebViewConfiguration? {
-        guard let url, Self.isExtensionScheme(url.scheme) else { return nil }
+        guard let url, ExtensionSupport.isExtensionScheme(url.scheme) else { return nil }
         return controller.extensionContext(for: url)?.webViewConfiguration
     }
 

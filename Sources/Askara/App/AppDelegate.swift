@@ -214,6 +214,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - Extensions
 
     /// Clicking an extension name: enable it (after permission consent) or disable it.
+    @available(macOS 15.4, *)
     @objc func toggleExtensionAction(_ sender: NSMenuItem) {
         guard let item = sender.representedObject as? InstalledExtensionBox else { return }
         let manager = services.currentProfile.extensions
@@ -244,6 +245,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    @available(macOS 15.4, *)
     @objc func extensionOptionsAction(_ sender: NSMenuItem) {
         guard let item = sender.representedObject as? InstalledExtensionBox,
               let context = services.currentProfile.extensions.context(for: item.value) else { return }

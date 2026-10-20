@@ -402,6 +402,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     }
 
     private func extensionsPage() -> NSView {
+        guard ExtensionSupport.isAvailable else {
+            return stack([note(String(localized: "Safari Web Extensions need macOS 15.4 or later."))])
+        }
         for (id, title, width) in [("name", String(localized: "Extension"), 280.0),
                                    ("status", String(localized: "Status"), 110.0),
                                    ("pinned", String(localized: "Toolbar"), 110.0)] {
@@ -706,6 +709,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     }
 
     @objc private func toggleSelectedExtension(_ sender: Any?) {
+        guard #available(macOS 15.4, *) else { return }
         let manager = services.currentProfile.extensions
         guard manager.installed.indices.contains(extensionTable.selectedRow) else { return NSSound.beep() }
         let item = manager.installed[extensionTable.selectedRow]
@@ -715,6 +719,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     }
 
     @objc private func pinSelectedExtension(_ sender: Any?) {
+        guard #available(macOS 15.4, *) else { return }
         let manager = services.currentProfile.extensions
         guard manager.installed.indices.contains(extensionTable.selectedRow) else { return NSSound.beep() }
         let item = manager.installed[extensionTable.selectedRow]
@@ -723,6 +728,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     }
 
     private func updateExtensionButtons() {
+        guard #available(macOS 15.4, *) else { return }
         let manager = services.currentProfile.extensions
         guard manager.installed.indices.contains(extensionTable.selectedRow) else {
             extensionToggleButton.isEnabled = false
@@ -744,7 +750,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         if tableView === awakeTable { return siteRules.count }
         if tableView === manualTable { return services.blockListUpdater.customDomains.count }
         if tableView === autoTable { return autoRows.count }
-        if tableView === extensionTable { return services.currentProfile.extensions.installed.count }
+        if tableView === extensionTable {
+            guard #available(macOS 15.4, *) else { return 0 }
+            return services.currentProfile.extensions.installed.count
+        }
         return permissionRows.count
     }
 
@@ -767,6 +776,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
                 text = rule.site
             }
         } else if tableView === extensionTable {
+            guard #available(macOS 15.4, *) else { return nil }
             let manager = services.currentProfile.extensions
             let item = manager.installed[row]
             switch tableColumn?.identifier.rawValue {

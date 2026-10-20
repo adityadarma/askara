@@ -1,6 +1,7 @@
 import AppKit
 import WebKit
 
+@available(macOS 15.4, *)
 @MainActor
 final class ExtensionsPopoverController: NSViewController {
     private let profile: ProfileData

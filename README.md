@@ -23,7 +23,7 @@ its own; the only bundled framework is Sparkle, for in-app updates.
 
 ## Requirements
 
-- macOS 15.4 or later (the minimum for `WKWebExtension`).
+- macOS 14 or later. Safari extension support (`WKWebExtension`) needs macOS 15.4 or later; on macOS 14 the extension UI is hidden.
 - Swift 5.9+ (Xcode or Command Line Tools).
 
 ## Install
