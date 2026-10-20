@@ -381,7 +381,6 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     /// Last view of a tab woken from sleep, covering the page until it has reloaded.
     private let sleepSnapshotView = SnapshotOverlayView()
     private var sleepSnapshotTimeout: DispatchWorkItem?
-
     private var activeTab: Tab? { tabs.indices.contains(activeIndex) ? tabs[activeIndex] : nil }
     /// Loaded web view of the active tab (screenshot).
     var activeWebViewForCapture: WKWebView? { activeTab?.webView }
@@ -1325,6 +1324,9 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         guard tabs.indices.contains(index) else { return }
         if index != activeIndex { hideFindBar(nil) }
         let previous = activeTab
+        if let previous, previous !== tabs[index], shouldPauseWhenLeaving(previous) {
+            setMediaPaused(true, tab: previous, pauseAllMediaPlayback: false)
+        }
         previous?.lastActive = Date()
         hideSleepSnapshot(animated: false)
 
@@ -1363,6 +1365,13 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         loadingBar.update(loading: webView.isLoading, progress: webView.estimatedProgress, animated: false)
         // Tab count and memory limits are enforced across all windows right away.
         services.enforceHibernation()
+    }
+
+    /// Instagram continues Reels playback after its tab is hidden, unlike the expected feed behavior.
+    private func shouldPauseWhenLeaving(_ tab: Tab) -> Bool {
+        guard !tab.isPictureInPicture,
+              let host = (tab.webView?.url ?? tab.url)?.host?.lowercased() else { return false }
+        return host == "instagram.com" || host.hasSuffix(".instagram.com")
     }
 
     /// Creates a page for a new or sleeping tab and restores its history and scroll position.
@@ -2482,8 +2491,9 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
 
     /// Pauses with a real pause (the page's own controls update), so the user can also resume from
     /// the page. The script marks what it paused so Play resumes the same media; frames with a known
-    /// video are included, and WebKit's pause catches media in any other frame.
-    private func setMediaPaused(_ paused: Bool, tab: Tab) {
+    /// video are included. The native fallback is only used for explicit media controls because it
+    /// cannot distinguish a video currently owned by the system PiP window.
+    private func setMediaPaused(_ paused: Bool, tab: Tab, pauseAllMediaPlayback: Bool = true) {
         guard let web = tab.webView else { return }
         let frames: [WKFrameInfo?] = [nil] + tab.pictureInPictureFrames.values.map(\.frame).filter { !$0.isMainFrame }
         Task { @MainActor [weak self, weak web, weak tab] in
@@ -2496,7 +2506,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
                 if (result as? Bool) == true { handled = true }
             }
             if paused {
-                await web.pauseAllMediaPlayback()
+                if pauseAllMediaPlayback { await web.pauseAllMediaPlayback() }
                 tab.mediaPausedByAskara = true
             } else {
                 tab.mediaPausedByAskara = false

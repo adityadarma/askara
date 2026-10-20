@@ -1,4 +1,5 @@
 import AppKit
+import AskaraCore
 
 /// Site favicons for tabs. Stored per host in memory and on disk (32×32 PNG, a few KB),
 /// so sleeping or session-restored tabs still show their icon without loading the page.
@@ -35,8 +36,7 @@ final class FaviconStore {
     private var refreshed: Set<String> = []
     private var generation: UInt = 0
     private static let metadataLimit = 2_048
-    private let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        .appendingPathComponent("Askara/Favicons", isDirectory: true)
+    private let directory = JSONFile<Int>.appSupportDirectory.appendingPathComponent("Favicons", isDirectory: true)
 
     /// No cookies: icon requests carry no login data.
     private nonisolated static let session: URLSession = {

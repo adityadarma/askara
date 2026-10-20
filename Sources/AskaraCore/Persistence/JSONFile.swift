@@ -6,11 +6,16 @@ public struct JSONFile<Value: Codable> {
 
     public init(url: URL) { self.url = url }
 
-    /// App data folder: ~/Library/Application Support/Askara
+    /// App data folder. Development builds declare a separate folder in Info.plist so they cannot
+    /// overwrite sessions, bookmarks, or settings belonging to the released browser.
+    public static var appSupportDirectory: URL {
+        let name = Bundle.main.object(forInfoDictionaryKey: "AskaraApplicationSupportDirectory") as? String ?? "Askara"
+        return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent(name, isDirectory: true)
+    }
+
     public static func inAppSupport(_ name: String) -> JSONFile {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Askara", isDirectory: true)
-        return JSONFile(url: base.appendingPathComponent(name))
+        JSONFile(url: appSupportDirectory.appendingPathComponent(name))
     }
 
     public func load() -> Value? {

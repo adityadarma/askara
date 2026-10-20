@@ -55,6 +55,13 @@ final class BrowserServices {
     private var profileData: [UUID: ProfileData] = [:]
     private var isTerminating = false
     private var suppressCloseRecording = false
+    /// Development builds must not use WebKit's shared default store, which could retain cookies
+    /// from the released app despite their separate application-support directories.
+    private static let developmentDefaultDataStoreID = UUID(uuidString: "B9E05A08-6B39-4C87-AD1F-3B6D67EE5D35")!
+
+    private var usesDevelopmentDataStore: Bool {
+        (Bundle.main.object(forInfoDictionaryKey: "AskaraApplicationSupportDirectory") as? String) == "Askara Dev"
+    }
 
     init(storageDirectory: URL? = nil, downloadDirectory: URL? = nil) {
         let downloadsFile = storageDirectory.map { JSONFile<DownloadHistory>(url: $0.appendingPathComponent("downloads.json")) }
@@ -147,8 +154,13 @@ final class BrowserServices {
         let resolvedID = profileList.profile(id) != nil ? id : Profile.defaultID
         let profileDirectory = storageDirectory?.appendingPathComponent(Profile.folder(for: resolvedID),
                                                                          isDirectory: true)
-        let dataStore = resolvedID == Profile.defaultID ? WKWebsiteDataStore.default()
-            : WKWebsiteDataStore(forIdentifier: resolvedID)
+        let dataStore: WKWebsiteDataStore
+        if resolvedID == Profile.defaultID {
+            dataStore = usesDevelopmentDataStore ? WKWebsiteDataStore(forIdentifier: Self.developmentDefaultDataStoreID)
+                                                    : .default()
+        } else {
+            dataStore = WKWebsiteDataStore(forIdentifier: resolvedID)
+        }
         let data = ProfileData(id: resolvedID, services: self, dataStore: dataStore,
                                storageDirectory: profileDirectory)
         profileData[data.id] = data

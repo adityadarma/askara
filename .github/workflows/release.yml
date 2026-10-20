@@ -77,7 +77,7 @@ jobs:
             echo "::error::Repository variable SPARKLE_PUBLIC_KEY is not set."
             exit 1
           fi
-          ./scripts/bundle.sh --universal
+          ./scripts/bundle.sh --release --universal
           lipo -archs build/Askara.app/Contents/MacOS/Askara
           # Fail instead of shipping an ad-hoc build, which would reset users' permissions.
           codesign -dvv build/Askara.app 2>&1 | grep -q "^Authority=Askara Self-Signed$" || {
