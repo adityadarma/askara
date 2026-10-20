@@ -63,6 +63,8 @@ final class Tab: NSObject {
     var readerOriginalURL: URL?
     /// Set just before the Reader HTML loads, so that load isn't mistaken for leaving Reader.
     var readerPending = false
+    /// Popup tab opened by a page's script: the first web address it loads is checked against the block list.
+    var popupOpenerHost: String?
     /// One safe retry for transient WebKit network-process failures. POST/form loads are excluded.
     var retriableNavigationURL: URL?
     var transientRetryCount = 0
@@ -3298,6 +3300,20 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
                 tab.transientRetryCount = 0
             }
         }
+        // A script-opened popup often starts at about:blank and navigates to its ad afterwards.
+        if action.targetFrame?.isMainFrame ?? true,
+           let tab = tabs.first(where: { $0.webView === webView }), let opener = tab.popupOpenerHost,
+           let url = action.request.url, ["http", "https"].contains(url.scheme?.lowercased() ?? "") {
+            tab.popupOpenerHost = nil
+            if let host = url.host, isBlockedPopup(host: host, openerHost: opener) {
+                decisionHandler(.cancel, preferences)
+                showToast(String(localized: "Blocked a popup from \(host)"), duration: 3)
+                if let index = tabs.firstIndex(where: { $0 === tab }) {
+                    Task { @MainActor in self.closeTab(at: index) }
+                }
+                return
+            }
+        }
         // The Reader page is built by Askara from the page it replaces: load it unchanged.
         if action.targetFrame?.isMainFrame ?? true, tabs.first(where: { $0.webView === webView })?.readerPending == true {
             decisionHandler(.allow, preferences)
@@ -3588,9 +3604,23 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
                  for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
         // Only WebKit pages reach this delegate, so the popup is always a WebKit page.
+        let openerHost = webView.url?.host ?? ""
+        // Ad popups (play-button tricks): refuse the tab when its address is on the block list.
+        if let host = navigationAction.request.url?.host,
+           isBlockedPopup(host: host, openerHost: openerHost) {
+            showToast(String(localized: "Blocked a popup from \(host)"), duration: 3)
+            return nil
+        }
         let popup = AskaraWebView(frame: contentView.bounds, configuration: configuration)
-        insertTab(url: navigationAction.request.url, at: activeIndex + 1, activate: true, webView: popup)
+        let tab = insertTab(url: navigationAction.request.url, at: activeIndex + 1, activate: true, webView: popup)
+        tab.popupOpenerHost = openerHost
         return popup
+    }
+
+    /// A popup is blocked when its host is on the block list, unless ad blocking is off for the opening site.
+    private func isBlockedPopup(host: String, openerHost: String) -> Bool {
+        guard !host.isEmpty, !services.siteSettings.isAdBlockDisabled(host: openerHost) else { return false }
+        return services.blockListUpdater.isBlocked(host: host)
     }
 
     /// window.close() from the page.

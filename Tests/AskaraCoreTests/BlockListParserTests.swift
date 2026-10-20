@@ -75,3 +75,52 @@ import Testing
         }
     }
 }
+
+@Suite struct ElementHideRuleTests {
+    @Test func parsesSiteAndSelector() throws {
+        let rule = try #require(ElementHideRule.parse("https://Z2.IdlixKu.com/series/x ## a[href*=\"rebrand.ly\"]"))
+        #expect(rule.site == "z2.idlixku.com")
+        #expect(rule.selector == "a[href*=\"rebrand.ly\"]")
+        #expect(rule.text == "z2.idlixku.com##a[href*=\"rebrand.ly\"]")
+    }
+
+    @Test func rejectsInvalidRules() {
+        #expect(ElementHideRule.parse("no-separator") == nil)
+        #expect(ElementHideRule.parse("##a.ad") == nil)
+        #expect(ElementHideRule.parse("localhost##a.ad") == nil)
+        #expect(ElementHideRule.parse("example.com##") == nil)
+        #expect(ElementHideRule.parse("example.com##a{color:red}") == nil)
+        #expect(ElementHideRule.parse("example.com##a[href") == nil)
+        #expect(ElementHideRule.parse("example.com##a\\b") == nil)
+    }
+
+    @Test func parseAllSkipsInvalidDeduplicatesAndSorts() {
+        let text = """
+        b.com##.ad
+        bad line
+        a.com##.ad
+        b.com##.ad
+        """
+        #expect(ElementHideRule.parseAll(text).map(\.text) == ["a.com##.ad", "b.com##.ad"])
+    }
+
+    @Test func jsonContainsHideRuleForSiteAndSubdomains() throws {
+        let rule = try #require(ElementHideRule.parse("example.com##a[href*=\"ads\"]"))
+        let data = Data(BlockList.contentRuleListJSON(domains: [], hiding: [rule]).utf8)
+        let parsed = try #require(try JSONSerialization.jsonObject(with: data) as? [[String: Any]])
+        #expect(parsed.count == YouTubeAdRules.selectors.count + 1)
+        let last = try #require(parsed.last)
+        let action = try #require(last["action"] as? [String: Any])
+        #expect(action["type"] as? String == "css-display-none")
+        #expect(action["selector"] as? String == "a[href*=\"ads\"]")
+        let pattern = try #require((last["trigger"] as? [String: Any])?["url-filter"] as? String)
+        let regex = try NSRegularExpression(pattern: pattern)
+        func matches(_ s: String) -> Bool {
+            regex.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)) != nil
+        }
+        #expect(matches("https://example.com/a"))
+        #expect(matches("https://www.example.com/"))
+        #expect(!matches("https://notexample.com/"))
+        #expect(!matches("https://example.com.evil.org/"))
+    }
+}

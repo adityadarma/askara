@@ -42,6 +42,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     // Ad Blocker
     private let manualTable = NSTableView()
     private let manualField = NSTextField()
+    private let hideTable = NSTableView()
+    private let hideField = NSTextField()
     private let autoTable = NSTableView()
     private let autoSearch = NSSearchField()
     private let adBlockStatus = NSTextField(wrappingLabelWithString: "")
@@ -342,6 +344,20 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         }
         configure(manualTable, label: String(localized: "Domains you blocked"), multiple: true)
         configure(autoTable, label: String(localized: "Automatically blocked domains"), multiple: false)
+        configure(hideTable, label: String(localized: "Hidden elements"), multiple: true)
+        hideTable.tableColumns.first?.title = String(localized: "Site and element")
+
+        hideField.placeholderString = String(localized: "e.g. example.com##a[href*=\"ads\"]")
+        hideField.target = self
+        hideField.action = #selector(addHideRule(_:))
+        hideField.setAccessibilityLabel(String(localized: "Element to hide"))
+        hideField.widthAnchor.constraint(equalToConstant: 340).isActive = true
+        let addHide = NSButton(title: String(localized: "Add"), target: self, action: #selector(addHideRule(_:)))
+        let removeHide = NSButton(title: String(localized: "Remove"), target: self, action: #selector(removeHideRule(_:)))
+        let hideRow = NSStackView(views: [hideField, addHide, removeHide])
+        hideRow.spacing = 6
+        let hideTitle = NSTextField(labelWithString: String(localized: "Hidden by you"))
+        hideTitle.font = .boldSystemFont(ofSize: NSFont.systemFontSize)
 
         manualField.placeholderString = String(localized: "e.g. ads.example.com")
         manualField.target = self
@@ -373,10 +389,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         return stack([
             manualTitle,
             note(String(localized: "Add domains one at a time or paste several separated by spaces, commas, or new lines. URLs work too. Subdomains are blocked as well. Reload open pages to apply.")),
-            tableScroll(manualTable, height: 120), manualRow,
+            tableScroll(manualTable, height: 90), manualRow,
+            hideTitle,
+            note(String(localized: "Hide page elements on one site, written as site##selector. Example: example.com##a[href*=\"ads\"] hides every link whose address contains ads. Use this for banners that domain blocking can't remove. One rule at a time or several on separate lines. Reload open pages to apply.")),
+            tableScroll(hideTable, height: 90), hideRow,
             autoTitle,
             adBlockStatus,
-            tableScroll(autoTable, height: 120), autoRow,
+            tableScroll(autoTable, height: 90), autoRow,
         ])
     }
 
@@ -552,6 +571,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
             + " · " + updater.statusText
         adBlockUpdateButton.isEnabled = !updater.isUpdating
         manualTable.reloadData()
+        hideTable.reloadData()
         autoTable.reloadData()
         awakeTable.reloadData()
         permissionTable.reloadData()
@@ -653,6 +673,25 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         reload()
     }
 
+    @objc private func addHideRule(_ sender: Any?) {
+        let parsed = ElementHideRule.parseAll(hideField.stringValue)
+        guard !parsed.isEmpty else { return NSSound.beep() }
+        let updater = services.blockListUpdater
+        let merged = Set(updater.hideRules).union(parsed).sorted { ($0.site, $0.selector) < ($1.site, $1.selector) }
+        updater.setHideRules(merged)
+        hideField.stringValue = ""
+        reload()
+    }
+
+    @objc private func removeHideRule(_ sender: Any?) {
+        let updater = services.blockListUpdater
+        let rules = updater.hideRules
+        let selected = Set(hideTable.selectedRowIndexes.compactMap { rules.indices.contains($0) ? rules[$0] : nil })
+        guard !selected.isEmpty else { return NSSound.beep() }
+        updater.setHideRules(rules.filter { !selected.contains($0) })
+        reload()
+    }
+
     @objc private func autoFilterChanged(_ sender: Any?) { reload() }
 
     @objc private func updateAutoList(_ sender: Any?) {
@@ -749,6 +788,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     func numberOfRows(in tableView: NSTableView) -> Int {
         if tableView === awakeTable { return siteRules.count }
         if tableView === manualTable { return services.blockListUpdater.customDomains.count }
+        if tableView === hideTable { return services.blockListUpdater.hideRules.count }
         if tableView === autoTable { return autoRows.count }
         if tableView === extensionTable {
             guard #available(macOS 15.4, *) else { return 0 }
@@ -763,6 +803,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
             let domains = services.blockListUpdater.customDomains
             guard domains.indices.contains(row) else { return nil }
             text = domains[row]
+        } else if tableView === hideTable {
+            let rules = services.blockListUpdater.hideRules
+            guard rules.indices.contains(row) else { return nil }
+            text = rules[row].text
         } else if tableView === autoTable {
             guard autoRows.indices.contains(row) else { return nil }
             text = autoRows[row]

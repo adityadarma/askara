@@ -56,7 +56,8 @@ public enum BlockList {
     }
 
     /// JSON rule list ready to be compiled by WKContentRuleListStore.
-    public static func contentRuleListJSON(domains: [String] = domains, excludingSites: [String] = []) -> String {
+    public static func contentRuleListJSON(domains: [String] = domains, excludingSites: [String] = [],
+                                           hiding: [ElementHideRule] = []) -> String {
         let exclusions = excludingSites.map { domain in
             let escaped = NSRegularExpression.escapedPattern(for: domain)
             return "^https?://([^/]*\\.)?\(escaped)(?::[0-9]+)?/"
@@ -74,6 +75,7 @@ public enum BlockList {
             ]
         }
         let rules = domainRules + YouTubeAdRules.rules(exclusions: exclusions)
+            + ElementHideRule.rules(hiding, exclusions: exclusions)
         // Rules always serialize since they contain only String/Array/Dictionary.
         let data = try! JSONSerialization.data(withJSONObject: rules, options: [.sortedKeys])
         return String(decoding: data, as: UTF8.self)

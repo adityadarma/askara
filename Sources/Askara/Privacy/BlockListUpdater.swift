@@ -19,15 +19,19 @@ final class BlockListUpdater {
     private let domainsFile: JSONFile<[String]>
     private let metadataFile: JSONFile<BlockListMetadata>
     private let customFile: JSONFile<[String]>
+    private let hideFile: JSONFile<[ElementHideRule]>
     private weak var services: BrowserServices?
     private(set) var metadata: BlockListMetadata
     private(set) var isUpdating = false
     /// Everything that is blocked: automatic and manual domains together.
-    private(set) var currentDomains: [String]
+    private(set) var currentDomains: [String] { didSet { blockedSet = Set(currentDomains) } }
+    private var blockedSet: Set<String> = []
     /// Built-in plus downloaded domains. Read-only for the user.
     private(set) var automaticDomains: [String]
     /// Domains the user blocked by hand (Askara > Blocked Domains…).
     private(set) var customDomains: [String]
+    /// Element-hiding rules the user wrote by hand (`site##selector`).
+    private(set) var hideRules: [ElementHideRule]
     private var timer: Timer?
 
     /// Called each time a new list finishes compiling.
@@ -40,11 +44,14 @@ final class BlockListUpdater {
             domainsFile = JSONFile(url: storageDirectory.appendingPathComponent("blocklist-domains.json"))
             metadataFile = JSONFile(url: storageDirectory.appendingPathComponent("blocklist-meta.json"))
             customFile = JSONFile(url: storageDirectory.appendingPathComponent("blocklist-custom.json"))
+            hideFile = JSONFile(url: storageDirectory.appendingPathComponent("blocklist-hide.json"))
         } else {
             domainsFile = .inAppSupport("blocklist-domains.json")
             metadataFile = .inAppSupport("blocklist-meta.json")
             customFile = .inAppSupport("blocklist-custom.json")
+            hideFile = .inAppSupport("blocklist-hide.json")
         }
+        hideRules = hideFile.load() ?? []
         metadata = metadataFile.load() ?? BlockListMetadata()
         // First launch: no file yet, so seed it. Later edits (even an empty list) are kept as saved.
         let custom: [String]
@@ -56,7 +63,14 @@ final class BlockListUpdater {
         }
         customDomains = custom
         automaticDomains = BlockList.merged(with: domainsFile.load() ?? [])
-        currentDomains = BlockList.merged(with: automaticDomains + custom)
+        let merged = BlockList.merged(with: automaticDomains + custom)
+        currentDomains = merged
+        blockedSet = Set(merged)
+    }
+
+    /// True if `host` or one of its parent domains is on the block list.
+    func isBlocked(host: String) -> Bool {
+        SiteSettings.candidates(for: host).contains(where: blockedSet.contains)
     }
 
     /// Compiles the saved (or built-in) list, then checks for updates in the background.
@@ -83,6 +97,13 @@ final class BlockListUpdater {
     func setCustomDomains(_ domains: [String]) {
         customDomains = domains
         do { try customFile.save(domains) } catch { Log.error("Askara: failed to save custom blocklist: \(error)") }
+        recompile()
+    }
+
+    /// Replaces the element-hiding rules, saves them and rebuilds the rules.
+    func setHideRules(_ rules: [ElementHideRule]) {
+        hideRules = Array(rules.prefix(ElementHideRule.maxRules))
+        do { try hideFile.save(hideRules) } catch { Log.error("Askara: failed to save hide rules: \(error)") }
         recompile()
     }
 
@@ -161,7 +182,8 @@ final class BlockListUpdater {
         onDomainsChanged?(domains)
         let json = BlockList.contentRuleListJSON(
             domains: domains,
-            excludingSites: services?.siteSettings.adBlockExceptions ?? []
+            excludingSites: services?.siteSettings.adBlockExceptions ?? [],
+            hiding: hideRules
         )
         // The same identifier overwrites the old version; WebKit stores the compiled result on disk.
         WKContentRuleListStore.default().compileContentRuleList(
