@@ -669,3 +669,5 @@
 "Blocked automatically" = "Diblokir otomatis";
 "Add domains one at a time or paste several separated by spaces, commas, or new lines. URLs work too. Subdomains are blocked as well. Reload open pages to apply." = "Tambahkan domain satu per satu atau tempel beberapa sekaligus, dipisah spasi, koma, atau baris baru. URL juga bisa. Subdomain ikut diblokir. Muat ulang halaman yang terbuka agar berlaku.";
 "%lld automatic domains · %lld blocked by you" = "%lld domain otomatis · %lld diblokir oleh Anda";
+"Turn off Spotify shuffle (play songs in order)" = "Matikan shuffle Spotify (putar lagu sesuai urutan)";
+"Spotify's web player often starts with shuffle on. With this on, Askara switches shuffle off so songs continue in order. If you turn shuffle on yourself, it stays on until the page reloads. Spotify ads are muted and skipped by the Ad Blocker." = "Pemutar web Spotify sering memulai dengan shuffle aktif. Jika opsi ini aktif, Askara mematikan shuffle agar lagu berlanjut sesuai urutan. Jika Anda mengaktifkan shuffle sendiri, shuffle tetap aktif sampai halaman dimuat ulang. Iklan Spotify dibisukan dan dilewati oleh Ad Blocker.";

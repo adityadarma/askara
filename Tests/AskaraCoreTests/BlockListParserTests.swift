@@ -108,7 +108,7 @@ import Testing
         let rule = try #require(ElementHideRule.parse("example.com##a[href*=\"ads\"]"))
         let data = Data(BlockList.contentRuleListJSON(domains: [], hiding: [rule]).utf8)
         let parsed = try #require(try JSONSerialization.jsonObject(with: data) as? [[String: Any]])
-        #expect(parsed.count == YouTubeAdRules.selectors.count + 1)
+        #expect(parsed.count == YouTubeAdRules.selectors.count + SpotifyAdRules.rules(exclusions: []).count + 1)
         let last = try #require(parsed.last)
         let action = try #require(last["action"] as? [String: Any])
         #expect(action["type"] as? String == "css-display-none")

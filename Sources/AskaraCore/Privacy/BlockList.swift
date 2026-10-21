@@ -75,6 +75,7 @@ public enum BlockList {
             ]
         }
         let rules = domainRules + YouTubeAdRules.rules(exclusions: exclusions)
+            + SpotifyAdRules.rules(exclusions: exclusions)
             + ElementHideRule.rules(hiding, exclusions: exclusions)
         // Rules always serialize since they contain only String/Array/Dictionary.
         let data = try! JSONSerialization.data(withJSONObject: rules, options: [.sortedKeys])

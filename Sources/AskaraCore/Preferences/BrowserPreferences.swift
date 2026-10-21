@@ -36,6 +36,8 @@ public struct BrowserPreferences: Codable, Equatable, Sendable {
     /// Offer the page in the active normal window to the user's other Apple devices (Handoff).
     /// Never used in private windows.
     public var handoffEnabled = true
+    /// Turn off Spotify's shuffle when the web player enables it by itself, so songs play in order.
+    public var spotifyKeepsOrder = false
     /// Memory Saver exceptions: tabs of these sites (and subdomains) never sleep.
     public private(set) var keepAwakeSites: [String] = []
     /// Bookmarks bar under the toolbar (View > Show Bookmarks Bar, ⇧⌘B).
@@ -56,7 +58,7 @@ public struct BrowserPreferences: Codable, Equatable, Sendable {
         case searchEngineID, homePage, sleepAfterMinutes, maxLoadedTabs, httpsOnly, keepAwakeSites, showsBookmarksBar,
              syncEnabled
         case syncFolderPath, syncFolderBookmark, dozeAfterMinutes, memoryBudgetPercent, protectedTabs
-        case stripsTrackingParameters, confirmsQuit, restoresSession, handoffEnabled
+        case stripsTrackingParameters, confirmsQuit, restoresSession, handoffEnabled, spotifyKeepsOrder
         case siteSleepMinutes
     }
 
@@ -76,6 +78,7 @@ public struct BrowserPreferences: Codable, Equatable, Sendable {
         confirmsQuit = try c.decodeIfPresent(Bool.self, forKey: .confirmsQuit) ?? d.confirmsQuit
         restoresSession = try c.decodeIfPresent(Bool.self, forKey: .restoresSession) ?? d.restoresSession
         handoffEnabled = try c.decodeIfPresent(Bool.self, forKey: .handoffEnabled) ?? d.handoffEnabled
+        spotifyKeepsOrder = try c.decodeIfPresent(Bool.self, forKey: .spotifyKeepsOrder) ?? d.spotifyKeepsOrder
         keepAwakeSites = try c.decodeIfPresent([String].self, forKey: .keepAwakeSites) ?? d.keepAwakeSites
         showsBookmarksBar = try c.decodeIfPresent(Bool.self, forKey: .showsBookmarksBar) ?? d.showsBookmarksBar
         syncEnabled = try c.decodeIfPresent(Bool.self, forKey: .syncEnabled) ?? d.syncEnabled

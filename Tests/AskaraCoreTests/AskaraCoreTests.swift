@@ -238,14 +238,15 @@ import Testing
     @Test func jsonIsValidRuleList() throws {
         let data = Data(BlockList.contentRuleListJSON().utf8)
         let parsed = try #require(try JSONSerialization.jsonObject(with: data) as? [[String: Any]])
-        #expect(parsed.count == BlockList.domains.count + YouTubeAdRules.selectors.count)
+        #expect(parsed.count == BlockList.domains.count + YouTubeAdRules.selectors.count
+                + SpotifyAdRules.rules(exclusions: []).count)
         #expect((parsed[0]["trigger"] as? [String: Any])?["url-filter"] is String)
     }
 
     @Test func youTubeRulesHideElementsOnYouTubeOnly() throws {
         let data = Data(BlockList.contentRuleListJSON(domains: [], excludingSites: ["youtube.com"]).utf8)
         let parsed = try #require(try JSONSerialization.jsonObject(with: data) as? [[String: Any]])
-        #expect(parsed.count == YouTubeAdRules.selectors.count)
+        #expect(parsed.count == YouTubeAdRules.selectors.count + SpotifyAdRules.rules(exclusions: ["youtube.com"]).count)
         let action = try #require(parsed[0]["action"] as? [String: Any])
         #expect(action["type"] as? String == "css-display-none")
         let trigger = try #require(parsed[0]["trigger"] as? [String: Any])

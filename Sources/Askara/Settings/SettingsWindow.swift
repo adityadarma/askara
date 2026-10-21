@@ -39,6 +39,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
                                       target: nil, action: nil)
     private let confirmQuitBox = NSButton(checkboxWithTitle: String(localized: "Ask before quitting with several tabs open"),
                                           target: nil, action: nil)
+    private let spotifyOrderBox = NSButton(checkboxWithTitle: String(localized: "Turn off Spotify shuffle (play songs in order)"),
+                                           target: nil, action: nil)
     // Ad Blocker
     private let manualTable = NSTableView()
     private let manualField = NSTextField()
@@ -320,6 +322,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         handoffBox.action = #selector(handoffChanged(_:))
         stripTrackingBox.target = self
         stripTrackingBox.action = #selector(stripTrackingChanged(_:))
+        spotifyOrderBox.target = self
+        spotifyOrderBox.action = #selector(spotifyOrderChanged(_:))
         return stack([
             httpsOnlyBox,
             note(String(localized: "Upgrades http:// addresses to https://. If a site doesn't support HTTPS, Askara asks before loading it. Local addresses (localhost, 192.168.x.x, .local) are left alone.")),
@@ -327,6 +331,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
             note(String(localized: "Lets your iPhone, iPad, or another Mac continue the page you are viewing. Only the address and title are shared, through Apple's Handoff. Private windows never use it.")),
             stripTrackingBox,
             note(String(localized: "Removes parameters like utm_source, fbclid, and gclid that only exist to track where you came from, before the page loads and when you copy an address.")),
+            spotifyOrderBox,
+            note(String(localized: "Spotify's web player often starts with shuffle on. With this on, Askara switches shuffle off so songs continue in order. If you turn shuffle on yourself, it stays on until the page reloads. Spotify ads are muted and skipped by the Ad Blocker.")),
         ])
     }
 
@@ -556,6 +562,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         httpsOnlyBox.state = prefs.httpsOnly ? .on : .off
         stripTrackingBox.state = prefs.stripsTrackingParameters ? .on : .off
         handoffBox.state = prefs.handoffEnabled ? .on : .off
+        spotifyOrderBox.state = prefs.spotifyKeepsOrder ? .on : .off
         confirmQuitBox.state = prefs.confirmsQuit ? .on : .off
         restoreBox.state = prefs.restoresSession ? .on : .off
         let permissions = services.currentProfile.permissions
@@ -633,6 +640,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     @objc private func handoffChanged(_ sender: NSButton) {
         let on = sender.state == .on
         services.updatePreferences { $0.handoffEnabled = on }
+    }
+
+    @objc private func spotifyOrderChanged(_ sender: NSButton) {
+        let on = sender.state == .on
+        services.updatePreferences { $0.spotifyKeepsOrder = on }
     }
 
     @objc private func stripTrackingChanged(_ sender: NSButton) {

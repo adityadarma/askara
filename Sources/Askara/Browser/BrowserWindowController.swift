@@ -686,6 +686,28 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         refreshTabStrip()
         updateBookmarkBarVisibility()
         updateHandoff()
+        updateSpotifyOrder()
+    }
+
+    /// Applies the Spotify "keep order" setting to open Spotify tabs, and to tabs opened later.
+    private func updateSpotifyOrder() {
+        let keepsOrder = services.preferences.spotifyKeepsOrder
+        for tab in tabs {
+            guard let web = tab.webView else { continue }
+            let controller = web.configuration.userContentController
+            // `userScripts` is a live WebKit array: copy it before `removeAllUserScripts()` empties it.
+            let scripts = Array(controller.userScripts)
+            let current = SpotifyEnhancer.userScript(keepsOrder: keepsOrder)
+            if let stale = scripts.first(where: { $0.source.contains("__askaraSpotify = {") && $0.source != current.source }) {
+                let kept = scripts.filter { $0 !== stale }
+                controller.removeAllUserScripts()
+                for script in kept { controller.addUserScript(script) }
+                controller.addUserScript(current)
+            }
+            if SpotifyEnhancer.isSpotify(web.url) {
+                web.evaluateJavaScript(SpotifyEnhancer.updateScript(keepsOrder: keepsOrder), in: nil, in: .defaultClient) { _ in }
+            }
+        }
     }
 
     /// Handoff: offers the active page to the user's other Apple devices. Never from private windows, and
@@ -1513,6 +1535,9 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         // Exits immediately on other sites.
         config.userContentController.addUserScript(WKUserScript(
             source: YouTubeAdBlocker.source, injectionTime: .atDocumentStart, forMainFrameOnly: false))
+        // Spotify web player: mute/skip ads and optionally keep songs in order. Exits on other sites.
+        config.userContentController.addUserScript(
+            SpotifyEnhancer.userScript(keepsOrder: services.preferences.spotifyKeepsOrder))
         // Tree view for JSON responses, isolated from the page's own scripts.
         config.userContentController.addUserScript(JSONViewer.userScript)
         // "Inspect Element" in the context menu.
