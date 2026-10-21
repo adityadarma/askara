@@ -3,6 +3,7 @@
 # Usage: scripts/release-notes.sh <new-tag> [previous-tag]
 #   previous-tag defaults to the newest v* tag reachable from HEAD that is not <new-tag>.
 # Optional env: GITHUB_REPOSITORY (owner/name) adds a "Full Changelog" compare link.
+#               NOTES_END (git ref, default HEAD) is where the range ends, for notes of an older release.
 #
 # Commits follow Conventional Commits: feat -> Features, fix -> Bug fixes, anything else
 # (docs, ci, refactor, chore, or a subject without a type) -> Other changes.
@@ -12,8 +13,9 @@ cd "$(dirname "$0")/.."
 NEW="${1:?Usage: $0 <new-tag> [previous-tag]}"
 PREV="${2:-$(git tag --merged HEAD --sort=-v:refname 'v*' | grep -vxF "$NEW" | head -1 || true)}"
 
-RANGE="HEAD"
-[[ -n "$PREV" ]] && RANGE="$PREV..HEAD"
+END="${NOTES_END:-HEAD}"
+RANGE="$END"
+[[ -n "$PREV" ]] && RANGE="$PREV..$END"
 
 features=""
 fixes=""

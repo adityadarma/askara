@@ -97,6 +97,7 @@ jobs:
 
       # appcast.xml is attached to every release; the app reads it from
       # releases/latest/download/appcast.xml, so only the newest release is ever offered.
+      # Its <description> holds the notes of that release plus earlier ones (see appcast-description.sh).
       - name: Sign update and write appcast
         env:
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
@@ -104,6 +105,8 @@ jobs:
           BUILD: ${{ github.run_number }}
           ZIP: ${{ steps.package.outputs.zip }}
           REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           if [[ -z "$SPARKLE_PRIVATE_KEY" ]]; then
             echo "::error::Repository secret SPARKLE_PRIVATE_KEY is not set."
@@ -114,6 +117,9 @@ jobs:
           ATTRS="$(echo "$SPARKLE_PRIVATE_KEY" | "$SIGN" --ed-key-file - "$ZIP")"
           URL="https://github.com/$REPO/releases/download/v$VERSION/$ZIP"
           NOTES="https://github.com/$REPO/releases/tag/v$VERSION"
+          # Notes of this release and the earlier ones. Sparkle hides the installed version and older
+          # ones, so the update window lists every change since the version the user runs.
+          scripts/appcast-description.sh "$VERSION" "$BUILD" > description.html
           cat > appcast.xml <<EOF
           <?xml version="1.0" encoding="utf-8"?>
           <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
@@ -126,6 +132,7 @@ jobs:
                 <sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>
                 <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
                 <sparkle:fullReleaseNotesLink>$NOTES</sparkle:fullReleaseNotesLink>
+                <description><![CDATA[$(cat description.html)]]></description>
                 <enclosure url="$URL" type="application/octet-stream" $ATTRS />
               </item>
             </channel>
