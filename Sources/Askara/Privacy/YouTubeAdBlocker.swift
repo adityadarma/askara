@@ -28,6 +28,21 @@ enum YouTubeAdBlocker {
       probe.remove();
       if (!enabled) return;
 
+      // Feed ads leave an empty grid cell: the content rules hide the ad inside it, not its wrapper.
+      // `:has()` isn't allowed in content rule lists, so the wrappers are hidden by a page style instead.
+      const adInside = [
+        'ytd-ad-slot-renderer', 'ytd-in-feed-ad-layout-renderer', 'ytd-display-ad-renderer',
+        'ytd-promoted-sparkles-web-renderer', 'ytd-promoted-video-renderer',
+        'ytd-banner-promo-renderer', 'ytd-statement-banner-renderer',
+      ];
+      // Only wrappers that hold a single item. A list wrapper (ytd-item-section-renderer) would hide real videos too.
+      const wrappers = ['ytd-rich-item-renderer', 'ytd-rich-section-renderer'];
+      const style = document.createElement('style');
+      style.textContent = wrappers
+        .map((wrapper) => adInside.map((ad) => `${wrapper}:has(${ad})`).join(', '))
+        .join(', ') + ' { display: none !important; }';
+      document.documentElement.appendChild(style);
+
       // Fields that tell the player which ads to play. Removing them leaves the video itself intact.
       const adKeys = ['adPlacements', 'adSlots', 'playerAds', 'adBreakHeartbeatParams'];
       const prune = (value) => {
