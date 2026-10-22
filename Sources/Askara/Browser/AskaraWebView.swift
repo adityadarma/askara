@@ -229,6 +229,20 @@ enum DevTools {
         return true
     }
 
+    /// The inspector UI is its own web view with its own WebContent process. If macOS ends that
+    /// process while the app sits idle, the panel stays open but blank. Reopens it in that case.
+    static func recoverIfBlank(for webView: WKWebView) {
+        guard webView.responds(to: Selector(("_inspector"))),
+              let inspector = webView.value(forKey: "_inspector") as? NSObject,
+              (inspector.value(forKey: "isVisible") as? Bool) == true,
+              let panel = inspector.value(forKey: "inspectorWebView") as? WKWebView,
+              let pid = (panel.value(forKey: "_webProcessIdentifier") as? NSNumber)?.intValue,
+              pid <= 0 else { return }
+        Log.notice("Askara: Web Inspector process ended, reopening")
+        _ = inspector.perform(Selector(("hide")))
+        DispatchQueue.main.async { _ = inspector.perform(Selector(("show"))) }
+    }
+
     /// Enables "Inspect Element" in the right-click menu and the inspector shortcuts.
     static func enable(on configuration: WKWebViewConfiguration) {
         let preferences = configuration.preferences

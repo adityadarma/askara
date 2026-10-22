@@ -198,9 +198,21 @@ final class AddressField: NSTextField {
         let accepted = super.becomeFirstResponder()
         if accepted {
             justFocused = true
-            DispatchQueue.main.async { [weak self] in self?.justFocused = false }
+            DispatchQueue.main.async { [weak self] in
+                self?.justFocused = false
+                self?.showStartIfAllSelected()
+            }
         }
         return accepted
+    }
+
+    /// Select-all leaves the caret at the end, so a long URL scrolls to its tail. Scroll back to the
+    /// start (host and path) while keeping the selection, like Safari and Chrome.
+    func showStartIfAllSelected() {
+        guard let editor = currentEditor() as? NSTextView,
+              editor.selectedRange.location == 0,
+              editor.selectedRange.length == (editor.string as NSString).length else { return }
+        editor.scrollRangeToVisible(NSRange(location: 0, length: 0))
     }
 
     /// Builds the "Paste and Go / Paste and Search" item for the right-click menu (nil = clipboard empty).
@@ -247,6 +259,7 @@ final class AddressField: NSTextField {
         // A drag that selected part of the text is respected.
         guard selectAll, let editor = currentEditor(), editor.selectedRange.length == 0 else { return }
         editor.selectAll(nil)
+        showStartIfAllSelected()
     }
 }
 
@@ -2060,6 +2073,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     @objc func focusAddressBar(_ sender: Any?) {
         window?.makeFirstResponder(addressField)
         addressField.currentEditor()?.selectAll(nil)
+        addressField.showStartIfAllSelected()
     }
 
     @objc private func addressSubmitted(_ sender: NSTextField) {
@@ -3501,7 +3515,13 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         Log.notice("Askara: page process ended, tab will reload: \(webView.url?.host ?? "?")")
         CrashReporter.shared.record("WebContent process ended")
         if isVisible(tabs[index]) {
-            webView.reload()
+            // After the process dies, `reload()` does nothing when the web view has lost its URL,
+            // leaving a blank page. Load the tab's last known URL instead.
+            if webView.url == nil, let url = tabs[index].url {
+                webView.load(URLRequest(url: url))
+            } else {
+                webView.reload()
+            }
         } else {
             dropWebView(of: tabs[index])
             refreshTabStrip()
@@ -3798,6 +3818,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     func windowDidBecomeKey(_ notification: Notification) {
         activeTab?.lastActive = Date()
         lastFocused = Date()
+        visibleTabs().compactMap(\.webView).forEach(DevTools.recoverIfBlank(for:))
         if !isPrivate { services.profileUsed(profile) }
         if #available(macOS 15.4, *) { extensionController?.didFocusWindow(self) }
         // First ⌘T in this window should already be instant. No-op if a spare for this URL exists.

@@ -102,7 +102,134 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
                 }
             }
             self.changed()
+            self.startWatchingForUpdates()
         }
+    }
+
+    // MARK: - Updates
+
+    /// Version and modification time of an extension's Info.plist. Changes when its app is updated.
+    private nonisolated static func fingerprint(of item: InstalledExtension) -> String {
+        let plist = item.bundleURL.appendingPathComponent("Contents/Info.plist")
+        let info = NSDictionary(contentsOf: plist) as? [String: Any]
+        let short = info?["CFBundleShortVersionString"] as? String ?? ""
+        let build = info?["CFBundleVersion"] as? String ?? ""
+        let date = (try? plist.resourceValues(forKeys: [.contentModificationDateKey]))?
+            .contentModificationDate?.timeIntervalSince1970 ?? 0
+        return "\(item.bundleURL.path)|\(short)|\(build)|\(date)"
+    }
+
+    private var fingerprints: [String: String] = [:]
+    private var folderWatchers: [DispatchSourceFileSystemObject] = []
+    private var activationObserver: NSObjectProtocol?
+    private var recheckTask: Task<Void, Never>?
+    private var recheckAttempts = 0
+    private var pollTask: Task<Void, Never>?
+    /// Extensions that were unloaded for an update but could not load again yet (update still running).
+    private var failedReloads: Set<String> = []
+
+    /// An app update replaces the extension's files while the old copy is still loaded; its pages and
+    /// popup then stop opening until the browser restarts. Watch the app folders (and app activation)
+    /// and reload an extension whose bundle changed.
+    private func startWatchingForUpdates() {
+        guard folderWatchers.isEmpty, !isShutDown else { return }
+        for root in ["/Applications", NSHomeDirectory() + "/Applications"] {
+            let fd = open(root, O_EVTONLY)
+            guard fd >= 0 else { continue }
+            let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd,
+                                                                   eventMask: [.write, .rename, .delete, .extend],
+                                                                   queue: .main)
+            source.setEventHandler { [weak self] in
+                MainActor.assumeIsolated { self?.scheduleRecheck(after: .seconds(3)) }
+            }
+            source.setCancelHandler { close(fd) }
+            source.resume()
+            folderWatchers.append(source)
+        }
+        activationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.scheduleRecheck(after: .seconds(1)) }
+        }
+        // App Store updates rewrite the app bundle in place and run in the background, so neither
+        // the folder watcher nor app activation is guaranteed to fire. Reading one small plist per
+        // loaded extension every 20 seconds is cheap and catches them.
+        pollTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(20))
+                guard let self, !self.isShutDown else { return }
+                if self.hasChangedExtensions() { self.scheduleRecheck(after: .seconds(5)) }
+            }
+        }
+    }
+
+    /// True when a loaded extension's bundle no longer matches what was loaded (updated or removed).
+    private func hasChangedExtensions() -> Bool {
+        !failedReloads.isEmpty || loaded.contains { entry in
+            fingerprints[entry.item.bundleID] != Self.fingerprint(of: entry.item)
+        }
+    }
+
+    private func stopWatchingForUpdates() {
+        folderWatchers.forEach { $0.cancel() }
+        folderWatchers.removeAll()
+        if let activationObserver { NotificationCenter.default.removeObserver(activationObserver) }
+        activationObserver = nil
+        recheckTask?.cancel()
+        recheckTask = nil
+        pollTask?.cancel()
+        pollTask = nil
+    }
+
+    /// Debounced: an update writes many files over several seconds.
+    private func scheduleRecheck(after delay: Duration) {
+        recheckTask?.cancel()
+        recheckTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled, let self, !self.isShutDown else { return }
+            await self.reloadChangedExtensions()
+        }
+    }
+
+    private func reloadChangedExtensions() async {
+        let found = await Task.detached(priority: .utility) { Self.discover() }.value
+        guard !isShutDown else { return }
+        if found != installed { installed = found; changed() }
+        var needsRetry = false
+        for item in enabledItemsToCheck(in: found) {
+            let isLoaded = context(for: item) != nil
+            if isLoaded, fingerprints[item.bundleID] == Self.fingerprint(of: item) { continue }
+            if let entry = loaded.first(where: { $0.item.bundleID == item.bundleID }) {
+                Log.notice("Askara: extension updated, reloading: \(item.name)")
+                try? controller.unload(entry.context)
+                loaded.removeAll { $0.item.bundleID == item.bundleID }
+            }
+            do {
+                try await load(item)
+                failedReloads.remove(item.bundleID)
+            } catch {
+                Log.error("Askara: failed to reload extension \(item.name): \(error)")
+                failedReloads.insert(item.bundleID)
+                needsRetry = true
+            }
+        }
+        // Loaded extensions whose app vanished (update in progress) are checked again shortly.
+        if loaded.contains(where: { entry in !found.contains { $0.bundleID == entry.item.bundleID } }) {
+            needsRetry = true
+        }
+        // An enabled extension that is gone from disk for good must not keep the poll busy.
+        failedReloads.formIntersection(found.map(\.bundleID))
+        changed()
+        if needsRetry, recheckAttempts < 5 {
+            recheckAttempts += 1
+            scheduleRecheck(after: .seconds(10))
+        } else if !needsRetry {
+            recheckAttempts = 0
+        }
+    }
+
+    private func enabledItemsToCheck(in found: [InstalledExtension]) -> [InstalledExtension] {
+        found.filter { enabledIDs.contains($0.bundleID) }
     }
 
     /// Finds app extensions of type `com.apple.Safari.web-extension` in /Applications and ~/Applications.
@@ -142,6 +269,7 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// The profile's last window closed: unload extensions to free their background pages.
     func shutDown() {
         isShutDown = true
+        stopWatchingForUpdates()
         errorObservers.forEach(NotificationCenter.default.removeObserver)
         errorObservers.removeAll()
         for entry in loaded { try? controller.unload(entry.context) }
@@ -214,6 +342,7 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         context.isInspectable = true
         try controller.load(context)
         loaded.append((item, context))
+        fingerprints[item.bundleID] = Self.fingerprint(of: item)
         // Log extension errors (manifest, background script) to the system log for diagnosis.
         errorObservers.append(NotificationCenter.default.addObserver(forName: WKWebExtensionContext.errorsDidUpdateNotification,
                                                object: context, queue: .main) { note in
