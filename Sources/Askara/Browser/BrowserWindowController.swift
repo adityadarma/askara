@@ -1380,7 +1380,11 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         refreshExtensionButtons()
 
         // Swaps in this tab's page (and its Split View partner), removing pages no longer shown.
-        showVisibleTabs()
+        // Fade only for a plain switch between two live pages. Waking a tab shows its snapshot instead,
+        // and Split View panes are laid out side by side.
+        let fade = previous != nil && previous !== tab && !wasAsleep && shownSplit == nil
+            && window?.isVisible == true && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        showVisibleTabs(animated: fade)
         // The snapshot is only useful while the page reloads; once the tab is in use it's stale.
         if wasAsleep, let snapshot = tab.sleepSnapshot { showSleepSnapshot(snapshot) }
         tab.sleepSnapshot = nil
@@ -1395,6 +1399,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
             window?.makeFirstResponder(tab.url == nil ? addressField : webView)
         }
 
+        resyncPictureInPicture(of: tab)
         refreshTabStrip()
         updateToolbar()
         loadingBar.update(loading: webView.isLoading, progress: webView.estimatedProgress, animated: false)
@@ -1605,7 +1610,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     func hibernate(tabIDs: Set<UUID>, force: Bool = false, reasons: [UUID: HibernationReason] = [:]) {
         var changed = false
         for (index, tab) in tabs.enumerated()
-        where !isVisible(tab) && tabIDs.contains(tab.id) && !tab.hasUnsavedInput && (force || !keepsAwake(tab))
+        where !isVisible(tab) && tabIDs.contains(tab.id) && !tab.hasUnsavedInput && !tab.isPictureInPicture
+            && (force || !keepsAwake(tab))
             && tab.webView != nil {
             tab.freedBytes = services.exclusiveFootprint(of: tab.webView)
             let reason = force ? "manual" : (reasons[tab.id]?.rawValue ?? "collapsed")
@@ -2390,6 +2396,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         } else {
             tab.pictureInPictureFrames.removeValue(forKey: frameID)
         }
+        let wasActive = tab.isPictureInPicture
         let states = tab.pictureInPictureFrames.values.map { (eligible: $0.eligible, active: $0.active) }
         let aggregate = Self.aggregatePictureInPictureStates(states)
         let activeFrame = tab.pictureInPictureFrames.values.first { $0.active }
@@ -2397,6 +2404,9 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         tab.pictureInPictureEligible = aggregate.eligible
         tab.isPictureInPicture = aggregate.active
         tab.pictureInPictureFrame = candidateFrame?.frame
+        if tab.isPictureInPicture, !wasActive { PictureInPictureMover.shared.pictureInPictureDidStart() }
+        // PiP ended while the page was kept hidden for it: release the view now.
+        if !tab.isPictureInPicture, webView.isHidden, !isVisible(tab) { webView.removeFromSuperview() }
         if tab === activeTab {
             pictureInPictureButton.isEnabled = tab.pictureInPictureEligible
             pictureInPictureButton.isHidden = !tab.pictureInPictureEligible
@@ -2850,7 +2860,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     }
 
     /// Puts the visible tabs' pages in the content area (waking a sleeping partner) and removes the rest.
-    private func showVisibleTabs() {
+    /// `animated`: the new page fades in over the old one instead of replacing it instantly.
+    private func showVisibleTabs(animated: Bool = false) {
         let visible = visibleTabs()
         for tab in visible where tab !== activeTab {
             if tab.webView == nil { wake(tab) }
@@ -2859,13 +2870,68 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
             tab.lastActive = Date()
         }
         let pages = visible.compactMap(\.webView)
-        for case let web as WKWebView in contentView.subviews where !pages.contains(where: { $0 === web }) {
-            web.removeFromSuperview()
+        var leaving: [WKWebView] = []
+        for case let web as WKWebView in contentView.subviews {
+            if pages.contains(where: { $0 === web }) {
+                web.isHidden = false
+                web.alphaValue = 1
+            } else if tabs.first(where: { $0.webView === web })?.isPictureInPicture == true {
+                // Detaching a web view from its window turns the system PiP video black. Keep it
+                // in the hierarchy, hidden, until PiP ends.
+                web.isHidden = true
+            } else if animated, !web.isHidden {
+                leaving.append(web)
+            } else {
+                web.removeFromSuperview()
+            }
         }
-        for web in pages where web.superview !== contentView {
-            contentView.addSubview(web, positioned: .below, relativeTo: nil)
+        tabTransitionID &+= 1
+        if let top = leaving.last {
+            // New page above the old one, so the fade-in reveals it gradually.
+            for web in pages { contentView.addSubview(web, positioned: .above, relativeTo: top) }
+        } else {
+            for web in pages where web.superview !== contentView {
+                contentView.addSubview(web, positioned: .below, relativeTo: nil)
+            }
         }
+        // A page hidden for PiP in another window arrives still hidden when its tab moves here.
+        pages.forEach { $0.isHidden = false }
         layoutVisibleTabs()
+        guard !leaving.isEmpty else { return }
+        for web in pages { web.alphaValue = 0 }
+        let transition = tabTransitionID
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = 0.15
+            for web in pages { web.animator().alphaValue = 1 }
+        }, completionHandler: { [weak self] in
+            MainActor.assumeIsolated {
+                // A newer switch took over and removes these itself.
+                guard let self, self.tabTransitionID == transition else { return }
+                for web in leaving where !pages.contains(where: { $0 === web }) {
+                    if self.tabs.first(where: { $0.webView === web })?.isPictureInPicture == true {
+                        web.isHidden = true
+                    } else {
+                        web.removeFromSuperview()
+                    }
+                }
+            }
+        })
+    }
+
+    /// Bumped on every page swap, so a finished fade knows whether it is still the latest one.
+    private var tabTransitionID = 0
+
+    /// Asks every known frame of the tab to report its PiP state again. Pages in the background can
+    /// miss events (animation frames are suspended), so the toolbar is refreshed from the page itself.
+    private func resyncPictureInPicture(of tab: Tab) {
+        guard let web = tab.webView else { return }
+        let frames: [WKFrameInfo?] = [nil] + tab.pictureInPictureFrames.values.map(\.frame).filter { !$0.isMainFrame }
+        Task { @MainActor [weak web] in
+            for frame in frames {
+                _ = try? await web?.callAsyncJavaScript("window.__askaraReportPiP?.(); return null;", arguments: [:],
+                                                        in: frame, contentWorld: .page)
+            }
+        }
     }
 
     private func layoutVisibleTabs() {
@@ -3819,6 +3885,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         activeTab?.lastActive = Date()
         lastFocused = Date()
         visibleTabs().compactMap(\.webView).forEach(DevTools.recoverIfBlank(for:))
+        tabs.filter { isVisible($0) || $0.isPictureInPicture }.forEach(resyncPictureInPicture(of:))
         if !isPrivate { services.profileUsed(profile) }
         if #available(macOS 15.4, *) { extensionController?.didFocusWindow(self) }
         // First ⌘T in this window should already be instant. No-op if a spare for this URL exists.

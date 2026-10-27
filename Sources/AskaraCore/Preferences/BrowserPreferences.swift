@@ -38,6 +38,9 @@ public struct BrowserPreferences: Codable, Equatable, Sendable {
     public var handoffEnabled = true
     /// Turn off Spotify's shuffle when the web player enables it by itself, so songs play in order.
     public var spotifyKeepsOrder = false
+    /// Keep the Picture in Picture window where it is dropped, instead of letting macOS snap it to a corner.
+    /// Needs the Accessibility permission, since the window belongs to a system process.
+    public var pipFreePlacement = false
     /// Memory Saver exceptions: tabs of these sites (and subdomains) never sleep.
     public private(set) var keepAwakeSites: [String] = []
     /// Bookmarks bar under the toolbar (View > Show Bookmarks Bar, ⇧⌘B).
@@ -59,7 +62,7 @@ public struct BrowserPreferences: Codable, Equatable, Sendable {
              syncEnabled
         case syncFolderPath, syncFolderBookmark, dozeAfterMinutes, memoryBudgetPercent, protectedTabs
         case stripsTrackingParameters, confirmsQuit, restoresSession, handoffEnabled, spotifyKeepsOrder
-        case siteSleepMinutes
+        case siteSleepMinutes, pipFreePlacement
     }
 
     public init(from decoder: Decoder) throws {
@@ -79,6 +82,7 @@ public struct BrowserPreferences: Codable, Equatable, Sendable {
         restoresSession = try c.decodeIfPresent(Bool.self, forKey: .restoresSession) ?? d.restoresSession
         handoffEnabled = try c.decodeIfPresent(Bool.self, forKey: .handoffEnabled) ?? d.handoffEnabled
         spotifyKeepsOrder = try c.decodeIfPresent(Bool.self, forKey: .spotifyKeepsOrder) ?? d.spotifyKeepsOrder
+        pipFreePlacement = try c.decodeIfPresent(Bool.self, forKey: .pipFreePlacement) ?? d.pipFreePlacement
         keepAwakeSites = try c.decodeIfPresent([String].self, forKey: .keepAwakeSites) ?? d.keepAwakeSites
         showsBookmarksBar = try c.decodeIfPresent(Bool.self, forKey: .showsBookmarksBar) ?? d.showsBookmarksBar
         syncEnabled = try c.decodeIfPresent(Bool.self, forKey: .syncEnabled) ?? d.syncEnabled

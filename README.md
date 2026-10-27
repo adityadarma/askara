@@ -18,7 +18,8 @@ its own; the only bundled framework is Sparkle, for in-app updates.
 - **Developer tools** (Develop menu): per-tab user agent, Device Mode, Disable Caches, JSON viewer,
   local certificates for development hosts, Clear Site Data, Copy as cURL, page QR code.
 - **Other**: Reader, encrypted sync to a folder of your choice, import from other browsers,
-  Picture-in-Picture.
+  Picture-in-Picture (optionally placed anywhere on screen, see
+  [Picture-in-Picture placement](#picture-in-picture-placement)).
 - **Languages**: English and Indonesian.
 
 ## Requirements
@@ -38,6 +39,30 @@ Askara is not notarized by Apple, so macOS blocks the first launch. Do one of th
 - **Terminal:** `xattr -dr com.apple.quarantine /Applications/Askara.app`
 
 In-app updates are not affected.
+
+## Picture-in-Picture placement
+
+macOS snaps the Picture-in-Picture window to a screen corner when you let go of it. Askara can keep
+it where you drop it, and open it at that spot next time. This is off by default and needs the
+Accessibility permission, because the window belongs to a system process (`PIPAgent`), not to Askara.
+
+1. Open Settings (⌘,) > General and turn on **Place Picture in Picture anywhere on screen**.
+2. macOS asks for permission. Click **Open System Settings**. You can also open it yourself:
+   System Settings > Privacy & Security > Accessibility.
+3. Turn on the switch next to **Askara**. If it is not in the list, click **+**, choose
+   `Askara.app`, and turn it on.
+4. Start Picture-in-Picture, drag the window anywhere, and let go. It stays there.
+
+Notes:
+
+- Askara watches mouse clicks only to notice when you drag the Picture-in-Picture window, and it reads
+  and sets only that window's position and size. It does not read other windows, keystrokes, or
+  screen content, and it stores nothing except the last window position on this Mac.
+- If the window still snaps to a corner, the permission is missing or stale. After an update or a
+  rebuild with a different signature, select Askara in the Accessibility list, click **−**, then
+  add it again.
+- Turning the setting off, or removing the permission, brings back the normal macOS behavior.
+- This relies on a private macOS component, so a future macOS update may change it.
 
 ## Build and run
 

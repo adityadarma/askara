@@ -41,6 +41,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
                                           target: nil, action: nil)
     private let spotifyOrderBox = NSButton(checkboxWithTitle: String(localized: "Turn off Spotify shuffle (play songs in order)"),
                                            target: nil, action: nil)
+    private let pipPlacementBox = NSButton(checkboxWithTitle: String(localized: "Place Picture in Picture anywhere on screen"),
+                                           target: nil, action: nil)
     // Ad Blocker
     private let manualTable = NSTableView()
     private let manualField = NSTextField()
@@ -187,6 +189,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         confirmQuitBox.action = #selector(confirmQuitChanged(_:))
         restoreBox.target = self
         restoreBox.action = #selector(restoreChanged(_:))
+        pipPlacementBox.target = self
+        pipPlacementBox.action = #selector(pipPlacementChanged(_:))
         syncBox.target = self
         syncBox.action = #selector(syncChanged(_:))
         syncFolderButton.target = self
@@ -202,6 +206,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
             [NSGridCell.emptyContentView, barBox],
             [NSGridCell.emptyContentView, restoreBox],
             [NSGridCell.emptyContentView, confirmQuitBox],
+            [NSGridCell.emptyContentView, pipPlacementBox],
             [NSGridCell.emptyContentView, syncBox],
             [NSGridCell.emptyContentView, syncFolderButton],
             [NSGridCell.emptyContentView, syncStatus],
@@ -211,6 +216,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         return stack([
             grid,
             note(String(localized: "New tabs and windows open the home page. Leave it empty to use the search engine's page. With \"Continue where I left off\", every window and tab from last time comes back when Askara starts (only the visible tab loads; the rest wait until you click them). Without it, File > Restore Previous Session still brings them back.")),
+            note(String(localized: "Picture in Picture normally snaps to a screen corner when you let go. With \"Place Picture in Picture anywhere\", it stays where you drop it and opens at that spot next time. macOS draws that window in a system process, so this needs Askara to be allowed in System Settings > Privacy & Security > Accessibility.")),
         ])
     }
 
@@ -565,6 +571,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         spotifyOrderBox.state = prefs.spotifyKeepsOrder ? .on : .off
         confirmQuitBox.state = prefs.confirmsQuit ? .on : .off
         restoreBox.state = prefs.restoresSession ? .on : .off
+        pipPlacementBox.state = prefs.pipFreePlacement ? .on : .off
         let permissions = services.currentProfile.permissions
         permissionRows = permissions.hosts.flatMap { host in
             PermissionKind.allCases.compactMap { kind in
@@ -640,6 +647,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     @objc private func handoffChanged(_ sender: NSButton) {
         let on = sender.state == .on
         services.updatePreferences { $0.handoffEnabled = on }
+    }
+
+    @objc private func pipPlacementChanged(_ sender: NSButton) {
+        let on = sender.state == .on
+        services.updatePreferences { $0.pipFreePlacement = on }
+        if on { PictureInPictureMover.requestAccessibilityAccess() }
     }
 
     @objc private func spotifyOrderChanged(_ sender: NSButton) {

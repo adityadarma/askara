@@ -273,6 +273,10 @@ enum PictureInPictureScript {
         requestAnimationFrame(() => report(false));
       };
 
+      // Lets the app re-read the state on tab/window switches, when events may have been missed.
+      window.__askaraReportPiP = () => report(true);
+      document.addEventListener('visibilitychange', () => report(true));
+
       // Toolbar media control. Pause marks what it stopped, so Play resumes exactly that media
       // (or the main player when nothing was paused by Askara, e.g. after the page paused itself).
       window.__askaraMedia = (action) => {
