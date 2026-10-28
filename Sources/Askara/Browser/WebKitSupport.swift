@@ -250,6 +250,26 @@ enum PictureInPictureScript {
         return best;
       };
 
+      // Video really in PiP. A detached element left in `pictureInPictureElement` (the page swapped
+      // its player after an in-page navigation) must not count, or the button stays stuck on "active".
+      const activeVideo = (all = videos()) => {
+        const element = document.pictureInPictureElement;
+        if (element && element.isConnected) return element;
+        return all.find((video) => video.webkitPresentationMode === 'picture-in-picture') || null;
+      };
+      // Leaves PiP and waits for it to take effect. Resolves with whether PiP is really gone.
+      const leave = async (video) => {
+        try {
+          if (document.pictureInPictureElement && document.exitPictureInPicture)
+            await document.exitPictureInPicture();
+        } catch (_) {}
+        if (video.webkitPresentationMode === 'picture-in-picture' && video.webkitSetPresentationMode)
+          video.webkitSetPresentationMode('inline');
+        const deadline = Date.now() + 1000;
+        while (activeVideo() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 100));
+        return !activeVideo();
+      };
+
       let scheduled = false;
       let pageVisible = true;
       let lastEligible;
@@ -259,8 +279,7 @@ enum PictureInPictureScript {
         if (!pageVisible) return;
         const all = videos();
         const eligible = !!candidate(all);
-        const active = !!document.pictureInPictureElement ||
-          all.some((video) => video.webkitPresentationMode === 'picture-in-picture');
+        const active = !!activeVideo(all);
         // Crossing the WebKit script-message boundary is not free. Only report state changes.
         if (!force && eligible === lastEligible && active === lastActive) return;
         lastEligible = eligible;
@@ -297,14 +316,13 @@ enum PictureInPictureScript {
 
       window.__askaraTogglePiP = async () => {
         const all = videos();
-        const active = document.pictureInPictureElement ||
-          all.find((video) => video.webkitPresentationMode === 'picture-in-picture');
+        const active = activeVideo(all);
         if (active) {
-          if (document.pictureInPictureElement && document.exitPictureInPicture)
-            await document.exitPictureInPicture();
-          else if (active.webkitSetPresentationMode) active.webkitSetPresentationMode('inline');
-          report();
-          return true;
+          if (await leave(active)) { report(true); return true; }
+          // Exit had no effect: the "active" state was stale. Fall through and enter PiP instead.
+        } else if (document.pictureInPictureElement && document.exitPictureInPicture) {
+          // Clear a detached element so WebKit accepts a new request.
+          try { await document.exitPictureInPicture(); } catch (_) {}
         }
         const video = candidate(all);
         if (!video) return false;
