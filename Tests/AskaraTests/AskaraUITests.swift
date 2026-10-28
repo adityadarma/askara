@@ -441,7 +441,7 @@ struct AskaraUITests {
 
         context.evaluateScript("""
         videos = [{ readyState: 2, videoWidth: 640, videoHeight: 360, paused: false,
-                    webkitPresentationMode: 'inline',
+                    webkitPresentationMode: 'inline', isConnected: true,
                     getBoundingClientRect: function() { rectCount += 1; return { width: 640, height: 360 }; } }];
         listeners.loadedmetadata();
         flushFrame();
@@ -466,6 +466,12 @@ struct AskaraUITests {
         context.evaluateScript("listeners['window:pagehide'](); listeners['window:pageshow']();")
         #expect(context.evaluateScript("messages.length")?.toInt32() == 7)
         #expect(context.evaluateScript("messages[6].active")?.toBool() == true)
+
+        // The page swapped its player: the old element is detached but still in pictureInPictureElement.
+        // That must not keep the toolbar button stuck on "active".
+        context.evaluateScript("videos[0].isConnected = false; listeners.visibilitychange();")
+        #expect(context.evaluateScript("messages.length")?.toInt32() == 8)
+        #expect(context.evaluateScript("messages[7].active")?.toBool() == false)
     }
 
     @Test("Full browser chrome launches with one isolated WebView")
