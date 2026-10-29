@@ -847,14 +847,19 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         } else if tableView === extensionTable {
             guard #available(macOS 15.4, *) else { return nil }
             let manager = services.currentProfile.extensions
-            let item = manager.installed[row]
+            // The list can change (profile switch, extension removed) before the table reloads.
+            let installed = manager.installed
+            guard installed.indices.contains(row) else { return nil }
+            let item = installed[row]
             switch tableColumn?.identifier.rawValue {
             case "status": text = manager.isEnabled(item) ? String(localized: "Enabled") : String(localized: "Disabled")
             case "pinned": text = manager.isPinned(item) ? String(localized: "Pinned") : "—"
             default: text = item.name
             }
         } else {
-            let entry = permissionRows[row]
+            let rows = permissionRows
+            guard rows.indices.contains(row) else { return nil }
+            let entry = rows[row]
             switch tableColumn?.identifier.rawValue {
             case "kind":
                 text = switch entry.kind {

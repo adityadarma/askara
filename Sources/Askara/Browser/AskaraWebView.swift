@@ -36,6 +36,36 @@ enum ContextMenuProbe {
     """
 }
 
+/// Reports the link under the cursor so the window can show its address in the corner.
+enum LinkHoverProbe {
+    static let handlerName = "askaraHover"
+
+    static let script = """
+    (() => {
+      let last = '';
+      const send = (url) => {
+        if (url === last) return;
+        last = url;
+        const handler = window.webkit && window.webkit.messageHandlers.askaraHover;
+        if (handler) handler.postMessage({ url });
+      };
+      const hrefOf = (target) => {
+        const el = target instanceof Element ? target : (target && target.parentElement);
+        const a = el && el.closest('a[href], area[href]');
+        if (!a) return '';
+        try {
+          const url = new URL(a.getAttribute('href'), document.baseURI);
+          return url.protocol === 'javascript:' ? '' : url.href;
+        } catch (e) { return ''; }
+      };
+      document.addEventListener('mouseover', (e) => send(hrefOf(e.target)), true);
+      document.addEventListener('mouseout', (e) => { if (!e.relatedTarget) send(''); }, true);
+      window.addEventListener('blur', () => send(''));
+      window.addEventListener('pagehide', () => send(''));
+    })();
+    """
+}
+
 /// Local files dragged in from Finder that Askara can show: PDFs, web pages, images, and text.
 enum DroppedFiles {
     static func openable(in info: NSDraggingInfo) -> [URL] {
@@ -227,6 +257,19 @@ enum DevTools {
         guard inspector.responds(to: selector) else { return false }
         _ = inspector.perform(selector)
         return true
+    }
+
+    /// Closes the inspector and removes its view. A docked inspector is a sibling of the page view,
+    /// so dropping only the page (tab sleep) would leave its dark view covering the next page.
+    static func close(for webView: WKWebView) {
+        guard webView.responds(to: Selector(("_inspector"))),
+              let inspector = webView.value(forKey: "_inspector") as? NSObject else { return }
+        let panel = inspector.value(forKey: "inspectorWebView") as? WKWebView
+        for name in ["close", "hide"] where inspector.responds(to: Selector((name))) {
+            _ = inspector.perform(Selector((name)))
+            break
+        }
+        if let panel, panel !== webView { panel.removeFromSuperview() }
     }
 
     /// The inspector UI is its own web view with its own WebContent process. If macOS ends that

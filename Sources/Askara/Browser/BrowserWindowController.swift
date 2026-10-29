@@ -85,10 +85,14 @@ final class Tab: NSObject {
         guard let webView else { return false }
         return webView.askaraIsPlayingAudio || webView.askaraIsCapturingMedia || mediaPausedByAskara
     }
+    /// The page has committed at least once since the web view was created. Until then the
+    /// security icon stays grey: the connection hasn't been established, so nothing to vouch for.
+    var hasCommittedPage = false
     /// Live WebKit page, or nil while the tab sleeps.
     var webView: WKWebView? {
         didSet {
             if webView == nil {
+                hasCommittedPage = false
                 isDozing = false
                 mediaPausedByAskara = false
                 audioObserver = nil
@@ -307,6 +311,9 @@ private final class WeakScriptHandler: NSObject, WKScriptMessageHandler {
                                                   selection: body["selection"] as? String ?? "",
                                                   selectionTail: body["tail"] as? String ?? "",
                                                   isMainFrame: message.frameInfo.isMainFrame)
+            case LinkHoverProbe.handlerName:
+                guard let body = message.body as? [String: Any] else { return }
+                target?.linkHovered(in: message.webView, address: body["url"] as? String ?? "")
             case PictureInPictureScript.handlerName:
                 guard let body = message.body as? [String: Any], let frameID = body["frame"] as? String else { return }
                 target?.pictureInPictureState(in: message.webView, frameID: frameID, frame: message.frameInfo,
@@ -357,6 +364,10 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     }()
     /// What the user actually typed, restored when arrowing back past the first suggestion.
     private var typedAddress = ""
+    /// The user is typing in the address bar: the security icon and its separator step aside.
+    private var addressIsBeingTyped = false {
+        didSet { if addressIsBeingTyped != oldValue { updateToolbar() } }
+    }
     /// Debounces ranking so rapid typing does not rescan thousands of history entries per keypress.
     private var suggestionTask: Task<Void, Never>?
     private let backButton = NSButton()
@@ -390,6 +401,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     private let findStatus = NSTextField(labelWithString: "")
     private let contentView = NSView()
     private let toast = ToastView()
+    private let linkStatus = LinkStatusView()
     private let loadingBar = LoadingBar()
     /// Last view of a tab woken from sleep, covering the page until it has reloaded.
     private let sleepSnapshotView = SnapshotOverlayView()
@@ -639,7 +651,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         toolbarContent.spacing = 0
         for v in [toolbarStack, bookmarkBar, findBar] { v.widthAnchor.constraint(equalTo: toolbarContent.widthAnchor).isActive = true }
 
-        for v in [tabStrip, toolbar, contentView, loadingBar, toast] as [NSView] {
+        for v in [tabStrip, toolbar, contentView, loadingBar, toast, linkStatus] as [NSView] {
             v.translatesAutoresizingMaskIntoConstraints = false
             root.addSubview(v)
         }
@@ -673,6 +685,11 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
             toast.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 10),
             toast.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -10),
             toast.widthAnchor.constraint(lessThanOrEqualToConstant: 520),
+
+            // Flush with the bottom-left corner of the page, like Chrome's link preview.
+            linkStatus.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            linkStatus.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+            linkStatus.widthAnchor.constraint(lessThanOrEqualTo: root.widthAnchor, multiplier: 0.6),
         ])
         contentView.bottomAnchor.constraint(equalTo: root.bottomAnchor).isActive = true
     }
@@ -786,20 +803,28 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
             .withSymbolConfiguration(.init(pointSize: 14, weight: .medium))
         let scheme = (web?.url ?? tab?.url)?.scheme?.lowercased()
         let isWeb = scheme == "https" || scheme == "http"
-        let privacyLabel = scheme == "https" ? String(localized: "Secure connection and privacy controls")
+        // Typed address still loading: the final scheme (after redirects or an https upgrade) isn't
+        // known yet, so the icon is grey and disabled until commit.
+        let connecting = isWeb && loading && tab?.hasCommittedPage == false
+        let privacyLabel = connecting ? String(localized: "Connecting…")
+            : scheme == "https" ? String(localized: "Secure connection and privacy controls")
             : scheme == "http" ? String(localized: "Not secure and privacy controls")
             : String(localized: "Privacy Dashboard")
-        privacyButton.image = NSImage(systemSymbolName: scheme == "http" ? "exclamationmark.triangle.fill" : "shield.fill",
+        privacyButton.image = NSImage(systemSymbolName: scheme == "http" && !connecting ? "exclamationmark.triangle.fill" : "shield.fill",
                                       accessibilityDescription: privacyLabel)?
             .withSymbolConfiguration(.init(pointSize: 13, weight: .medium))
-        privacyButton.contentTintColor = scheme == "https" ? .systemGreen
+        privacyButton.contentTintColor = connecting ? .tertiaryLabelColor
+            : scheme == "https" ? .systemGreen
             : scheme == "http" ? .systemRed : .secondaryLabelColor
         privacyButton.toolTip = privacyLabel
         privacyButton.setAccessibilityLabel(privacyLabel)
-        privacyButton.isEnabled = isWeb
+        privacyButton.isEnabled = isWeb && !connecting
+        if connecting { privacyPopover?.close() }
         // A fresh tab on the home page has an empty address bar: nothing to describe yet, so the
-        // security icon stays hidden until a page address is shown.
-        let showsPrivacy = !addressText(for: tab).isEmpty
+        // security icon stays hidden until a page address is shown. It also stays hidden (with its
+        // separator) during the first load, and appears once the page has committed.
+        // While the user types an address only the input shows, like Chrome's omnibox.
+        let showsPrivacy = !addressText(for: tab).isEmpty && !connecting && !addressIsBeingTyped
         privacyButton.isHidden = !showsPrivacy
         privacySeparator.isHidden = !showsPrivacy
         addressLeadingWithPrivacy?.isActive = showsPrivacy
@@ -828,6 +853,12 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     }
 
     func showToast(_ text: String, duration: TimeInterval? = 3) { toast.show(text, duration: duration) }
+
+    /// Link under the cursor in a page of this window; empty address = cursor left the link.
+    fileprivate func linkHovered(in web: WKWebView?, address: String) {
+        guard let web, let tab = tabs.first(where: { $0.webView === web }), isVisible(tab) else { return }
+        if address.isEmpty { linkStatus.hide() } else { linkStatus.show(address) }
+    }
 
     @objc private func bookmarksChanged() {
         updateBookmarkButton()
@@ -1111,6 +1142,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
             let tab = insertTab(url: web.url ?? home, at: tabs.count, activate: true, webView: web)
             tab.hidesHomeAddress = true
             tab.homeLandingURL = web.url
+            tab.hasCommittedPage = true
             if let title = web.title, !title.isEmpty { tab.title = title }
             refreshTabStrip()
             updateToolbar()
@@ -1240,6 +1272,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         tab.url = url
         tab.displayURL = url
         tab.interactionState = nil
+        tab.hasCommittedPage = false
         tab.sleepSnapshot = nil // shows a different page now
         tab.webView?.load(URLRequest(url: url))
     }
@@ -1268,6 +1301,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         // The typed address stays visible until the final page (after redirects) is done.
         tab.displayURL = url
         tab.interactionState = nil
+        tab.hasCommittedPage = false
         hideSleepSnapshot(animated: false)
         let webView = tab.webView ?? wake(tab, loadURL: false)
         webView.load(URLRequest(url: url))
@@ -1391,6 +1425,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         // Fill the address bar before focusing: while editing, updateToolbar won't overwrite it,
         // so the previous tab's URL could linger.
         addressField.abortEditing()
+        addressIsBeingTyped = false
         addressField.stringValue = addressText(for: tab)
         if focusAddressBarOnActivate {
             focusAddressBarOnActivate = false
@@ -1400,6 +1435,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         }
 
         resyncPictureInPicture(of: tab)
+        linkStatus.hide()
         refreshTabStrip()
         updateToolbar()
         loadingBar.update(loading: webView.isLoading, progress: webView.estimatedProgress, animated: false)
@@ -1546,6 +1582,10 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         config.userContentController.add(WeakScriptHandler(self), name: ContextMenuProbe.handlerName)
         config.userContentController.addUserScript(WKUserScript(
             source: ContextMenuProbe.script, injectionTime: .atDocumentStart, forMainFrameOnly: false))
+        // Address of the hovered link, shown in the bottom-left corner.
+        config.userContentController.add(WeakScriptHandler(self), name: LinkHoverProbe.handlerName)
+        config.userContentController.addUserScript(WKUserScript(
+            source: LinkHoverProbe.script, injectionTime: .atDocumentStart, forMainFrameOnly: false))
         config.userContentController.add(WeakScriptHandler(self), name: PictureInPictureScript.handlerName)
         config.userContentController.addUserScript(WKUserScript(
             source: PictureInPictureScript.source, injectionTime: .atDocumentEnd, forMainFrameOnly: false))
@@ -1730,6 +1770,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         tab.readerOriginalURL = nil
         tab.readerPending = false
         tab.webView = nil
+        DevTools.close(for: webView)
         webView.stopLoading()
         webView.navigationDelegate = nil
         webView.uiDelegate = nil
@@ -2153,11 +2194,13 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
 
     func controlTextDidChange(_ obj: Notification) {
         guard (obj.object as? NSTextField) === addressField else { return }
+        addressIsBeingTyped = true
         scheduleSuggestions()
     }
 
     func controlTextDidEndEditing(_ obj: Notification) {
         guard (obj.object as? NSTextField) === addressField else { return }
+        addressIsBeingTyped = false
         suggestionTask?.cancel()
         suggestionTask = nil
         // Let a click on a suggestion row land before the panel disappears.
@@ -3520,6 +3563,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         guard let tab = tabs.first(where: { $0.webView === webView }), let url = webView.url else { return }
         tab.url = url
         tab.displayURL = url
+        tab.hasCommittedPage = true
+        if tab === activeTab { linkStatus.hide() }
         if let zoom = siteZoom(for: url, tab: tab) { apply(zoom: zoom, to: tab) }
         tab.zoomHost = url.host
         if tab.hidesHomeAddress, tab.homeLandingURL == nil { tab.homeLandingURL = url }

@@ -775,3 +775,46 @@ final class ToastView: NSVisualEffectView {
         isHidden = true
     }
 }
+
+/// Address of the link under the cursor, in the bottom-left corner of the page (like Chrome).
+final class LinkStatusView: NSVisualEffectView {
+    private let label = NSTextField(labelWithString: "")
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        material = .hudWindow
+        blendingMode = .withinWindow
+        state = .active
+        wantsLayer = true
+        layer?.cornerRadius = 6
+        layer?.maskedCorners = [.layerMaxXMaxYCorner]
+        layer?.masksToBounds = true
+        isHidden = true
+        label.font = .systemFont(ofSize: 12)
+        label.lineBreakMode = .byTruncatingMiddle
+        label.maximumNumberOfLines = 1
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        label.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(label)
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
+            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+            label.topAnchor.constraint(equalTo: topAnchor, constant: 4),
+            label.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4),
+        ])
+        // Purely visual: hovering is reported by the page, and it should never take clicks.
+        setAccessibilityElement(false)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    func show(_ text: String) {
+        label.stringValue = text
+        isHidden = false
+    }
+
+    func hide() { isHidden = true }
+}
