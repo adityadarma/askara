@@ -52,7 +52,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// ⌘Q with several tabs open or downloads running asks first, so a slip doesn't close everything.
     /// Logout, restart, and shutdown quit without asking.
     private func confirmQuit() -> Bool {
-        guard services.preferences.confirmsQuit else { return true }
+        guard services.preferences.confirmsQuit, !AppUpdater.shared.isInstallingUpdate else { return true }
         if NSAppleEventManager.shared().currentAppleEvent?.attributeDescriptor(forKeyword: kAEQuitReason) != nil {
             return true
         }
