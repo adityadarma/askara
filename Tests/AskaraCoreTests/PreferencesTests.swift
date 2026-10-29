@@ -201,3 +201,15 @@ import Testing
         #expect(policy.tabsToHibernate([pinned, active], now: now, underMemoryPressure: true).isEmpty)
     }
 }
+
+@Suite struct TorrentPreferencesTests {
+    @Test func dhtIsOnByDefaultAndSurvivesOldFiles() throws {
+        #expect(BrowserPreferences().torrentUsesDHT)
+        let old = try JSONDecoder().decode(BrowserPreferences.self, from: Data("{}".utf8))
+        #expect(old.torrentUsesDHT)
+        var prefs = BrowserPreferences()
+        prefs.torrentUsesDHT = false
+        let decoded = try JSONDecoder().decode(BrowserPreferences.self, from: JSONEncoder().encode(prefs))
+        #expect(!decoded.torrentUsesDHT)
+    }
+}

@@ -3504,7 +3504,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
             webView.load(URLRequest(url: secure))
             return
         }
-        let policy = navigationPolicy(for: action)
+        let policy = navigationPolicy(for: action, in: webView)
         // Preferences only take effect for main-frame navigations; iframes follow their page.
         if policy == .allow, action.targetFrame?.isMainFrame ?? true,
            let host = action.request.url?.host, !host.isEmpty {
@@ -3513,7 +3513,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         decisionHandler(policy, preferences)
     }
 
-    private func navigationPolicy(for action: WKNavigationAction) -> WKNavigationActionPolicy {
+    private func navigationPolicy(for action: WKNavigationAction, in webView: WKWebView) -> WKNavigationActionPolicy {
         if action.shouldPerformDownload { return .download }
 
         guard let url = action.request.url else { return .allow }
@@ -3523,6 +3523,14 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         // ⌘+click: open in a background tab that starts loading immediately.
         if isUserClick, action.modifierFlags.contains(.command), ["http", "https"].contains(scheme) {
             newTab(url: url, activate: false, loadInBackground: true)
+            return .cancel
+        }
+
+        // magnet: links download with the bundled engine, after the user confirms. Links to .torrent
+        // files are caught in the response handler instead, where the MIME type is known.
+        if services.downloads.supportsTorrents, TorrentLink.isMagnet(url) {
+            if action.targetFrame?.isMainFrame ?? true || isUserClick { offerTorrent(url) }
+            closeEmptyTab(of: webView)
             return .cancel
         }
 
@@ -3540,6 +3548,13 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
                  decisionHandler: @escaping @MainActor (WKNavigationResponsePolicy) -> Void) {
         let disposition = (response.response as? HTTPURLResponse)?
             .value(forHTTPHeaderField: "Content-Disposition")?.lowercased() ?? ""
+        if response.isForMainFrame, services.downloads.supportsTorrents, let url = response.response.url,
+           TorrentLink.isTorrentFile(url, mimeType: response.response.mimeType) {
+            decisionHandler(.cancel)
+            offerTorrent(url)
+            closeEmptyTab(of: webView)
+            return
+        }
         if response.isForMainFrame, !response.canShowMIMEType || disposition.hasPrefix("attachment") {
             return decisionHandler(.download)
         }
@@ -3547,6 +3562,32 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
             tab.isPDFDocument = response.response.mimeType?.lowercased() == "application/pdf"
         }
         decisionHandler(.allow)
+    }
+
+    /// A link that opens in a new tab and turns out to be a torrent leaves that tab empty: close it.
+    /// Tabs that already show a page, or are the window's only tab, stay.
+    private func closeEmptyTab(of webView: WKWebView) {
+        guard tabs.count > 1, let tab = tabs.first(where: { $0.webView === webView }),
+              !tab.hasCommittedPage, webView.backForwardList.backList.isEmpty else { return }
+        Task { @MainActor [weak self, weak tab] in
+            guard let self, let tab, let index = self.tabs.firstIndex(where: { $0 === tab }) else { return }
+            self.closeTab(at: index)
+        }
+    }
+
+    /// Asks before starting a torrent: peers see the user's IP address while it downloads.
+    private func offerTorrent(_ url: URL) {
+        // One prompt at a time: a page that keeps navigating to magnet: links must not stack dialogs.
+        guard let window, window.attachedSheet == nil else { return }
+        let alert = NSAlert()
+        alert.messageText = String(localized: "Download this torrent?")
+        alert.informativeText = String(localized: "Askara downloads torrents by connecting to other peers, who can see your IP address. Only download files you have the right to share.")
+        alert.addButton(withTitle: String(localized: "Download"))
+        alert.addButton(withTitle: String(localized: "Cancel"))
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard let self, response == .alertFirstButtonReturn else { return }
+            self.services.downloads.startTorrent(url, usesDHT: self.services.preferences.torrentUsesDHT)
+        }
     }
 
     func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {

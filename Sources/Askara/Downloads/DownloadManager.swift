@@ -29,6 +29,9 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
         var fileSize: Int64?
         var endedAt: Date?
         weak var download: WKDownload?
+        var torrent: TorrentProcess?
+        /// Written by the torrent engine, not by WebKit, so it has no quarantine flag until Askara adds it.
+        var isTorrent = false
         var observation: NSKeyValueObservation?
 
         init(id: UUID = UUID()) { self.id = id }
@@ -136,6 +139,65 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
         changed()
     }
 
+    /// Whether the bundled torrent engine is present (it is not when running outside the app bundle).
+    var supportsTorrents: Bool { TorrentProcess.isAvailable }
+
+    /// Downloads a magnet link or `.torrent` URL with the bundled engine. Returns false if unavailable.
+    @discardableResult
+    func startTorrent(_ url: URL, usesDHT: Bool = true) -> Bool {
+        guard TorrentLink.isSupported(url) else { return false }
+        let source: TorrentProcess.Source = TorrentLink.isMagnet(url) ? .magnet(url) : .file(url)
+        // The engine's own folder: the only place besides Downloads it may write.
+        let stateDirectory = JSONFile<Int>.inAppSupport("Torrent/dht.dat").url.deletingLastPathComponent()
+        try? FileManager.default.createDirectory(at: stateDirectory, withIntermediateDirectories: true)
+        guard let process = TorrentProcess(source: source, directory: downloadDirectory,
+                                           stateDirectory: stateDirectory, usesDHT: usesDHT) else {
+            announce(String(localized: "Torrent downloads are not available in this build."))
+            return false
+        }
+        let item = Item()
+        item.sourceURL = url
+        item.filename = TorrentLink.displayName(of: url) ?? String(localized: "Torrent")
+        item.torrent = process
+        item.isTorrent = true
+        process.onEvent = { [weak self, weak item] event in
+            guard let self, let item, item.state == .running else { return }
+            switch event {
+            case .progress(let completed, let total, _):
+                guard total > 0 else { return }
+                let fraction = min(Double(completed) / Double(total), 1)
+                if fraction - item.fraction >= 0.01 { item.fraction = fraction; self.changed() }
+            case .file(let path):
+                // The first file names the item: a single file itself, or the torrent's folder.
+                guard item.destination == nil,
+                      let top = TorrentOutputParser.topLevelItem(of: path, in: self.downloadDirectory)
+                else { return }
+                item.destination = top
+                item.filename = top.lastPathComponent
+                self.changed()
+            case .error:
+                break
+            }
+        }
+        process.onExit = { [weak self, weak item, weak process] status in
+            guard let self, let item else { return }
+            if status == 0 {
+                self.finish(item)
+            } else {
+                self.fail(item, message: process?.failureMessage(status: status)
+                          ?? TorrentProcess.describe(exitStatus: status))
+            }
+        }
+        do { try process.start() } catch {
+            announce(String(localized: "Could not start the torrent download."))
+            return false
+        }
+        items.insert(item, at: 0)
+        announce(String(localized: "Downloading torrent. See Window › Downloads (⌥⌘L)."))
+        changed()
+        return true
+    }
+
     /// Short message shown as a toast in the active window.
     private func announce(_ text: String) {
         NotificationCenter.default.post(name: .askaraDownloadEvent, object: nil, userInfo: ["text": text])
@@ -144,6 +206,7 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
     func cancel(_ item: Item) {
         guard item.state == .running else { return }
         item.download?.cancel { _ in }
+        item.torrent?.cancel()
         markCancelled(item)
     }
 
@@ -177,6 +240,7 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
         item.endedAt = Date()
         item.fraction = 1
         item.observation = nil
+        item.torrent = nil
         if let path = item.destination?.path {
             DistributedNotificationCenter.default()
                 .post(name: .init("com.apple.DownloadFileFinished"), object: path)
@@ -194,6 +258,7 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
         item.state = .cancelled
         item.endedAt = Date()
         item.observation = nil
+        item.torrent = nil
         saveHistory(); changed()
     }
 
@@ -202,6 +267,7 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
         item.state = .failed(message)
         item.endedAt = Date()
         item.observation = nil
+        item.torrent = nil
         announce(String(localized: "Download failed: \(item.filename)"))
         notify(title: String(localized: "Download Failed"), body: item.filename, id: item.id)
         saveHistory(); changed()
@@ -228,10 +294,32 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
 
     private func scan(_ item: Item) {
         guard let url = item.destination else { return }
+        var isDirectory: ObjCBool = false
+        let isFolder = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) && isDirectory.boolValue
+        let quarantine = item.isTorrent
+        let source = item.sourceURL
         item.scanState = .scanning
         changed()
         let id = item.id
         Task.detached(priority: .utility) {
+            // Gatekeeper and XProtect only check files that carry the quarantine flag.
+            if quarantine { DownloadQuarantine.apply(to: url, agentName: "Askara", sourceURL: source) }
+            if isFolder {
+                // A multi-file torrent: classify every file inside, but there is no single hash.
+                let folder = DownloadFolderScanner.scan(url)
+                await MainActor.run { [weak self] in
+                    guard let self, let item = self.items.first(where: { $0.id == id }) else { return }
+                    item.fileSize = folder.size
+                    item.risks = folder.risks
+                    item.scanState = .complete
+                    self.saveHistory()
+                    self.changed()
+                    if folder.risks.contains(where: \.isHighRisk) {
+                        self.announce(String(localized: "Download warning: \(item.riskText)"))
+                    }
+                }
+                return
+            }
             do {
                 let handle = try FileHandle(forReadingFrom: url)
                 defer { try? handle.close() }

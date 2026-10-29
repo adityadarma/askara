@@ -38,6 +38,9 @@ public struct BrowserPreferences: Codable, Equatable, Sendable {
     public var handoffEnabled = true
     /// Turn off Spotify's shuffle when the web player enables it by itself, so songs play in order.
     public var spotifyKeepsOrder = false
+    /// Torrent downloads find peers through DHT as well as trackers. Off: trackers only, so DHT nodes
+    /// never see the user's IP address, but torrents with dead trackers and magnet links without `tr=` stall.
+    public var torrentUsesDHT = true
     /// Keep the Picture in Picture window where it is dropped, instead of letting macOS snap it to a corner.
     /// Needs the Accessibility permission, since the window belongs to a system process.
     public var pipFreePlacement = false
@@ -61,7 +64,7 @@ public struct BrowserPreferences: Codable, Equatable, Sendable {
         case searchEngineID, homePage, sleepAfterMinutes, maxLoadedTabs, httpsOnly, keepAwakeSites, showsBookmarksBar,
              syncEnabled
         case syncFolderPath, syncFolderBookmark, dozeAfterMinutes, memoryBudgetPercent, protectedTabs
-        case stripsTrackingParameters, confirmsQuit, restoresSession, handoffEnabled, spotifyKeepsOrder
+        case stripsTrackingParameters, confirmsQuit, restoresSession, handoffEnabled, spotifyKeepsOrder, torrentUsesDHT
         case siteSleepMinutes, pipFreePlacement
     }
 
@@ -82,6 +85,7 @@ public struct BrowserPreferences: Codable, Equatable, Sendable {
         restoresSession = try c.decodeIfPresent(Bool.self, forKey: .restoresSession) ?? d.restoresSession
         handoffEnabled = try c.decodeIfPresent(Bool.self, forKey: .handoffEnabled) ?? d.handoffEnabled
         spotifyKeepsOrder = try c.decodeIfPresent(Bool.self, forKey: .spotifyKeepsOrder) ?? d.spotifyKeepsOrder
+        torrentUsesDHT = try c.decodeIfPresent(Bool.self, forKey: .torrentUsesDHT) ?? d.torrentUsesDHT
         pipFreePlacement = try c.decodeIfPresent(Bool.self, forKey: .pipFreePlacement) ?? d.pipFreePlacement
         keepAwakeSites = try c.decodeIfPresent([String].self, forKey: .keepAwakeSites) ?? d.keepAwakeSites
         showsBookmarksBar = try c.decodeIfPresent(Bool.self, forKey: .showsBookmarksBar) ?? d.showsBookmarksBar

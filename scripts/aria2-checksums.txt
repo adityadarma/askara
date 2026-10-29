@@ -1,0 +1,3 @@
+# aria2 source tarball checksums (SHA-256), one "version hash" per line.
+# scripts/build-aria2.sh checks every download against this file.
+1.37.0 60a420ad7085eb616cb6e2bdf0a7206d68ff3d37fb5a956dc44242eb2f79b66b
