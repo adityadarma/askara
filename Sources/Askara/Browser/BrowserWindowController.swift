@@ -1308,7 +1308,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         window?.makeFirstResponder(webView)
     }
 
-    func restore(_ saved: SessionState.SavedWindow, reservedLoadedSlots: Int = 0) {
+    func restore(_ saved: SessionState.SavedWindow, reservedLoadedSlots: Int = 0, deferFullScreen: Bool = false) {
         if let frame = saved.frame, let window {
             let rect = NSRect(x: frame.x, y: frame.y, width: frame.width, height: frame.height)
             let visible = NSScreen.screens.contains { $0.visibleFrame.intersects(rect) }
@@ -1335,7 +1335,41 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
                                                         reservedLoadedSlots: reservedLoadedSlots)
         for tab in preload { wake(tab) }
         if !preload.isEmpty { refreshTabStrip() }
-        if saved.isFullScreen == true { window?.toggleFullScreen(nil) }
+        // With several windows, the caller enters full screen one window at a time.
+        if saved.isFullScreen == true {
+            pendingFullScreen = true
+            if !deferFullScreen { enterPendingFullScreen {} }
+        }
+    }
+
+    /// A restored window that was full screen when saved, until it has entered full screen. Counts as
+    /// full screen when saving, because the transition is asynchronous and `styleMask` lags behind.
+    private(set) var pendingFullScreen = false
+
+    /// Enters full screen if this restored window was in it, then calls `completion`. macOS ignores a
+    /// full-screen request made while another window is mid-transition, so callers run these in sequence.
+    func enterPendingFullScreen(completion: @escaping @MainActor () -> Void) {
+        guard pendingFullScreen, let window, !window.styleMask.contains(.fullScreen) else {
+            pendingFullScreen = false
+            completion()
+            return
+        }
+        var observers: [NSObjectProtocol] = []
+        var finished = false
+        let finish: @MainActor () -> Void = { [weak self] in
+            guard !finished else { return }
+            finished = true
+            observers.forEach(NotificationCenter.default.removeObserver)
+            self?.pendingFullScreen = false
+            completion()
+        }
+        observers.append(NotificationCenter.default.addObserver(
+            forName: NSWindow.didEnterFullScreenNotification, object: window, queue: .main) { _ in
+            MainActor.assumeIsolated { finish() }
+        })
+        // A failed transition posts no notification, so don't block the remaining windows forever.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4) { finish() }
+        window.toggleFullScreen(nil)
     }
 
     func restoreTab(_ saved: SessionState.SavedTab) {
@@ -1378,7 +1412,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         let frame = window?.frame
         let savedFrame = frame.map { SessionState.SavedFrame(x: $0.minX, y: $0.minY, width: $0.width, height: $0.height) }
         return .init(tabs: saved, activeIndex: active, frame: savedFrame,
-                     isFullScreen: window?.styleMask.contains(.fullScreen) == true)
+                     isFullScreen: pendingFullScreen || window?.styleMask.contains(.fullScreen) == true)
     }
 
     private func sessionChanged(immediate: Bool = true) {
@@ -2913,9 +2947,18 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
             tab.lastActive = Date()
         }
         let pages = visible.compactMap(\.webView)
+        // A docked inspector is a sibling of its page. Pages leaving the screen take their inspector
+        // with them (closed cleanly), otherwise the loop below would strip only the inspector's view
+        // and leave the page short with an empty gap when the tab returns.
+        for tab in tabs where !isVisible(tab) && !tab.isPictureInPicture {
+            if let web = tab.webView, web.superview === contentView { DevTools.close(for: web) }
+        }
+        let keptPanels = pages.compactMap { DevTools.panel(for: $0) }
         var leaving: [WKWebView] = []
         for case let web as WKWebView in contentView.subviews {
-            if pages.contains(where: { $0 === web }) {
+            if keptPanels.contains(where: { $0 === web }) {
+                continue
+            } else if pages.contains(where: { $0 === web }) {
                 web.isHidden = false
                 web.alphaValue = 1
             } else if tabs.first(where: { $0.webView === web })?.isPictureInPicture == true {

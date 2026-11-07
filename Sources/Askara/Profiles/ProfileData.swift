@@ -112,13 +112,19 @@ final class ProfileData {
             // Keep one global loaded-tab slot for the active tab of each window still to restore.
             let remainingActiveTabs = session.windows.count - index - 1
             let controller = services.makeWindow(profile: self, restoring: true)
-            controller.restore(saved, reservedLoadedSlots: remainingActiveTabs)
+            controller.restore(saved, reservedLoadedSlots: remainingActiveTabs, deferFullScreen: true)
             restored.append(controller)
         }
         isRestoringSession = false
         // The most recently used window (saved first) ends up in front.
         restored.first?.showWindow(nil)
         checkpointSession()
+        // Full-screen windows enter one at a time, the most recent last so it stays in front.
+        func enterFullScreen(_ queue: ArraySlice<BrowserWindowController>) {
+            guard let next = queue.first else { return checkpointSession() }
+            next.enterPendingFullScreen { enterFullScreen(queue.dropFirst()) }
+        }
+        enterFullScreen(ArraySlice(restored.reversed()))
     }
 
     // MARK: - Extensions

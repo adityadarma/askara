@@ -259,6 +259,16 @@ enum DevTools {
         return true
     }
 
+    /// The inspector's own web view (docked: a sibling of the page view), if the inspector exists.
+    static func panel(for webView: WKWebView) -> WKWebView? {
+        guard webView.responds(to: Selector(("_inspector"))),
+              let inspector = webView.value(forKey: "_inspector") as? NSObject,
+              (inspector.value(forKey: "isVisible") as? Bool) == true,
+              let panel = inspector.value(forKey: "inspectorWebView") as? WKWebView,
+              panel !== webView else { return nil }
+        return panel
+    }
+
     /// Closes the inspector and removes its view. A docked inspector is a sibling of the page view,
     /// so dropping only the page (tab sleep) would leave its dark view covering the next page.
     static func close(for webView: WKWebView) {
