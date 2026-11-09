@@ -235,6 +235,20 @@ final class AddressField: NSTextField {
         return menu
     }
 
+    /// The address is a single line. Pasted multi-line text (⌘V, drag, services) would otherwise keep its
+    /// newlines and balloon the field editor over the toolbar. Collapse newlines to single spaces.
+    @objc func textView(_ textView: NSTextView, shouldChangeTextIn range: NSRange,
+                        replacementString: String?) -> Bool {
+        guard let text = replacementString, text.contains(where: \.isNewline) else { return true }
+        let single = text.split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        // Re-enters this method with a newline-free string, which passes the guard above.
+        textView.insertText(single, replacementRange: range)
+        return false
+    }
+
     private func addPasteAndGo(to menu: NSMenu) {
         guard let item = pasteAndGoItem?(), !menu.items.contains(where: { $0.action == item.action }) else { return }
         // Right below Paste, like Safari and Chrome.
@@ -370,6 +384,9 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     }
     /// Debounces ranking so rapid typing does not rescan thousands of history entries per keypress.
     private var suggestionTask: Task<Void, Never>?
+    /// Tab that last opened a background tab, and that background tab. Used to keep ⌘+click order.
+    private weak var lastBackgroundOpener: Tab?
+    private weak var lastBackgroundTab: Tab?
     private let backButton = NSButton()
     private let forwardButton = NSButton()
     private let reloadButton = NSButton()
@@ -1200,7 +1217,17 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         if activate || tabs.isEmpty {
             insertTab(url: url, at: tabs.count, activate: true)
         } else {
-            let tab = insertTab(url: url, at: activeIndex + 1, activate: false)
+            // Repeated ⌘+click from the same tab: each new tab goes right after the previous one,
+            // so they stay in click order instead of stacking in reverse next to the opener.
+            var index = activeIndex + 1
+            if let opener = lastBackgroundOpener, opener === activeTab,
+               let last = lastBackgroundTab,
+               let lastIndex = tabs.firstIndex(where: { $0 === last }), lastIndex >= activeIndex {
+                index = lastIndex + 1
+            }
+            let tab = insertTab(url: url, at: index, activate: false)
+            lastBackgroundOpener = activeTab
+            lastBackgroundTab = tab
             if loadInBackground {
                 wake(tab)
                 refreshTabStrip()

@@ -193,6 +193,8 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
             return false
         }
         items.insert(item, at: 0)
+        notify(title: String(localized: "Download Started"),
+               body: item.filename.isEmpty ? String(localized: "Torrent") : item.filename, id: item.id, sound: false)
         announce(String(localized: "Downloading torrent. See Window › Downloads (⌥⌘L)."))
         changed()
         return true
@@ -281,6 +283,8 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
         if let item = item(for: download) {
             item.filename = destination.lastPathComponent
             item.destination = destination
+            // Same identifier as the completion notification, so "Download Complete" replaces this one.
+            notify(title: String(localized: "Download Started"), body: destination.lastPathComponent, id: item.id, sound: false)
         }
         announce(String(localized: "Downloading \(destination.lastPathComponent). See Window › Downloads (⌥⌘L)."))
         changed()
@@ -365,11 +369,11 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
     /// Key in a notification's userInfo: the downloaded file's path, revealed in Finder on click.
     nonisolated static let notificationPathKey = "askaraDownloadPath"
 
-    private func notify(title: String, body: String, id: UUID, file: URL? = nil) {
+    private func notify(title: String, body: String, id: UUID, file: URL? = nil, sound: Bool = true) {
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
-        content.sound = .default
+        if sound { content.sound = .default }
         if let file { content.userInfo = [Self.notificationPathKey: file.path] }
         UNUserNotificationCenter.current().add(
             UNNotificationRequest(identifier: "download-\(id.uuidString)", content: content, trigger: nil))
