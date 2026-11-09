@@ -32,8 +32,10 @@ enum YouTubeAdBlocker {
       // `:has()` isn't allowed in content rule lists, so the wrappers are hidden by a page style instead.
       const adInside = [
         'ytd-ad-slot-renderer', 'ytd-in-feed-ad-layout-renderer', 'ytd-display-ad-renderer',
-        'ytd-promoted-sparkles-web-renderer', 'ytd-promoted-video-renderer',
+        'ytd-search-pyv-renderer', 'ytd-promoted-sparkles-web-renderer',
+        'ytd-promoted-sparkles-text-search-renderer', 'ytd-promoted-video-renderer',
         'ytd-banner-promo-renderer', 'ytd-statement-banner-renderer',
+        'ytd-video-masthead-ad-v3-renderer',
       ];
       // Only wrappers that hold a single item. A list wrapper (ytd-item-section-renderer) would hide real videos too.
       const wrappers = ['ytd-rich-item-renderer', 'ytd-rich-section-renderer'];
@@ -47,9 +49,19 @@ enum YouTubeAdBlocker {
       const adKeys = ['adPlacements', 'adSlots', 'playerAds', 'adBreakHeartbeatParams'];
       const prune = (value) => {
         if (!value || typeof value !== 'object') return value;
-        for (const target of [value, value.playerResponse]) {
-          if (!target || typeof target !== 'object') continue;
+        // Player responses are sometimes wrapped by endpoint-specific `response`, `data`, or
+        // `playerResponse` objects. Visit only those known wrappers, not every parsed object.
+        const pending = [value];
+        const seen = new WeakSet();
+        while (pending.length) {
+          const target = pending.pop();
+          if (!target || typeof target !== 'object' || seen.has(target)) continue;
+          seen.add(target);
           for (const key of adKeys) if (key in target) delete target[key];
+          for (const key of ['playerResponse', 'response', 'data']) {
+            const nested = target[key];
+            if (nested && typeof nested === 'object') pending.push(nested);
+          }
         }
         return value;
       };
@@ -71,7 +83,10 @@ enum YouTubeAdBlocker {
       Response.prototype.json = function (...args) { return json.apply(this, args).then(prune); };
 
       // Fallback for ads that still get through: mute, then skip as soon as possible.
-      const skipSelector = '.ytp-skip-ad-button, .ytp-ad-skip-button, .ytp-ad-skip-button-modern';
+      const skipSelector = [
+        '.ytp-skip-ad-button', '.ytp-ad-skip-button', '.ytp-ad-skip-button-modern',
+        '.ytp-skip-ad-button__text', 'button[id^="skip-button"]',
+      ].join(', ');
       let player = null;
       let timer = null;
       let mutedByUs = false;

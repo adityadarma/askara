@@ -736,6 +736,16 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         updateSpotifyOrder()
     }
 
+    func reloadMediaAdBlockingTabs() {
+        for tab in tabs {
+            guard let web = tab.webView, let host = web.url?.host?.lowercased() else { continue }
+            if host == "youtube.com" || host.hasSuffix(".youtube.com") || host == "spotify.com"
+                || host.hasSuffix(".spotify.com") {
+                web.reload()
+            }
+        }
+    }
+
     /// Applies the Spotify "keep order" setting to open Spotify tabs, and to tabs opened later.
     private func updateSpotifyOrder() {
         let keepsOrder = services.preferences.spotifyKeepsOrder
@@ -1710,7 +1720,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     /// `reasons`: why each tab sleeps, for the log.
     func hibernate(tabIDs: Set<UUID>, force: Bool = false, reasons: [UUID: HibernationReason] = [:]) {
         var changed = false
-        for (index, tab) in tabs.enumerated()
+        for tab in tabs
         where !isVisible(tab) && tabIDs.contains(tab.id) && !tab.hasUnsavedInput && !tab.isPictureInPicture
             && (force || !keepsAwake(tab))
             && tab.webView != nil {
@@ -1739,7 +1749,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     /// media is suspended and cached back/forward pages are freed. A snapshot is taken now, while the
     /// page is intact, for when the tab sleeps fully later.
     func doze(tabIDs: Set<UUID>) {
-        for (index, tab) in tabs.enumerated()
+        for tab in tabs
         where !isVisible(tab) && tabIDs.contains(tab.id) && !tab.isDozing {
             guard let web = tab.webView else { continue }
             tab.isDozing = true

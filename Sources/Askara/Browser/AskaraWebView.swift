@@ -292,8 +292,10 @@ enum DevTools {
               let pid = (panel.value(forKey: "_webProcessIdentifier") as? NSNumber)?.intValue,
               pid <= 0 else { return }
         Log.notice("Askara: Web Inspector process ended, reopening")
-        _ = inspector.perform(Selector(("hide")))
-        DispatchQueue.main.async { _ = inspector.perform(Selector(("show"))) }
+        let hide = NSSelectorFromString("hide")
+        let show = NSSelectorFromString("show")
+        _ = inspector.perform(hide)
+        DispatchQueue.main.async { _ = inspector.perform(show) }
     }
 
     /// Enables "Inspect Element" in the right-click menu and the inspector shortcuts.

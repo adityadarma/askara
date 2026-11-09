@@ -9,6 +9,17 @@ import Testing
         #expect(prefs.searchEngineID == "google")
         #expect(prefs.maxLoadedTabs == 5)
         #expect(prefs.sleepAfterMinutes == 5)
+        #expect(prefs.blocksYouTubeAds)
+        #expect(prefs.blocksSpotifyAds)
+    }
+
+    @Test func mediaAdBlockSettingsRoundTrip() throws {
+        var prefs = BrowserPreferences()
+        prefs.blocksYouTubeAds = false
+        prefs.blocksSpotifyAds = false
+        let decoded = try JSONDecoder().decode(BrowserPreferences.self, from: JSONEncoder().encode(prefs))
+        #expect(!decoded.blocksYouTubeAds)
+        #expect(!decoded.blocksSpotifyAds)
     }
 
     @Test func syncFolderBookmarkRoundTripsAndOldFilesDefaultToNil() throws {

@@ -685,6 +685,9 @@ struct AskaraUITests {
       const parsed = JSON.parse('{"playerResponse": {"adSlots": [1], "videoDetails": {"videoId": "b"}}}');
       d.parsedAds = String('adSlots' in parsed.playerResponse);
       d.parsedVideo = parsed.playerResponse.videoDetails.videoId;
+      const nested = JSON.parse('{"data": {"response": {"playerResponse": {"playerAds": [1], "videoDetails": {"videoId": "d"}}}}}');
+      d.nestedAds = String('playerAds' in nested.data.response.playerResponse);
+      d.nestedVideo = nested.data.response.playerResponse.videoDetails.videoId;
       new Response('{"adPlacements": [1], "videoDetails": {"videoId": "c"}}').json().then((j) => {
         d.fetchedAds = String('adPlacements' in j);
         d.fetchedVideo = j.videoDetails.videoId;
@@ -728,9 +731,11 @@ struct AskaraUITests {
         #expect(r["initialAds"] == "false")
         #expect(r["parsedAds"] == "false")
         #expect(r["fetchedAds"] == "false")
+        #expect(r["nestedAds"] == "false")
         #expect(r["initialVideo"] == "a")
         #expect(r["parsedVideo"] == "b")
         #expect(r["fetchedVideo"] == "c")
+        #expect(r["nestedVideo"] == "d")
         let banner = try await web.evaluateJavaScript(
             "getComputedStyle(document.getElementById('masthead-ad')).display") as? String
         #expect(banner == "none")
@@ -754,6 +759,7 @@ struct AskaraUITests {
         #expect(r["initialAds"] == "true")
         #expect(r["parsedAds"] == "true")
         #expect(r["fetchedAds"] == "true")
+        #expect(r["nestedAds"] == "true")
         let banner = try await web.evaluateJavaScript(
             "getComputedStyle(document.getElementById('masthead-ad')).display") as? String
         #expect(banner != "none")

@@ -53,6 +53,7 @@ final class BrowserServices {
     private(set) var profileList: ProfileList
     /// Profiles opened since launch.
     private var profileData: [UUID: ProfileData] = [:]
+    private var reloadMediaTabsAfterRuleCompile = false
     private var isTerminating = false
     private var suppressCloseRecording = false
     /// Development builds must not use WebKit's shared default store, which could retain cookies
@@ -125,6 +126,17 @@ final class BrowserServices {
         saveSiteSettings()
         blockListUpdater.recompile()
         windows.forEach { $0.reloadTabs(relatedTo: host) }
+    }
+
+    func setMediaAdBlocking(youtube: Bool? = nil, spotify: Bool? = nil) {
+        let before = preferences
+        updatePreferences {
+            if let youtube { $0.blocksYouTubeAds = youtube }
+            if let spotify { $0.blocksSpotifyAds = spotify }
+        }
+        guard preferences != before else { return }
+        reloadMediaTabsAfterRuleCompile = true
+        blockListUpdater.recompile()
     }
 
     func setCustomization(_ customization: SiteCustomization, host: String) {
@@ -443,6 +455,10 @@ final class BrowserServices {
             self.ruleList = list
             // Replace the old list in all loaded tabs; new tabs use the new one directly.
             self.windows.forEach { $0.applyRuleList(list) }
+            if self.reloadMediaTabsAfterRuleCompile {
+                self.reloadMediaTabsAfterRuleCompile = false
+                self.windows.forEach { $0.reloadMediaAdBlockingTabs() }
+            }
             NotificationCenter.default.post(name: .askaraBlockListReady, object: nil)
         }
         blockListUpdater.start()

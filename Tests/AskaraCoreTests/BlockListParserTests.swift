@@ -55,6 +55,23 @@ import Testing
         #expect(BlockListMetadata(lastChecked: now.addingTimeInterval(3_600)).needsCheck(now: now))
     }
 
+    @Test func mediaAdRulesCanBeDisabledSeparately() throws {
+        func rules(domains: [String] = [], youtube: Bool, spotify: Bool) throws -> [[String: Any]] {
+            let json = BlockList.contentRuleListJSON(domains: domains, blocksYouTubeAds: youtube,
+                                                     blocksSpotifyAds: spotify)
+            return try #require(try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [[String: Any]])
+        }
+        #expect(try rules(youtube: false, spotify: false).isEmpty)
+        #expect(try rules(youtube: true, spotify: false).count == YouTubeAdRules.selectors.count)
+        #expect(try rules(youtube: false, spotify: true).count == SpotifyAdRules.rules(exclusions: []).count)
+
+        let domainRule = try #require(try rules(domains: ["ads.example"], youtube: false, spotify: false).first)
+        let trigger = try #require(domainRule["trigger"] as? [String: Any])
+        let exclusions = try #require(trigger["unless-top-url"] as? [String])
+        #expect(exclusions.contains { $0.contains("youtube\\.com") })
+        #expect(exclusions.contains { $0.contains("spotify\\.com") })
+    }
+
     @Test func parsesManualEntries() {
         let text = """
         Ads.Example.com

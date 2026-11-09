@@ -46,6 +46,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     private let pipPlacementBox = NSButton(checkboxWithTitle: String(localized: "Place Picture in Picture anywhere on screen"),
                                            target: nil, action: nil)
     // Ad Blocker
+    private let youtubeAdBlockBox = NSButton(checkboxWithTitle: String(localized: "Block ads on YouTube"),
+                                              target: nil, action: nil)
+    private let spotifyAdBlockBox = NSButton(checkboxWithTitle: String(localized: "Block ads on Spotify"),
+                                              target: nil, action: nil)
     private let manualTable = NSTableView()
     private let manualField = NSTextField()
     private let hideTable = NSTableView()
@@ -349,6 +353,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     }
 
     private func adBlockerPage() -> NSView {
+        youtubeAdBlockBox.target = self
+        youtubeAdBlockBox.action = #selector(youtubeAdBlockChanged(_:))
+        spotifyAdBlockBox.target = self
+        spotifyAdBlockBox.action = #selector(spotifyAdBlockChanged(_:))
         func configure(_ table: NSTableView, label: String, multiple: Bool) {
             let column = NSTableColumn(identifier: .init("domain"))
             column.title = String(localized: "Domain")
@@ -405,6 +413,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         autoTitle.font = .boldSystemFont(ofSize: NSFont.systemFontSize)
 
         return stack([
+            youtubeAdBlockBox,
+            note(String(localized: "Turn this off if YouTube reports that an ad blocker violates its Terms of Service. Open YouTube tabs reload when this changes.")),
+            spotifyAdBlockBox,
+            note(String(localized: "Controls Spotify ad request blocking, hidden ad slots, and automatic ad muting/skipping. Open Spotify tabs reload when this changes.")),
             manualTitle,
             note(String(localized: "Add domains one at a time or paste several separated by spaces, commas, or new lines. URLs work too. Subdomains are blocked as well. Reload open pages to apply.")),
             tableScroll(manualTable, height: 90), manualRow,
@@ -575,6 +587,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         stripTrackingBox.state = prefs.stripsTrackingParameters ? .on : .off
         handoffBox.state = prefs.handoffEnabled ? .on : .off
         spotifyOrderBox.state = prefs.spotifyKeepsOrder ? .on : .off
+        youtubeAdBlockBox.state = prefs.blocksYouTubeAds ? .on : .off
+        spotifyAdBlockBox.state = prefs.blocksSpotifyAds ? .on : .off
         torrentDHTBox.state = prefs.torrentUsesDHT ? .on : .off
         confirmQuitBox.state = prefs.confirmsQuit ? .on : .off
         restoreBox.state = prefs.restoresSession ? .on : .off
@@ -665,6 +679,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     @objc private func spotifyOrderChanged(_ sender: NSButton) {
         let on = sender.state == .on
         services.updatePreferences { $0.spotifyKeepsOrder = on }
+    }
+
+    @objc private func youtubeAdBlockChanged(_ sender: NSButton) {
+        services.setMediaAdBlocking(youtube: sender.state == .on)
+    }
+
+    @objc private func spotifyAdBlockChanged(_ sender: NSButton) {
+        services.setMediaAdBlocking(spotify: sender.state == .on)
     }
 
     @objc private func torrentDHTChanged(_ sender: NSButton) {

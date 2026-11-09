@@ -183,7 +183,9 @@ final class BlockListUpdater {
         let json = BlockList.contentRuleListJSON(
             domains: domains,
             excludingSites: services?.siteSettings.adBlockExceptions ?? [],
-            hiding: hideRules
+            hiding: hideRules,
+            blocksYouTubeAds: services?.preferences.blocksYouTubeAds ?? true,
+            blocksSpotifyAds: services?.preferences.blocksSpotifyAds ?? true
         )
         // The same identifier overwrites the old version; WebKit stores the compiled result on disk.
         WKContentRuleListStore.default().compileContentRuleList(

@@ -38,6 +38,10 @@ public struct BrowserPreferences: Codable, Equatable, Sendable {
     public var handoffEnabled = true
     /// Turn off Spotify's shuffle when the web player enables it by itself, so songs play in order.
     public var spotifyKeepsOrder = false
+    /// Remove video and page ads on YouTube. Separate because YouTube may reject ad blockers.
+    public var blocksYouTubeAds = true
+    /// Remove, mute, and skip ads in Spotify's web player.
+    public var blocksSpotifyAds = true
     /// Torrent downloads find peers through DHT as well as trackers. Off: trackers only, so DHT nodes
     /// never see the user's IP address, but torrents with dead trackers and magnet links without `tr=` stall.
     public var torrentUsesDHT = true
@@ -65,7 +69,7 @@ public struct BrowserPreferences: Codable, Equatable, Sendable {
              syncEnabled
         case syncFolderPath, syncFolderBookmark, dozeAfterMinutes, memoryBudgetPercent, protectedTabs
         case stripsTrackingParameters, confirmsQuit, restoresSession, handoffEnabled, spotifyKeepsOrder, torrentUsesDHT
-        case siteSleepMinutes, pipFreePlacement
+        case siteSleepMinutes, pipFreePlacement, blocksYouTubeAds, blocksSpotifyAds
     }
 
     public init(from decoder: Decoder) throws {
@@ -85,6 +89,8 @@ public struct BrowserPreferences: Codable, Equatable, Sendable {
         restoresSession = try c.decodeIfPresent(Bool.self, forKey: .restoresSession) ?? d.restoresSession
         handoffEnabled = try c.decodeIfPresent(Bool.self, forKey: .handoffEnabled) ?? d.handoffEnabled
         spotifyKeepsOrder = try c.decodeIfPresent(Bool.self, forKey: .spotifyKeepsOrder) ?? d.spotifyKeepsOrder
+        blocksYouTubeAds = try c.decodeIfPresent(Bool.self, forKey: .blocksYouTubeAds) ?? d.blocksYouTubeAds
+        blocksSpotifyAds = try c.decodeIfPresent(Bool.self, forKey: .blocksSpotifyAds) ?? d.blocksSpotifyAds
         torrentUsesDHT = try c.decodeIfPresent(Bool.self, forKey: .torrentUsesDHT) ?? d.torrentUsesDHT
         pipFreePlacement = try c.decodeIfPresent(Bool.self, forKey: .pipFreePlacement) ?? d.pipFreePlacement
         keepAwakeSites = try c.decodeIfPresent([String].self, forKey: .keepAwakeSites) ?? d.keepAwakeSites
