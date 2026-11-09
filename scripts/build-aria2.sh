@@ -13,9 +13,18 @@ ARCHS=("$(uname -m)")
 [[ "${1:-}" == "--universal" ]] && ARCHS=(arm64 x86_64)
 
 # Newest upstream release. Offline or rate limited: reuse the binary built earlier, if any.
-VERSION="$(curl -fsSL --max-time 15 https://api.github.com/repos/aria2/aria2/releases/latest 2>/dev/null \
+# Unauthenticated API calls share a rate limit per IP, which CI runners exhaust. Use a token when given.
+CURL_AUTH=()
+TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
+[[ -n "$TOKEN" ]] && CURL_AUTH=(-H "Authorization: Bearer $TOKEN")
+LOOKUP_ERR="$(mktemp)"
+trap 'rm -f "$LOOKUP_ERR"' EXIT
+VERSION="$(curl -fsSL --max-time 20 --retry 3 --retry-delay 2 --retry-all-errors "${CURL_AUTH[@]}" \
+    -H "Accept: application/vnd.github+json" \
+    https://api.github.com/repos/aria2/aria2/releases/latest 2>"$LOOKUP_ERR" \
     | sed -n 's/.*"tag_name": *"release-\([0-9][0-9.]*\)".*/\1/p' | head -1 || true)"
 if [[ -z "$VERSION" ]]; then
+    [[ -s "$LOOKUP_ERR" ]] && cat "$LOOKUP_ERR" >&2
     if [[ -x "$OUT/aria2c" ]]; then
         print -u2 "Could not look up the latest aria2 release; reusing the existing build."
         exit 0

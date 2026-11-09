@@ -72,6 +72,7 @@ jobs:
           ASKARA_VERSION: ${{ steps.version.outputs.version }}
           ASKARA_BUILD: ${{ github.run_number }}
           ASKARA_SPARKLE_PUBLIC_KEY: ${{ vars.SPARKLE_PUBLIC_KEY }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           if [[ -z "$ASKARA_SPARKLE_PUBLIC_KEY" ]]; then
             echo "::error::Repository variable SPARKLE_PUBLIC_KEY is not set."
