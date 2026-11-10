@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "revision": 1,
+  "selectors": [
+    "#masthead-ad",
+    "#player-ads",
+    "ytd-ad-slot-renderer",
+    "ytd-in-feed-ad-layout-renderer",
+    "ytd-search-pyv-renderer",
+    "ytd-banner-promo-renderer",
+    "ytd-statement-banner-renderer",
+    "ytd-display-ad-renderer",
+    "ytd-promoted-sparkles-web-renderer",
+    "ytd-promoted-sparkles-text-search-renderer",
+    "ytd-promoted-video-renderer",
+    "ytd-companion-slot-renderer",
+    "ytd-action-companion-ad-renderer",
+    "ytd-video-masthead-ad-v3-renderer",
+    "ytd-player-legacy-desktop-watch-ads-renderer",
+    "ytd-engagement-panel-section-list-renderer[target-id=\"engagement-panel-ads\"]",
+    ".ytp-ad-player-overlay",
+    ".ytp-ad-player-overlay-layout",
+    ".ytp-ad-overlay-container",
+    ".ytp-ad-image-overlay"
+  ],
+  "adElementSelectors": [
+    "ytd-ad-slot-renderer",
+    "ytd-in-feed-ad-layout-renderer",
+    "ytd-display-ad-renderer",
+    "ytd-search-pyv-renderer",
+    "ytd-promoted-sparkles-web-renderer",
+    "ytd-promoted-sparkles-text-search-renderer",
+    "ytd-promoted-video-renderer",
+    "ytd-banner-promo-renderer",
+    "ytd-statement-banner-renderer",
+    "ytd-video-masthead-ad-v3-renderer"
+  ],
+  "wrapperSelectors": ["ytd-rich-item-renderer", "ytd-rich-section-renderer"],
+  "adKeys": ["adPlacements", "adSlots", "playerAds", "adBreakHeartbeatParams"],
+  "wrapperKeys": ["playerResponse", "response", "data"],
+  "skipSelectors": [
+    ".ytp-skip-ad-button",
+    ".ytp-ad-skip-button",
+    ".ytp-ad-skip-button-modern",
+    ".ytp-skip-ad-button__text",
+    "button[id^=\"skip-button\"]"
+  ]
+}

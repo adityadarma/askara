@@ -37,6 +37,7 @@ final class BrowserServices {
     static let shared = BrowserServices()
 
     private(set) var ruleList: WKContentRuleList?
+    private(set) var youTubeAdRules = YouTubeAdRuleSet.builtIn
     var blockListDomains: [String] { blockListUpdater.currentDomains }
     private(set) var windows: [BrowserWindowController] = []
     let downloads: DownloadManager
@@ -450,6 +451,7 @@ final class BrowserServices {
 
     /// Loads the saved blocklist, then updates it automatically once a day.
     func compileBlockList() {
+        youTubeAdRules = blockListUpdater.youTubeRules
         blockListUpdater.onCompiled = { [weak self] list in
             guard let self else { return }
             self.ruleList = list
@@ -460,6 +462,10 @@ final class BrowserServices {
                 self.windows.forEach { $0.reloadMediaAdBlockingTabs() }
             }
             NotificationCenter.default.post(name: .askaraBlockListReady, object: nil)
+        }
+        blockListUpdater.onYouTubeRulesChanged = { [weak self] rules in
+            self?.youTubeAdRules = rules
+            self?.windows.forEach { $0.applyYouTubeAdRules(rules) }
         }
         blockListUpdater.start()
     }

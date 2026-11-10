@@ -15,10 +15,24 @@ import AskaraCore
 /// It only runs when the rule list hides `YouTubeAdRules.probeID`, so turning the ad blocker off for
 /// youtube.com (Privacy Dashboard) disables it too. Injected at document start, before YouTube's scripts.
 enum YouTubeAdBlocker {
-    static let source = """
+    static let marker = "__askaraYouTubeRuleRevision"
+
+    static func source(rules: YouTubeAdRuleSet) -> String {
+        let config: [String: Any] = [
+            "adElementSelectors": rules.adElementSelectors,
+            "wrapperSelectors": rules.wrapperSelectors,
+            "adKeys": rules.adKeys,
+            "wrapperKeys": rules.wrapperKeys,
+            "skipSelectors": rules.skipSelectors,
+        ]
+        let data = try! JSONSerialization.data(withJSONObject: config, options: [.sortedKeys])
+        let json = String(decoding: data, as: UTF8.self)
+        return """
     (() => {
+      const __askaraYouTubeRuleRevision = \(rules.revision);
       const host = location.hostname;
       if (host !== 'youtube.com' && !host.endsWith('.youtube.com')) return;
+      const config = \(json);
 
       // Active only where Askara's content rule list applies (respects per-site exceptions).
       const probe = document.createElement('div');
@@ -30,15 +44,9 @@ enum YouTubeAdBlocker {
 
       // Feed ads leave an empty grid cell: the content rules hide the ad inside it, not its wrapper.
       // `:has()` isn't allowed in content rule lists, so the wrappers are hidden by a page style instead.
-      const adInside = [
-        'ytd-ad-slot-renderer', 'ytd-in-feed-ad-layout-renderer', 'ytd-display-ad-renderer',
-        'ytd-search-pyv-renderer', 'ytd-promoted-sparkles-web-renderer',
-        'ytd-promoted-sparkles-text-search-renderer', 'ytd-promoted-video-renderer',
-        'ytd-banner-promo-renderer', 'ytd-statement-banner-renderer',
-        'ytd-video-masthead-ad-v3-renderer',
-      ];
+      const adInside = config.adElementSelectors;
       // Only wrappers that hold a single item. A list wrapper (ytd-item-section-renderer) would hide real videos too.
-      const wrappers = ['ytd-rich-item-renderer', 'ytd-rich-section-renderer'];
+      const wrappers = config.wrapperSelectors;
       const style = document.createElement('style');
       style.textContent = wrappers
         .map((wrapper) => adInside.map((ad) => `${wrapper}:has(${ad})`).join(', '))
@@ -46,7 +54,7 @@ enum YouTubeAdBlocker {
       document.documentElement.appendChild(style);
 
       // Fields that tell the player which ads to play. Removing them leaves the video itself intact.
-      const adKeys = ['adPlacements', 'adSlots', 'playerAds', 'adBreakHeartbeatParams'];
+      const adKeys = config.adKeys;
       const prune = (value) => {
         if (!value || typeof value !== 'object') return value;
         // Player responses are sometimes wrapped by endpoint-specific `response`, `data`, or
@@ -58,7 +66,7 @@ enum YouTubeAdBlocker {
           if (!target || typeof target !== 'object' || seen.has(target)) continue;
           seen.add(target);
           for (const key of adKeys) if (key in target) delete target[key];
-          for (const key of ['playerResponse', 'response', 'data']) {
+          for (const key of config.wrapperKeys) {
             const nested = target[key];
             if (nested && typeof nested === 'object') pending.push(nested);
           }
@@ -83,10 +91,7 @@ enum YouTubeAdBlocker {
       Response.prototype.json = function (...args) { return json.apply(this, args).then(prune); };
 
       // Fallback for ads that still get through: mute, then skip as soon as possible.
-      const skipSelector = [
-        '.ytp-skip-ad-button', '.ytp-ad-skip-button', '.ytp-ad-skip-button-modern',
-        '.ytp-skip-ad-button__text', 'button[id^="skip-button"]',
-      ].join(', ');
+      const skipSelector = config.skipSelectors.join(', ');
       let player = null;
       let timer = null;
       let mutedByUs = false;
@@ -122,4 +127,5 @@ enum YouTubeAdBlocker {
       finder.observe(document.documentElement, { childList: true, subtree: true });
     })();
     """
+    }
 }

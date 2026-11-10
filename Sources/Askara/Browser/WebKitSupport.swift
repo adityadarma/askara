@@ -250,12 +250,14 @@ enum PictureInPictureScript {
         return best;
       };
 
-      // Video really in PiP. A detached element left in `pictureInPictureElement` (the page swapped
-      // its player after an in-page navigation) must not count, or the button stays stuck on "active".
+      // A SPA can keep its player connected after WebKit closes PiP. Ignore that player until a new
+      // PiP transition proves it active again, or the toolbar and the next request remain stuck.
+      var stalePiPVideo = null;
       const activeVideo = (all = videos()) => {
         const element = document.pictureInPictureElement;
-        if (element && element.isConnected) return element;
-        return all.find((video) => video.webkitPresentationMode === 'picture-in-picture') || null;
+        if (element && element.isConnected && element !== stalePiPVideo) return element;
+        return all.find((video) => video !== stalePiPVideo &&
+          video.webkitPresentationMode === 'picture-in-picture') || null;
       };
       // Leaves PiP and waits for it to take effect. Resolves with whether PiP is really gone.
       const leave = async (video) => {
@@ -294,6 +296,21 @@ enum PictureInPictureScript {
 
       // Lets the app re-read the state on tab/window switches, when events may have been missed.
       window.__askaraReportPiP = () => report(true);
+      window.__askaraPiPNavigationDidChange = async () => {
+        stalePiPVideo = activeVideo() || document.pictureInPictureElement;
+        report(true);
+        if (!stalePiPVideo) return;
+        try {
+          if (document.pictureInPictureElement && document.exitPictureInPicture)
+            await document.exitPictureInPicture();
+        } catch (_) {}
+        try {
+          if (stalePiPVideo.webkitPresentationMode === 'picture-in-picture' &&
+              stalePiPVideo.webkitSetPresentationMode)
+            stalePiPVideo.webkitSetPresentationMode('inline');
+        } catch (_) {}
+        report(true);
+      };
       document.addEventListener('visibilitychange', () => report(true));
 
       // Toolbar media control. Pause marks what it stopped, so Play resumes exactly that media
@@ -315,8 +332,7 @@ enum PictureInPictureScript {
       };
 
       window.__askaraTogglePiP = async () => {
-        const all = videos();
-        const active = activeVideo(all);
+        const active = activeVideo();
         if (active) {
           if (await leave(active)) { report(true); return true; }
           // Exit had no effect: the "active" state was stale. Fall through and enter PiP instead.
@@ -324,6 +340,7 @@ enum PictureInPictureScript {
           // Clear a detached element so WebKit accepts a new request.
           try { await document.exitPictureInPicture(); } catch (_) {}
         }
+        const all = videos();
         const video = candidate(all);
         if (!video) return false;
         const legacy = () => {
@@ -347,8 +364,15 @@ enum PictureInPictureScript {
       // YouTube reuses one <video> across navigations, so readiness events are the only signal.
       for (const event of ['play', 'playing', 'pause', 'loadedmetadata', 'loadeddata', 'emptied', 'resize'])
         document.addEventListener(event, scheduleReport, true);
-      for (const event of ['enterpictureinpicture', 'leavepictureinpicture', 'webkitpresentationmodechanged'])
-        document.addEventListener(event, () => report(false), true);
+      document.addEventListener('enterpictureinpicture', (event) => {
+        if (!event.target || event.target === stalePiPVideo) stalePiPVideo = null;
+        report(false);
+      }, true);
+      document.addEventListener('leavepictureinpicture', () => report(false), true);
+      document.addEventListener('webkitpresentationmodechanged', (event) => {
+        if (event.target?.webkitPresentationMode === 'picture-in-picture') stalePiPVideo = null;
+        report(false);
+      }, true);
       window.addEventListener('pagehide', () => {
         pageVisible = false;
         scheduled = false;

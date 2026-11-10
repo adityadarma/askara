@@ -397,6 +397,7 @@ struct AskaraUITests {
         var videos = [];
         var queryCount = 0;
         var rectCount = 0;
+        var exitCount = 0;
         var observerCallback = null;
         var window = {
           webkit: { messageHandlers: { askaraPiP: {
@@ -406,6 +407,7 @@ struct AskaraUITests {
         };
         var document = {
           pictureInPictureElement: null,
+          exitPictureInPicture: function() { exitCount += 1; return Promise.resolve(); },
           documentElement: {},
           querySelectorAll: function() { queryCount += 1; return videos; },
           addEventListener: function(name, callback) { listeners[name] = callback; }
@@ -452,7 +454,7 @@ struct AskaraUITests {
         #expect(context.evaluateScript("typeof messages[1].frame === 'string' && messages[1].frame.length > 0")?.toBool() == true)
         #expect(context.evaluateScript("rectCount")?.toInt32() == 1)
 
-        context.evaluateScript("document.pictureInPictureElement = videos[0]; listeners.enterpictureinpicture();")
+        context.evaluateScript("document.pictureInPictureElement = videos[0]; listeners.enterpictureinpicture({ target: videos[0] });")
         #expect(context.evaluateScript("rafCallbacks.length")?.toInt32() == 0)
         #expect(context.evaluateScript("messages.length")?.toInt32() == 3)
         #expect(context.evaluateScript("messages[2].active")?.toBool() == true)
@@ -472,6 +474,18 @@ struct AskaraUITests {
         context.evaluateScript("videos[0].isConnected = false; listeners.visibilitychange();")
         #expect(context.evaluateScript("messages.length")?.toInt32() == 8)
         #expect(context.evaluateScript("messages[7].active")?.toBool() == false)
+
+        // YouTube keeps the same connected player across SPA routes. It is stale until a real PiP
+        // transition occurs, and must not prevent another request.
+        context.evaluateScript("videos[0].isConnected = true; document.pictureInPictureElement = videos[0];")
+        _ = context.evaluateScript("window.__askaraPiPNavigationDidChange()")
+        #expect(context.evaluateScript("messages.length")?.toInt32() == 10)
+        #expect(context.evaluateScript("messages[8].active")?.toBool() == false)
+        #expect(context.evaluateScript("messages[9].active")?.toBool() == false)
+        #expect(context.evaluateScript("exitCount")?.toInt32() == 1)
+        context.evaluateScript("listeners.enterpictureinpicture({ target: videos[0] });")
+        #expect(context.evaluateScript("messages.length")?.toInt32() == 11)
+        #expect(context.evaluateScript("messages[10].active")?.toBool() == true)
     }
 
     @Test("Full browser chrome launches with one isolated WebView")
@@ -685,9 +699,11 @@ struct AskaraUITests {
       const parsed = JSON.parse('{"playerResponse": {"adSlots": [1], "videoDetails": {"videoId": "b"}}}');
       d.parsedAds = String('adSlots' in parsed.playerResponse);
       d.parsedVideo = parsed.playerResponse.videoDetails.videoId;
-      const nested = JSON.parse('{"data": {"response": {"playerResponse": {"playerAds": [1], "videoDetails": {"videoId": "d"}}}}}');
-      d.nestedAds = String('playerAds' in nested.data.response.playerResponse);
-      d.nestedVideo = nested.data.response.playerResponse.videoDetails.videoId;
+       const nested = JSON.parse('{"data": {"response": {"playerResponse": {"playerAds": [1], "videoDetails": {"videoId": "d"}}}}}');
+       d.nestedAds = String('playerAds' in nested.data.response.playerResponse);
+       d.nestedVideo = nested.data.response.playerResponse.videoDetails.videoId;
+       const custom = JSON.parse('{"freshAdKey": [1], "videoDetails": {"videoId": "e"}}');
+       d.customAds = String('freshAdKey' in custom);
       new Response('{"adPlacements": [1], "videoDetails": {"videoId": "c"}}').json().then((j) => {
         d.fetchedAds = String('adPlacements' in j);
         d.fetchedVideo = j.videoDetails.videoId;
@@ -699,9 +715,9 @@ struct AskaraUITests {
     private static let resultsScript = "JSON.stringify(document.body.dataset)"
 
     @MainActor
-    private func youTubeWebView(exceptions: [String]) async throws -> WKWebView {
+    private func youTubeWebView(exceptions: [String], rules: YouTubeAdRuleSet = .builtIn) async throws -> WKWebView {
         _ = NSApplication.shared
-        let json = BlockList.contentRuleListJSON(domains: [], excludingSites: exceptions)
+        let json = BlockList.contentRuleListJSON(domains: [], excludingSites: exceptions, youTubeRules: rules)
         // Compiling also proves WebKit accepts every selector in YouTubeAdRules.
         let list = try #require(try await WKContentRuleListStore.default()
             .compileContentRuleList(forIdentifier: "askara-test-youtube-\(exceptions.count)",
@@ -709,7 +725,8 @@ struct AskaraUITests {
         let config = WKWebViewConfiguration()
         config.userContentController.add(list)
         config.userContentController.addUserScript(WKUserScript(
-            source: YouTubeAdBlocker.source, injectionTime: .atDocumentStart, forMainFrameOnly: false))
+            source: YouTubeAdBlocker.source(rules: rules), injectionTime: .atDocumentStart,
+            forMainFrameOnly: false))
         let web = WKWebView(frame: NSRect(x: 0, y: 0, width: 600, height: 400), configuration: config)
         web.loadHTMLString(Self.youTubeAdPage, baseURL: URL(string: "https://www.youtube.com/watch?v=test"))
         for _ in 0..<100 where web.isLoading || web.url == nil { try await Task.sleep(for: .milliseconds(50)) }
@@ -749,6 +766,19 @@ struct AskaraUITests {
             "document.querySelector('.html5-video-player').classList.add('ad-showing'); true")
         try await Task.sleep(for: .milliseconds(800))
         #expect(try await results(web)["skipped"] == "1")
+    }
+
+    @Test("Updated YouTube manifest configures the local player-data engine")
+    @MainActor
+    func updatedYouTubeRulesApply() async throws {
+        let builtIn = YouTubeAdRuleSet.builtIn
+        let rules = YouTubeAdRuleSet(schemaVersion: 1, revision: 2, selectors: builtIn.selectors,
+                                     adElementSelectors: builtIn.adElementSelectors,
+                                     wrapperSelectors: builtIn.wrapperSelectors,
+                                     adKeys: builtIn.adKeys + ["freshAdKey"], wrapperKeys: builtIn.wrapperKeys,
+                                     skipSelectors: builtIn.skipSelectors)
+        let web = try await youTubeWebView(exceptions: [], rules: rules)
+        #expect(try await results(web)["customAds"] == "false")
     }
 
     @Test("Ad-block exception for youtube.com turns YouTube blocking off")

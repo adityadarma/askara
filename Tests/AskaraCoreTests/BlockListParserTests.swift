@@ -72,6 +72,45 @@ import Testing
         #expect(exclusions.contains { $0.contains("spotify\\.com") })
     }
 
+    @Test func validatesRemoteYouTubeRulesAndRejectsDangerousSelectors() {
+        var rules = YouTubeAdRuleSet.builtIn
+        #expect(rules.validated() == rules)
+
+        rules = YouTubeAdRuleSet(schemaVersion: 1, revision: 2,
+                                 selectors: rules.selectors + ["body"],
+                                 adElementSelectors: rules.adElementSelectors,
+                                 wrapperSelectors: rules.wrapperSelectors,
+                                 adKeys: rules.adKeys, wrapperKeys: rules.wrapperKeys,
+                                 skipSelectors: rules.skipSelectors)
+        #expect(rules.validated() == nil)
+
+        rules = YouTubeAdRuleSet(schemaVersion: 1, revision: 2,
+                                 selectors: YouTubeAdRuleSet.builtIn.selectors,
+                                 adElementSelectors: YouTubeAdRuleSet.builtIn.adElementSelectors,
+                                 wrapperSelectors: YouTubeAdRuleSet.builtIn.wrapperSelectors,
+                                 adKeys: ["freshAdKey", "freshAdKey"],
+                                 wrapperKeys: YouTubeAdRuleSet.builtIn.wrapperKeys,
+                                 skipSelectors: YouTubeAdRuleSet.builtIn.skipSelectors)
+        #expect(rules.validated()?.adKeys == ["freshAdKey"])
+        #expect(rules.validated(minimumRevision: 3) == nil)
+    }
+
+    @Test func customYouTubeSelectorsStayScopedToYouTube() throws {
+        let builtIn = YouTubeAdRuleSet.builtIn
+        let rules = YouTubeAdRuleSet(schemaVersion: 1, revision: 2, selectors: [".new-ad-slot"],
+                                     adElementSelectors: builtIn.adElementSelectors,
+                                     wrapperSelectors: builtIn.wrapperSelectors, adKeys: builtIn.adKeys,
+                                     wrapperKeys: builtIn.wrapperKeys, skipSelectors: builtIn.skipSelectors)
+        let data = Data(BlockList.contentRuleListJSON(domains: [], blocksSpotifyAds: false,
+                                                      youTubeRules: rules).utf8)
+        let parsed = try #require(try JSONSerialization.jsonObject(with: data) as? [[String: Any]])
+        #expect(parsed.count == 2) // The local probe plus the remote selector.
+        let selector = try #require((parsed[1]["action"] as? [String: Any])?["selector"] as? String)
+        let filter = try #require((parsed[1]["trigger"] as? [String: Any])?["url-filter"] as? String)
+        #expect(selector == ".new-ad-slot")
+        #expect(filter.contains("youtube"))
+    }
+
     @Test func parsesManualEntries() {
         let text = """
         Ads.Example.com

@@ -746,6 +746,24 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         }
     }
 
+    func applyYouTubeAdRules(_ rules: YouTubeAdRuleSet) {
+        let source = YouTubeAdBlocker.source(rules: rules)
+        for tab in tabs {
+            guard let web = tab.webView else { continue }
+            let controller = web.configuration.userContentController
+            let scripts = Array(controller.userScripts)
+            guard let stale = scripts.first(where: {
+                $0.source.contains(YouTubeAdBlocker.marker) && $0.source != source
+            }) else { continue }
+            controller.removeAllUserScripts()
+            for script in scripts where script !== stale { controller.addUserScript(script) }
+            controller.addUserScript(WKUserScript(source: source, injectionTime: .atDocumentStart,
+                                                  forMainFrameOnly: false))
+            let host = web.url?.host?.lowercased() ?? ""
+            if host == "youtube.com" || host.hasSuffix(".youtube.com") { web.reload() }
+        }
+    }
+
     /// Applies the Spotify "keep order" setting to open Spotify tabs, and to tabs opened later.
     private func updateSpotifyOrder() {
         let keepsOrder = services.preferences.spotifyKeepsOrder
@@ -1567,12 +1585,16 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
             webView.observe(\.url) { [weak self, weak tab] web, _ in
                 MainActor.assumeIsolated {
                     guard let tab, let url = web.url else { return }
+                    let previousURL = tab.url
                     tab.url = url
                     self?.tabChanged(tab, .URL)
                     // During navigation the URL can jump due to redirects: don't show it.
                     // The address bar updates in didCommit (final page starts showing). Without navigation
                     // (e.g. SPA via pushState), show it immediately.
                     if !web.isLoading {
+                        if let previousURL, Self.isDifferentPage(previousURL, url) {
+                            self?.pictureInPictureNavigationDidChange(in: tab)
+                        }
                         tab.displayURL = url
                         self?.updateToolbar()
                         // SPA navigation (pushState) never reaches didFinish: save it here so a
@@ -1663,7 +1685,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         // YouTube video ads are removed from the player data before YouTube's scripts run.
         // Exits immediately on other sites.
         config.userContentController.addUserScript(WKUserScript(
-            source: YouTubeAdBlocker.source, injectionTime: .atDocumentStart, forMainFrameOnly: false))
+            source: YouTubeAdBlocker.source(rules: services.youTubeAdRules),
+            injectionTime: .atDocumentStart, forMainFrameOnly: false))
         // Spotify web player: mute/skip ads and optionally keep songs in order. Exits on other sites.
         config.userContentController.addUserScript(
             SpotifyEnhancer.userScript(keepsOrder: services.preferences.spotifyKeepsOrder))
@@ -2525,6 +2548,31 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
             pictureInPictureButton.isEnabled = tab.pictureInPictureEligible
             pictureInPictureButton.isHidden = !tab.pictureInPictureEligible
             pictureInPictureButton.contentTintColor = tab.isPictureInPicture ? .controlAccentColor : .secondaryLabelColor
+        }
+    }
+
+    private static func isDifferentPage(_ lhs: URL, _ rhs: URL) -> Bool {
+        var left = URLComponents(url: lhs, resolvingAgainstBaseURL: false)
+        var right = URLComponents(url: rhs, resolvingAgainstBaseURL: false)
+        left?.fragment = nil
+        right?.fragment = nil
+        return left?.url != right?.url
+    }
+
+    private func pictureInPictureNavigationDidChange(in tab: Tab) {
+        guard let web = tab.webView else { return }
+        let states = tab.pictureInPictureFrames
+        let frames: [WKFrameInfo?] = [nil] + states.values.map(\.frame).filter { !$0.isMainFrame }
+        for (frameID, state) in states {
+            pictureInPictureState(in: web, frameID: frameID, frame: state.frame,
+                                  eligible: state.eligible, active: false)
+        }
+        Task { @MainActor [weak web] in
+            for frame in frames {
+                _ = try? await web?.callAsyncJavaScript(
+                    "await window.__askaraPiPNavigationDidChange?.(); return null;", arguments: [:],
+                    in: frame, contentWorld: .page)
+            }
         }
     }
 

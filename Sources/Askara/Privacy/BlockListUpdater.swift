@@ -9,10 +9,13 @@ import AskaraCore
 /// If the download fails, the last saved list (or the built-in list) stays in use.
 @MainActor
 final class BlockListUpdater {
-    static let sourceURL = URL(string:
+    nonisolated static let sourceURL = URL(string:
         "https://pgl.yoyo.org/adservers/serverlist.php?hostformat=nohtml&showintro=0&mimetype=plaintext")!
+    nonisolated static let youTubeSourceURL = URL(string:
+        "https://raw.githubusercontent.com/adityadarma/askara/main/Blocklists/youtube.json")!
     private static let ruleListID = "askara-blocklist"
     nonisolated private static let maxDownloadBytes = 5 * 1_048_576
+    nonisolated private static let maxYouTubeDownloadBytes = 128 * 1_024
     /// A list that is too small is most likely broken or an error page; don't use it.
     private static let minimumDomains = 500
 
@@ -20,6 +23,7 @@ final class BlockListUpdater {
     private let metadataFile: JSONFile<BlockListMetadata>
     private let customFile: JSONFile<[String]>
     private let hideFile: JSONFile<[ElementHideRule]>
+    private let youTubeRulesFile: JSONFile<YouTubeAdRuleSet>
     private weak var services: BrowserServices?
     private(set) var metadata: BlockListMetadata
     private(set) var isUpdating = false
@@ -32,10 +36,12 @@ final class BlockListUpdater {
     private(set) var customDomains: [String]
     /// Element-hiding rules the user wrote by hand (`site##selector`).
     private(set) var hideRules: [ElementHideRule]
+    private(set) var youTubeRules: YouTubeAdRuleSet
     private var timer: Timer?
 
     /// Called each time a new list finishes compiling.
     var onCompiled: ((WKContentRuleList) -> Void)?
+    var onYouTubeRulesChanged: ((YouTubeAdRuleSet) -> Void)?
     var onDomainsChanged: (([String]) -> Void)?
 
     init(storageDirectory: URL? = nil, services: BrowserServices) {
@@ -45,13 +51,16 @@ final class BlockListUpdater {
             metadataFile = JSONFile(url: storageDirectory.appendingPathComponent("blocklist-meta.json"))
             customFile = JSONFile(url: storageDirectory.appendingPathComponent("blocklist-custom.json"))
             hideFile = JSONFile(url: storageDirectory.appendingPathComponent("blocklist-hide.json"))
+            youTubeRulesFile = JSONFile(url: storageDirectory.appendingPathComponent("youtube-ad-rules.json"))
         } else {
             domainsFile = .inAppSupport("blocklist-domains.json")
             metadataFile = .inAppSupport("blocklist-meta.json")
             customFile = .inAppSupport("blocklist-custom.json")
             hideFile = .inAppSupport("blocklist-hide.json")
+            youTubeRulesFile = .inAppSupport("youtube-ad-rules.json")
         }
         hideRules = hideFile.load() ?? []
+        youTubeRules = youTubeRulesFile.load()?.validated() ?? .builtIn
         metadata = metadataFile.load() ?? BlockListMetadata()
         // First launch: no file yet, so seed it. Later edits (even an empty list) are kept as saved.
         let custom: [String]
@@ -136,46 +145,83 @@ final class BlockListUpdater {
             let modified = http?.value(forHTTPHeaderField: "Last-Modified")
             let errorText = error?.localizedDescription
 
-            DispatchQueue.main.async {
-                MainActor.assumeIsolated {
-                    let message = self.finish(status: status, domains: domains, etag: etag,
-                                              lastModified: modified, error: errorText)
-                    completion?(message)
+            var youtubeRequest = URLRequest(url: Self.youTubeSourceURL, cachePolicy: .reloadIgnoringLocalCacheData,
+                                            timeoutInterval: 30)
+            youtubeRequest.setValue("application/json", forHTTPHeaderField: "Accept")
+            URLSession.shared.dataTask(with: youtubeRequest) { youtubeData, youtubeResponse, youtubeError in
+                let youtubeHTTP = youtubeResponse as? HTTPURLResponse
+                let decoded: YouTubeAdRuleSet?
+                if youtubeError == nil, youtubeHTTP?.statusCode == 200, let youtubeData,
+                   youtubeData.count <= Self.maxYouTubeDownloadBytes {
+                    decoded = try? JSONDecoder().decode(YouTubeAdRuleSet.self, from: youtubeData)
+                } else {
+                    decoded = nil
                 }
-            }
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated {
+                        self.finish(status: status, domains: domains, etag: etag, lastModified: modified,
+                                    error: errorText, remoteYouTubeRules: decoded,
+                                    youtubeStatus: youtubeHTTP?.statusCode,
+                                    youtubeError: youtubeError?.localizedDescription, completion: completion)
+                    }
+                }
+            }.resume()
         }.resume()
     }
 
     private func finish(status: Int?, domains: [String]?, etag: String?, lastModified: String?,
-                        error: String?) -> String {
-        isUpdating = false
+                        error: String?, remoteYouTubeRules: YouTubeAdRuleSet?, youtubeStatus: Int?,
+                        youtubeError: String?, completion: ((String) -> Void)?) {
         let now = Date()
-
-        if status == 304 {
-            metadata.lastChecked = now
-            saveMetadata()
-            return String(localized: "Blocklist is up to date (\(metadata.domainCount) domains)")
+        let validDomains = domains.flatMap { $0.count >= Self.minimumDomains ? $0 : nil }
+        let downloaded = status == 304 ? (domainsFile.load() ?? []) : (validDomains ?? (domainsFile.load() ?? []))
+        let candidateRules = remoteYouTubeRules.flatMap {
+            $0.revision > youTubeRules.revision ? $0.validated(minimumRevision: youTubeRules.revision + 1) : nil
+        } ?? youTubeRules
+        let youtubeChanged = candidateRules.revision > youTubeRules.revision
+        compile(downloaded: downloaded, youTubeRules: candidateRules) { success in
+            self.isUpdating = false
+            guard success else {
+                completion?(String(localized: "Couldn’t apply the update. The previous ad-block rules are still in use."))
+                return
+            }
+            if status == 304 || validDomains != nil {
+                if let validDomains {
+                    do { try self.domainsFile.save(validDomains) }
+                    catch { Log.error("Askara: failed to save blocklist: \(error)") }
+                    self.metadata = BlockListMetadata(lastChecked: now, lastUpdated: now, etag: etag,
+                                                      lastModified: lastModified, domainCount: validDomains.count)
+                } else {
+                    self.metadata.lastChecked = now
+                }
+                self.saveMetadata()
+            } else {
+                let reason = error ?? (status.map { "HTTP \($0)" } ?? String(localized: "no response"))
+                Log.error("Askara: failed to update blocklist: \(reason)")
+            }
+            if youtubeChanged {
+                do { try self.youTubeRulesFile.save(candidateRules) }
+                catch { Log.error("Askara: failed to save YouTube ad rules: \(error)") }
+                self.youTubeRules = candidateRules
+                self.onYouTubeRulesChanged?(candidateRules)
+            }
+            if remoteYouTubeRules == nil {
+                let reason = youtubeError ?? (youtubeStatus.map { "HTTP \($0)" } ?? String(localized: "invalid response"))
+                Log.error("Askara: failed to update YouTube ad rules: \(reason)")
+            }
+            let domainText = validDomains != nil ? String(localized: "\(validDomains!.count) domains")
+                : String(localized: "domain list unchanged")
+            let youtubeText = String(localized: "YouTube rules revision \(self.youTubeRules.revision)")
+            completion?(String(localized: "Ad block updated: \(domainText) · \(youtubeText)"))
         }
-        guard let domains, domains.count >= Self.minimumDomains else {
-            // Don't mark as checked, so it retries next hour.
-            let reason = error ?? (status.map { "HTTP \($0)" } ?? String(localized: "no response"))
-            Log.error("Askara: failed to update blocklist: \(reason)")
-            return String(localized: "Couldn’t update blocklist: \(reason). The previous list is still in use.")
-        }
-
-        do { try domainsFile.save(domains) } catch { Log.error("Askara: failed to save blocklist: \(error)") }
-        metadata = BlockListMetadata(lastChecked: now, lastUpdated: now, etag: etag,
-                                     lastModified: lastModified, domainCount: domains.count)
-        saveMetadata()
-        compile(downloaded: domains)
-        return String(localized: "Blocklist updated: \(domains.count) domains")
     }
 
     private func saveMetadata() {
         do { try metadataFile.save(metadata) } catch { Log.error("Askara: failed to save blocklist metadata: \(error)") }
     }
 
-    private func compile(downloaded: [String]) {
+    private func compile(downloaded: [String], youTubeRules: YouTubeAdRuleSet? = nil,
+                         completion: ((Bool) -> Void)? = nil) {
         automaticDomains = BlockList.merged(with: downloaded)
         let domains = BlockList.merged(with: automaticDomains + customDomains)
         currentDomains = domains
@@ -185,7 +231,8 @@ final class BlockListUpdater {
             excludingSites: services?.siteSettings.adBlockExceptions ?? [],
             hiding: hideRules,
             blocksYouTubeAds: services?.preferences.blocksYouTubeAds ?? true,
-            blocksSpotifyAds: services?.preferences.blocksSpotifyAds ?? true
+            blocksSpotifyAds: services?.preferences.blocksSpotifyAds ?? true,
+            youTubeRules: youTubeRules ?? self.youTubeRules
         )
         // The same identifier overwrites the old version; WebKit stores the compiled result on disk.
         WKContentRuleListStore.default().compileContentRuleList(
@@ -194,6 +241,7 @@ final class BlockListUpdater {
             MainActor.assumeIsolated {
                 if let error { Log.error("Askara: failed to compile blocklist: \(error)") }
                 if let list { self.onCompiled?(list) }
+                completion?(list != nil)
             }
         }
     }
@@ -201,8 +249,10 @@ final class BlockListUpdater {
     /// Summary for the menu.
     var statusText: String {
         let count = currentDomains.count
-        guard let updated = metadata.lastUpdated else { return String(localized: "Blocking \(count) domains (built-in list)") }
+        guard let updated = metadata.lastUpdated else {
+            return String(localized: "Blocking \(count) domains (built-in list) · YouTube rules revision \(youTubeRules.revision)")
+        }
         let formatter = RelativeDateTimeFormatter()
-        return String(localized: "Blocking \(count) domains · updated \(formatter.localizedString(for: updated, relativeTo: Date()))")
+        return String(localized: "Blocking \(count) domains · YouTube rules revision \(youTubeRules.revision) · updated \(formatter.localizedString(for: updated, relativeTo: Date()))")
     }
 }

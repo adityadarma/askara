@@ -424,6 +424,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
             note(String(localized: "Hide page elements on one site, written as site##selector. Example: example.com##a[href*=\"ads\"] hides every link whose address contains ads. Use this for banners that domain blocking can't remove. One rule at a time or several on separate lines. Reload open pages to apply.")),
             tableScroll(hideTable, height: 90), hideRow,
             autoTitle,
+            note(String(localized: "Update Now refreshes both the automatic domain list and YouTube ad rules. Open YouTube tabs reload when newer rules are installed.")),
             adBlockStatus,
             tableScroll(autoTable, height: 90), autoRow,
         ])
