@@ -47,6 +47,7 @@ enum SpotifyEnhancer {
             const widget = document.querySelector('[data-testid="now-playing-widget"]');
             if (!widget) return false;
             return adPattern.test(widget.getAttribute('aria-label') || '')
+              || adPattern.test(widget.querySelector('[data-testid="context-item-info-title"], [data-testid="context-item-link"]')?.textContent || '')
               || !!widget.querySelector('[data-testid="context-item-info-ad"], [data-testid="track-info-advertiser"]');
           };
           const muted = new Set();

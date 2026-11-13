@@ -454,10 +454,13 @@ final class BrowserServices {
         youTubeAdRules = blockListUpdater.youTubeRules
         blockListUpdater.onCompiled = { [weak self] list in
             guard let self else { return }
+            let isInitialCompile = self.ruleList == nil
             self.ruleList = list
             // Replace the old list in all loaded tabs; new tabs use the new one directly.
             self.windows.forEach { $0.applyRuleList(list) }
-            if self.reloadMediaTabsAfterRuleCompile {
+            // YouTube and Spotify scripts check a content-rule probe at document start. Tabs that
+            // loaded before the initial asynchronous compile must reload once to activate them.
+            if isInitialCompile || self.reloadMediaTabsAfterRuleCompile {
                 self.reloadMediaTabsAfterRuleCompile = false
                 self.windows.forEach { $0.reloadMediaAdBlockingTabs() }
             }

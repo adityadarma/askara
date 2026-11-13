@@ -404,6 +404,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
     private let pinnedExtensionStack = NSStackView()
     private let extensionsButton = FirstClickButton()
     private let downloadsButton = DownloadsToolbarButton()
+    private var downloadsPopover: NSPopover?
     /// Media playing in any tab of any window: pause, mute, or Picture in Picture from here.
     private let mediaButton = FirstClickButton()
     private var privacyPopover: NSPopover?
@@ -1023,7 +1024,20 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         downloadsButton.setAccessibilityLabel(label)
     }
 
-    @objc private func showDownloads(_ sender: NSButton) { DownloadsWindowController.shared.show() }
+    @objc private func showDownloads(_ sender: NSButton) {
+        if downloadsPopover?.isShown == true {
+            downloadsPopover?.close()
+            return
+        }
+        let controller = DownloadsPopoverController(manager: services.downloads) {
+            DownloadsWindowController.shared.show()
+        }
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.contentViewController = controller
+        popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .maxY)
+        downloadsPopover = popover
+    }
 
     // MARK: - TabStripDelegate
 
