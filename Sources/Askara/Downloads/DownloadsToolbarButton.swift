@@ -98,7 +98,11 @@ final class DownloadsPopoverController: NSViewController {
                 empty.heightAnchor.constraint(equalToConstant: listHeight),
             ])
         } else {
-            for item in items { rows.addArrangedSubview(makeRow(for: item, width: rows.widthAnchor, height: rowHeight)) }
+            for item in items {
+                let row = makeRow(for: item, height: rowHeight)
+                rows.addArrangedSubview(row)
+                row.widthAnchor.constraint(equalTo: rows.widthAnchor).isActive = true
+            }
         }
         root.addArrangedSubview(rows)
         root.setCustomSpacing(8, after: rows)
@@ -132,7 +136,7 @@ final class DownloadsPopoverController: NSViewController {
         view = container
     }
 
-    private func makeRow(for item: DownloadManager.Item, width: NSLayoutDimension, height: CGFloat) -> NSView {
+    private func makeRow(for item: DownloadManager.Item, height: CGFloat) -> NSView {
         let ext = (item.filename as NSString).pathExtension
         let icon = NSImageView(image: NSWorkspace.shared.icon(for: UTType(filenameExtension: ext) ?? .data))
         icon.imageScaling = .scaleProportionallyUpOrDown
@@ -179,7 +183,6 @@ final class DownloadsPopoverController: NSViewController {
         row.spacing = 9
         row.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
-            row.widthAnchor.constraint(equalTo: width),
             row.heightAnchor.constraint(equalToConstant: height),
             icon.widthAnchor.constraint(equalToConstant: 28),
             icon.heightAnchor.constraint(equalToConstant: 28),

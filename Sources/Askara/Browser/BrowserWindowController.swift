@@ -1236,8 +1236,10 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
         guard tab.hidesHomeAddress else { return }
         let editing = addressField.currentEditor() != nil
         if editing, !addressField.stringValue.isEmpty { return } // already typing: leave it alone
-        if !editing, let web = tab.webView, window?.firstResponder !== web,
-           window?.firstResponder !== window { return } // focus moved elsewhere on purpose
+        // The page's own autofocus lands on a subview of the web view, not on the web view itself.
+        let responder = window?.firstResponder as? NSView
+        let inPage = tab.webView.map { responder?.isDescendant(of: $0) ?? false } ?? false
+        if !editing, !inPage, window?.firstResponder !== window { return } // focus moved elsewhere on purpose
         addressField.stringValue = ""
         focusAddressBar(nil)
     }
@@ -3697,8 +3699,11 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, WKNav
             closeEmptyTab(of: webView)
             return
         }
-        if response.isForMainFrame, !response.canShowMIMEType || disposition.hasPrefix("attachment") {
-            return decisionHandler(.download)
+        // Attachments count in any frame: sites such as Google Docs export through a hidden iframe or a popup.
+        if (response.isForMainFrame && !response.canShowMIMEType) || disposition.hasPrefix("attachment") {
+            decisionHandler(.download)
+            if response.isForMainFrame { closeEmptyTab(of: webView) }
+            return
         }
         if response.isForMainFrame, let tab = tabs.first(where: { $0.webView === webView }) {
             tab.isPDFDocument = response.response.mimeType?.lowercased() == "application/pdf"
