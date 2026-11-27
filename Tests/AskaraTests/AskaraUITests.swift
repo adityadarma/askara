@@ -103,6 +103,26 @@ struct AskaraUITests {
         #expect(live.detail == "example.com")
     }
 
+    @Test("Download popover mixes recent states and limits the list to five")
+    @MainActor
+    func downloadPopoverItems() {
+        let items = (0..<7).map { index in
+            let item = DownloadManager.Item()
+            item.filename = "download-\(index).zip"
+            if index.isMultiple(of: 2) {
+                item.state = .finished
+                item.scanState = .complete
+            }
+            return item
+        }
+
+        let visible = DownloadsPopoverController.visibleItems(from: items)
+        #expect(visible.count == DownloadsPopoverController.maxVisibleItems)
+        #expect(visible.map(\.id) == Array(items.prefix(5)).map(\.id))
+        #expect(visible.contains { $0.state == .running })
+        #expect(visible.contains { $0.state == .finished })
+    }
+
     @Test("WebKit helper processes get readable names")
     func helperProcessNames() {
         #expect(ProcessMemory.displayName(for: "com.apple.WebKit.GPU") != "com.apple.WebKit.GPU")

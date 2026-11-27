@@ -35,9 +35,11 @@ final class DownloadsToolbarButton: FirstClickButton {
     var isSpinning: Bool { ringView.ring.animation(forKey: ProgressRingView.spinKey) != nil }
 }
 
-/// Compact toolbar popover that mirrors Chrome's active-download menu.
+/// Compact toolbar popover for the five most recent downloads, including completed items.
 @MainActor
 final class DownloadsPopoverController: NSViewController {
+    static let maxVisibleItems = 5
+
     private let manager: DownloadManager
     private let onShowAll: () -> Void
     private var observer: NSObjectProtocol?
@@ -61,12 +63,17 @@ final class DownloadsPopoverController: NSViewController {
 
     override func loadView() { rebuild() }
 
+    static func visibleItems(from items: [DownloadManager.Item]) -> [DownloadManager.Item] {
+        Array(items.prefix(maxVisibleItems))
+    }
+
     private func rebuild() {
-        let items = Array(manager.running.prefix(3))
-        let rowHeight: CGFloat = 54
-        let listHeight = items.isEmpty ? 48 : CGFloat(items.count) * rowHeight
-        let contentHeight = 12 + 25 + 8 + listHeight + 8 + 1 + 6 + 32 + 10
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: contentHeight))
+        let items = Self.visibleItems(from: manager.items)
+        let rowHeight: CGFloat = 62
+        let separatorHeight: CGFloat = items.count > 1 ? CGFloat(items.count - 1) : 0
+        let listHeight = items.isEmpty ? 64 : CGFloat(items.count) * rowHeight + separatorHeight
+        let contentHeight = 14 + 24 + 10 + listHeight + 10 + 1 + 6 + 34 + 10
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 360, height: contentHeight))
         preferredContentSize = container.frame.size
 
         let root = NSStackView()
@@ -76,10 +83,24 @@ final class DownloadsPopoverController: NSViewController {
         root.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(root)
 
+        let header = NSStackView()
+        header.orientation = .horizontal
+        header.alignment = .centerY
         let title = NSTextField(labelWithString: String(localized: "Downloads"))
-        title.font = .systemFont(ofSize: 15, weight: .semibold)
-        root.addArrangedSubview(title)
-        root.setCustomSpacing(8, after: title)
+        title.font = .systemFont(ofSize: 16, weight: .semibold)
+        header.addArrangedSubview(title)
+        header.addArrangedSubview(NSView())
+        if !items.isEmpty {
+            let activeCount = manager.running.count
+            let summaryText = activeCount > 0 ? String(localized: "\(activeCount) active")
+                : String(localized: "Recent")
+            let summary = NSTextField(labelWithString: summaryText)
+            summary.font = .systemFont(ofSize: 11, weight: .medium)
+            summary.textColor = .secondaryLabelColor
+            header.addArrangedSubview(summary)
+        }
+        root.addArrangedSubview(header)
+        root.setCustomSpacing(10, after: header)
 
         let rows = NSStackView()
         rows.orientation = .vertical
@@ -87,25 +108,38 @@ final class DownloadsPopoverController: NSViewController {
         rows.spacing = 0
         rows.translatesAutoresizingMaskIntoConstraints = false
         if items.isEmpty {
-            let empty = NSTextField(labelWithString: String(localized: "No active downloads"))
-            empty.textColor = .secondaryLabelColor
-            empty.alignment = .center
-            empty.font = .systemFont(ofSize: 13)
-            empty.translatesAutoresizingMaskIntoConstraints = false
+            let emptyIcon = NSImageView(image: NSImage(systemSymbolName: "arrow.down.circle",
+                                                       accessibilityDescription: nil) ?? NSImage())
+            emptyIcon.symbolConfiguration = .init(pointSize: 18, weight: .regular)
+            emptyIcon.contentTintColor = .tertiaryLabelColor
+            let emptyText = NSTextField(labelWithString: String(localized: "No downloads yet"))
+            emptyText.textColor = .secondaryLabelColor
+            emptyText.font = .systemFont(ofSize: 12)
+            let empty = NSStackView(views: [emptyIcon, emptyText])
+            empty.orientation = .vertical
+            empty.alignment = .centerX
+            empty.spacing = 5
             rows.addArrangedSubview(empty)
             NSLayoutConstraint.activate([
                 empty.widthAnchor.constraint(equalTo: rows.widthAnchor),
                 empty.heightAnchor.constraint(equalToConstant: listHeight),
             ])
         } else {
-            for item in items {
+            for (index, item) in items.enumerated() {
                 let row = makeRow(for: item, height: rowHeight)
                 rows.addArrangedSubview(row)
                 row.widthAnchor.constraint(equalTo: rows.widthAnchor).isActive = true
+                if index < items.count - 1 {
+                    let divider = NSBox()
+                    divider.boxType = .separator
+                    rows.addArrangedSubview(divider)
+                    divider.widthAnchor.constraint(equalTo: rows.widthAnchor).isActive = true
+                    divider.heightAnchor.constraint(equalToConstant: 1).isActive = true
+                }
             }
         }
         root.addArrangedSubview(rows)
-        root.setCustomSpacing(8, after: rows)
+        root.setCustomSpacing(10, after: rows)
 
         let separator = NSBox()
         separator.boxType = .separator
@@ -118,85 +152,161 @@ final class DownloadsPopoverController: NSViewController {
         showAll.imagePosition = .imageLeading
         showAll.alignment = .left
         showAll.isBordered = false
-        showAll.font = .systemFont(ofSize: 13)
+        showAll.font = .systemFont(ofSize: 13, weight: .medium)
         root.addArrangedSubview(showAll)
 
         NSLayoutConstraint.activate([
-            root.topAnchor.constraint(equalTo: container.topAnchor, constant: 12),
-            root.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 14),
-            root.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -14),
+            root.topAnchor.constraint(equalTo: container.topAnchor, constant: 14),
+            root.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
+            root.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -16),
             root.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -10),
-            title.heightAnchor.constraint(equalToConstant: 25),
+            header.widthAnchor.constraint(equalTo: root.widthAnchor),
+            header.heightAnchor.constraint(equalToConstant: 24),
             rows.widthAnchor.constraint(equalTo: root.widthAnchor),
             rows.heightAnchor.constraint(equalToConstant: listHeight),
             separator.widthAnchor.constraint(equalTo: root.widthAnchor),
             showAll.widthAnchor.constraint(equalTo: root.widthAnchor),
-            showAll.heightAnchor.constraint(equalToConstant: 32),
+            showAll.heightAnchor.constraint(equalToConstant: 34),
         ])
         view = container
     }
 
     private func makeRow(for item: DownloadManager.Item, height: CGFloat) -> NSView {
-        let ext = (item.filename as NSString).pathExtension
-        let icon = NSImageView(image: NSWorkspace.shared.icon(for: UTType(filenameExtension: ext) ?? .data))
+        let exists = item.destination.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
+        let fileImage: NSImage
+        if exists, let path = item.destination?.path {
+            fileImage = NSWorkspace.shared.icon(forFile: path)
+        } else {
+            let ext = (item.filename as NSString).pathExtension
+            fileImage = NSWorkspace.shared.icon(for: UTType(filenameExtension: ext) ?? .data)
+        }
+        let icon = NSImageView(image: fileImage)
         icon.imageScaling = .scaleProportionallyUpOrDown
+        icon.alphaValue = exists || item.state == .running ? 1 : 0.55
         icon.translatesAutoresizingMaskIntoConstraints = false
 
         let name = NSTextField(labelWithString: item.filename)
         name.font = .systemFont(ofSize: 13, weight: .medium)
         name.lineBreakMode = .byTruncatingMiddle
+        name.textColor = exists || item.state == .running ? .labelColor : .secondaryLabelColor
         name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        let status = NSTextField(labelWithString: item.statusText)
-        status.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
-        status.textColor = .secondaryLabelColor
+        let presentation = rowPresentation(for: item)
+        let stateIcon = NSImageView(image: NSImage(systemSymbolName: presentation.symbol,
+                                                   accessibilityDescription: nil) ?? NSImage())
+        stateIcon.symbolConfiguration = .init(pointSize: 10, weight: .semibold)
+        stateIcon.contentTintColor = presentation.color
+        let status = NSTextField(labelWithString: presentation.text)
+        status.font = item.state == .running
+            ? .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+            : .systemFont(ofSize: 11)
+        status.textColor = presentation.color
+        status.lineBreakMode = .byTruncatingTail
+        status.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let statusLine = NSStackView(views: [stateIcon, status])
+        statusLine.orientation = .horizontal
+        statusLine.alignment = .centerY
+        statusLine.spacing = 4
 
-        let progress = NSProgressIndicator()
-        progress.style = .bar
-        progress.controlSize = .small
-        progress.minValue = 0
-        progress.maxValue = 1
-        progress.isIndeterminate = item.fraction <= 0
-        if progress.isIndeterminate { progress.startAnimation(nil) }
-        else { progress.doubleValue = item.fraction }
+        var textViews: [NSView] = [name, statusLine]
+        var progress: NSProgressIndicator?
+        if item.state == .running {
+            let indicator = NSProgressIndicator()
+            indicator.style = .bar
+            indicator.controlSize = .small
+            indicator.minValue = 0
+            indicator.maxValue = 1
+            indicator.isIndeterminate = item.fraction <= 0
+            if indicator.isIndeterminate { indicator.startAnimation(nil) }
+            else { indicator.doubleValue = item.fraction }
+            textViews.append(indicator)
+            progress = indicator
+        }
 
-        let text = NSStackView(views: [name, progress, status])
+        let text = NSStackView(views: textViews)
         text.orientation = .vertical
         text.alignment = .leading
-        text.spacing = 2
+        text.spacing = 3
+        text.setHuggingPriority(.defaultLow, for: .horizontal)
         text.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        let cancel = NSButton()
-        cancel.identifier = .init(item.id.uuidString)
-        cancel.image = NSImage(systemSymbolName: "xmark.circle.fill",
-                               accessibilityDescription: String(localized: "Cancel Download"))
-        cancel.imagePosition = .imageOnly
-        cancel.isBordered = false
-        cancel.contentTintColor = .secondaryLabelColor
-        cancel.target = self
-        cancel.action = #selector(cancelDownload(_:))
-        cancel.toolTip = String(localized: "Cancel Download")
+        let action = NSButton()
+        action.identifier = .init(item.id.uuidString)
+        action.imagePosition = .imageOnly
+        action.isBordered = false
+        action.contentTintColor = .secondaryLabelColor
+        action.target = self
+        if item.state == .running {
+            let label = String(localized: "Cancel Download")
+            action.image = NSImage(systemSymbolName: "xmark.circle.fill", accessibilityDescription: label)
+            action.action = #selector(cancelDownload(_:))
+            action.toolTip = label
+        } else if item.state == .finished, exists {
+            let label = String(localized: "Show in Finder")
+            action.image = NSImage(systemSymbolName: "magnifyingglass.circle.fill", accessibilityDescription: label)
+            action.action = #selector(revealDownload(_:))
+            action.toolTip = label
+        } else {
+            action.image = nil
+            action.isEnabled = false
+        }
 
-        let row = NSStackView(views: [icon, text, cancel])
+        let row = NSStackView(views: [icon, text, action])
         row.orientation = .horizontal
         row.alignment = .centerY
-        row.spacing = 9
+        row.spacing = 10
         row.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
+        var constraints = [
             row.heightAnchor.constraint(equalToConstant: height),
-            icon.widthAnchor.constraint(equalToConstant: 28),
-            icon.heightAnchor.constraint(equalToConstant: 28),
-            progress.widthAnchor.constraint(equalTo: text.widthAnchor),
-            cancel.widthAnchor.constraint(equalToConstant: 24),
-            cancel.heightAnchor.constraint(equalToConstant: 24),
-        ])
+            icon.widthAnchor.constraint(equalToConstant: 32),
+            icon.heightAnchor.constraint(equalToConstant: 32),
+            stateIcon.widthAnchor.constraint(equalToConstant: 12),
+            stateIcon.heightAnchor.constraint(equalToConstant: 12),
+            action.widthAnchor.constraint(equalToConstant: 24),
+            action.heightAnchor.constraint(equalToConstant: 24),
+        ]
+        if let progress { constraints.append(progress.widthAnchor.constraint(equalTo: text.widthAnchor)) }
+        NSLayoutConstraint.activate(constraints)
         return row
+    }
+
+    private func rowPresentation(for item: DownloadManager.Item) -> (text: String, symbol: String, color: NSColor) {
+        let host = item.sourceURL?.host
+        switch item.state {
+        case .running:
+            let parts = [item.statusText, host].compactMap { $0 }
+            return (parts.joined(separator: " · "), "arrow.down", .controlAccentColor)
+        case .cancelled:
+            return (item.statusText, "xmark.circle", .secondaryLabelColor)
+        case .failed:
+            return (item.statusText, "exclamationmark.circle.fill", .systemRed)
+        case .finished:
+            switch item.scanState {
+            case .waiting, .scanning:
+                return (item.statusText, "shield", .secondaryLabelColor)
+            case .failed:
+                return (item.statusText, "exclamationmark.triangle.fill", .systemOrange)
+            case .complete where item.risks.contains(where: \.isHighRisk):
+                return (item.statusText, "exclamationmark.triangle.fill", .systemOrange)
+            case .complete:
+                let size = item.fileSize.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) }
+                let parts = [String(localized: "Completed"), size].compactMap { $0 }
+                return (parts.joined(separator: " · "), "checkmark.circle.fill", .systemGreen)
+            }
+        }
     }
 
     @objc private func cancelDownload(_ sender: NSButton) {
         guard let id = sender.identifier.flatMap({ UUID(uuidString: $0.rawValue) }),
               let item = manager.running.first(where: { $0.id == id }) else { return }
         manager.cancel(item)
+    }
+
+    @objc private func revealDownload(_ sender: NSButton) {
+        guard let id = sender.identifier.flatMap({ UUID(uuidString: $0.rawValue) }),
+              let url = manager.items.first(where: { $0.id == id })?.destination,
+              FileManager.default.fileExists(atPath: url.path) else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
     @objc private func showAllDownloads(_ sender: Any?) {
